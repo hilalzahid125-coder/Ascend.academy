@@ -1,0 +1,4 @@
+{% extends "base.html" %}
+{% block title %}About · {{ settings.app_name }}{% endblock %}
+{% block content %}{% include "_about_body.html" %}{% endblock %}
+{% block auth_content %}<div class="legal-shell" id="main-content"><header class="legal-top"><a class="public-brand" href="/"><img src="/static/app-logo.svg" alt="ASCEND"><strong>ASCEND</strong></a><a href="/privacy">Privacy</a></header>{% include "_about_body.html" %}<footer class="public-footer"><small>{{ settings.creator_credit }} · v{{ app_version }}</small></footer></div>{% endblock %}

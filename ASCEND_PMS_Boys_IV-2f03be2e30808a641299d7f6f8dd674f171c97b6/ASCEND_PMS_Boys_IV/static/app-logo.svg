@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ASCEND logo">
+  <rect width="128" height="128" rx="30" fill="#111111"/>
+  <path d="M25 92 61 28l36 64H79L61 59 43 92Z" fill="#f97316"/>
+  <path d="M45 92 65 57l10 18-10 17Z" fill="#ffffff"/>
+  <path d="M61 87 98 51" stroke="#ffffff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M87 50h13v13" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head"><div><span class="eyebrow">MILESTONES</span><h1>Achievements</h1><p>Unlock badges automatically as your real point totals grow.</p></div></section>
+<div class="reward-grid">
+{% for a in achievements %}
+<article class="reward-card category-{{ a.category }}">
+  <div class="reward-symbol">✦</div>
+  <span class="eyebrow">{{ a.category|title }} · {{ a.points_required }} pts</span>
+  <h2>{{ a.name }}</h2><p>{{ a.description }}</p>
+  {% set pct = (a.current_points * 100 / a.points_required)|int if a.points_required else 100 %}
+  <div class="progress"><span style="width:{{ [100,pct]|min }}%"></span></div>
+  {% if a.unlocked_at %}<div class="status-box">Unlocked <strong>{{ a.unlocked_at[:10] }}</strong></div>
+  {% else %}<small>{{ [a.current_points,a.points_required]|min }} / {{ a.points_required }} points</small>{% endif %}
+</article>
+{% else %}<div class="empty full"><strong>No achievements published yet</strong><p>Your school can create them from the admin control center.</p></div>{% endfor %}
+</div>
+{% endblock %}

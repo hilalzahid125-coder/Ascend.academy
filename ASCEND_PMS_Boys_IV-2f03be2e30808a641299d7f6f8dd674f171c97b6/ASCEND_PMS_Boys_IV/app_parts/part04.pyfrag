@@ -1,0 +1,134 @@
+)
+def profile(request: Request):
+    u=require_user(request,'student')
+    with connect() as conn:
+        points=total_points(conn,u['id'])
+        tx=conn.execute('SELECT * FROM point_transactions WHERE user_id=? ORDER BY id DESC LIMIT 50',(u['id'],)).fetchall()
+    return render(request,'profile.html',{'points':points,'transactions':tx})
+
+@app.post('/profile/photo')
+async def profile_photo_upload(request: Request, photo: UploadFile=File(...)):
+    u=require_user(request,'student')
+    ext=Path(photo.filename or '').suffix.lower()
+    if ext not in {'.png','.jpg','.jpeg','.webp'}:
+        return flash_redirect('/profile','Please upload a PNG, JPG, or WEBP image.','error')
+    try:
+        path=_save_profile_picture(await photo.read(),u['id'])
+    except ValueError as exc:
+        return flash_redirect('/profile',str(exc),'error')
+    with connect() as conn:
+        conn.execute('UPDATE users SET profile_picture_path=? WHERE id=?',(path,u['id']))
+    return flash_redirect('/profile','Profile picture updated.')
+
+@app.post('/profile/photo/remove')
+def profile_photo_remove(request: Request):
+    u=require_user(request,'student')
+    path=UPLOAD_DIR/f'profile_{u["id"]}.webp'
+    if path.exists():
+        try: path.unlink()
+        except OSError: pass
+    with connect() as conn:
+        conn.execute('UPDATE users SET profile_picture_path=NULL WHERE id=?',(u['id'],))
+    return flash_redirect('/profile','Profile picture removed.')
+
+# -------------------- ADMIN --------------------
+@app.get('/admin', response_class=HTMLResponse)
+def admin_dashboard(request: Request):
+    a=require_admin(request)
+    with connect() as conn:
+        stats={
+          'students':conn.execute('SELECT COUNT(*) c FROM users WHERE role="student"').fetchone()['c'],
+          'active_challenges':conn.execute('SELECT COUNT(*) c FROM challenges WHERE status="active"').fetchone()['c'],
+          'pending':conn.execute('SELECT COUNT(*) c FROM challenge_participations WHERE status="pending"').fetchone()['c'],
+          'points':conn.execute('SELECT COALESCE(SUM(amount),0) c FROM point_transactions').fetchone()['c'],
+        }
+        top=conn.execute('''SELECT u.full_name,u.admission_no,u.profile_picture_path,COALESCE(SUM(p.amount),0) points FROM users u
+                            LEFT JOIN point_transactions p ON p.user_id=u.id WHERE u.role='student'
+                            GROUP BY u.id ORDER BY points DESC LIMIT 5''').fetchall()
+        logs=conn.execute('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 8').fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
+    return render(request,'admin_dashboard.html',{'stats':stats,'top':top,'logs':logs})
+
+@app.get('/admin/admins', response_class=HTMLResponse)
+def admin_team(request: Request):
+    require_admin(request,super_only=True)
+    with connect() as conn:
+        rows=conn.execute('SELECT id,admission_no,full_name,role,status,admin_level,admin_permissions,created_at FROM users WHERE role="admin" ORDER BY CASE WHEN admin_level="super" THEN 0 ELSE 1 END,id').fetchall()
+        admins=[]
+        for row in rows:
+            d=dict(row); d['permissions']=_admin_permissions(row); admins.append(d)
+    return render(request,'admin_admins.html',{'admins':admins})
+
+@app.post('/admin/admins/create')
+def admin_team_create(request: Request, admin_id:str=Form(...), full_name:str=Form(...), password:str=Form(...), permissions:List[str]=Form([])):
+    owner=require_admin(request,super_only=True); admin_id=admin_id.strip().upper()
+    if not ADMIN_ID_RE.match(admin_id): return flash_redirect('/admin/admins','Admin ID format is invalid. Try ADMIN-0002.','error')
+    if not _validate_password_strength(password): return flash_redirect('/admin/admins','Staff admin password must be 12–128 characters and include letters and numbers.','error')
+    try: full_name=_clean_text(full_name,120)
+    except ValueError as exc: return flash_redirect('/admin/admins',str(exc),'error')
+    allowed=[p for p in permissions if p in STAFF_PERMISSION_LABELS]
+    try:
+        with connect() as conn:
+            conn.execute('''INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,admin_level,admin_permissions,created_at)
+                            VALUES (?,?,?,"admin","active",1,"staff",?,?)''',(admin_id,full_name,hash_password(password),json.dumps(allowed),iso_now()))
+            audit(conn,owner['id'],'staff_admin_created',f'{admin_id}: {full_name}')
+        return flash_redirect('/admin/admins','Staff admin created successfully.')
+    except sqlite3.IntegrityError:
+        return flash_redirect('/admin/admins','That admin ID already exists.','error')
+
+@app.post('/admin/admins/{admin_id}/edit')
+def admin_team_edit(request: Request, admin_id:int, full_name:str=Form(...), permissions:List[str]=Form([])):
+    owner=require_admin(request,super_only=True)
+    try: full_name=_clean_text(full_name,120)
+    except ValueError as exc: return flash_redirect('/admin/admins',str(exc),'error')
+    allowed=[p for p in permissions if p in STAFF_PERMISSION_LABELS]
+    with connect() as conn:
+        target=conn.execute('SELECT * FROM users WHERE id=? AND role="admin" AND admin_level="staff"',(admin_id,)).fetchone()
+        if not target: return flash_redirect('/admin/admins','Staff admin not found or protected.','error')
+        conn.execute('UPDATE users SET full_name=?,admin_permissions=? WHERE id=?',(full_name,json.dumps(allowed),admin_id))
+        audit(conn,owner['id'],'staff_admin_updated',target['admission_no'])
+    return flash_redirect('/admin/admins','Staff admin permissions updated.')
+
+@app.post('/admin/admins/{admin_id}/status')
+def admin_team_status(request: Request, admin_id:int, status:str=Form(...)):
+    owner=require_admin(request,super_only=True)
+    if status not in {'active','disabled'}: return flash_redirect('/admin/admins','Invalid status.','error')
+    with connect() as conn:
+        target=conn.execute('SELECT * FROM users WHERE id=? AND role="admin" AND admin_level="staff"',(admin_id,)).fetchone()
+        if not target: return flash_redirect('/admin/admins','Staff admin not found or protected.','error')
+        conn.execute('UPDATE users SET status=? WHERE id=?',(status,admin_id))
+        if status!='active': conn.execute('DELETE FROM sessions WHERE user_id=?',(admin_id,))
+        audit(conn,owner['id'],'staff_admin_status_changed',f'{target["admission_no"]}->{status}')
+    return flash_redirect('/admin/admins','Staff admin access updated.')
+
+@app.post('/admin/admins/{admin_id}/password')
+def admin_team_password(request: Request, admin_id:int, new_password:str=Form(...), confirm_password:str=Form(...)):
+    owner=require_admin(request,super_only=True)
+    if new_password!=confirm_password: return flash_redirect('/admin/admins','Passwords do not match.','error')
+    if not _validate_password_strength(new_password): return flash_redirect('/admin/admins','Password must be 12–128 characters and include letters and numbers.','error')
+    with connect() as conn:
+        target=conn.execute('SELECT * FROM users WHERE id=? AND role="admin" AND admin_level="staff"',(admin_id,)).fetchone()
+        if not target: return flash_redirect('/admin/admins','Staff admin not found or protected.','error')
+        conn.execute('UPDATE users SET password_hash=? WHERE id=?',(hash_password(new_password),admin_id))
+        conn.execute('DELETE FROM sessions WHERE user_id=?',(admin_id,))
+        audit(conn,owner['id'],'staff_admin_password_reset',target['admission_no'])
+    return flash_redirect('/admin/admins','Staff admin password reset. They have been signed out.')
+
+@app.get('/admin/account', response_class=HTMLResponse)
+def admin_account(request: Request):
+    a=require_admin(request)
+    return render(request,'admin_account.html',{'permissions':_admin_permissions(a)})
+
+@app.post('/admin/account/password')
+def admin_account_password(request: Request,current_password:str=Form(...),new_password:str=Form(...),confirm_password:str=Form(...)):
+    a=require_admin(request)
+    if new_password!=confirm_password: return flash_redirect('/admin/account','New passwords do not match.','error')
+    if not _validate_password_strength(new_password): return flash_redirect('/admin/account','Password must be 12–128 characters and include letters and numbers.','error')
+    if not a['password_hash'] or not verify_password(current_password,a['password_hash']): return flash_redirect('/admin/account','Current password is incorrect.','error')
+    keep_hash=token_hash(request.cookies.get('pms_session',''))
+    with connect() as conn:
+        conn.execute('UPDATE users SET password_hash=? WHERE id=?',(hash_password(new_password),a['id']))
+        conn.execute('DELETE FROM sessions WHERE user_id=? AND token_hash!=?',(a['id'],keep_hash))
+        audit(conn,a['id'],'admin_password_changed','Other sessions signed out')
+    return flash_redirect('/admin/account','Password updated. Other sessions were signed out.')
+
+def _require_reports_access

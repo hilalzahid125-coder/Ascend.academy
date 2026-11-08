@@ -1,0 +1,105 @@
+('UPDATE users SET password_hash=NULL,claimed=0,status="unclaimed",activation_code=?,activation_code_expires_at=? WHERE id=? AND role="student"',(code,activation_expiry(),student_id))
+        conn.execute('DELETE FROM sessions WHERE user_id=?',(student_id,))
+        audit(conn,a['id'],'student_password_reset',f'student_id={student_id}')
+    return flash_redirect('/admin/students',f'Account reset. New activation code: {code}')
+
+@app.post('/admin/students/{student_id}/points')
+def admin_points(request: Request, student_id:int, amount:int=Form(...), category:str=Form('general'), reason:str=Form(...)):
+    a=require_admin(request,'students'); category=category if category in ALLOWED_CATEGORIES else 'general'
+    if amount==0 or abs(amount)>100000: return flash_redirect('/admin/students','Point amount is invalid.','error')
+    try: reason=_clean_text(reason,240)
+    except ValueError as exc: return flash_redirect('/admin/students',str(exc),'error')
+    with connect() as conn:
+        s=conn.execute('SELECT * FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
+        if not s: return flash_redirect('/admin/students','Student not found.','error')
+        conn.execute('INSERT INTO point_transactions(user_id,amount,category,reason,admin_id,created_at) VALUES (?,?,?,?,?,?)',(student_id,amount,category,reason,a['id'],iso_now()))
+        sync_achievements(conn,student_id)
+        notify(conn,student_id,'Points updated',f'{amount:+d} points — {reason}')
+        audit(conn,a['id'],'points_changed',f'{s["admission_no"]}: {amount:+d} / {category} / {reason}')
+    return flash_redirect('/admin/students','Points updated successfully.')
+
+@app.get('/admin/challenges', response_class=HTMLResponse)
+def admin_challenges(request: Request):
+    require_admin(request,'challenges')
+    with connect() as conn:
+        rows=conn.execute('SELECT * FROM challenges ORDER BY id DESC').fetchall()
+        pending=conn.execute('''SELECT cp.*,c.title,u.full_name,u.admission_no FROM challenge_participations cp
+                                JOIN challenges c ON c.id=cp.challenge_id JOIN users u ON u.id=cp.user_id
+                                WHERE cp.status='pending' ORDER BY cp.id DESC''').fetchall()
+    return render(request,'admin_challenges.html',{'challenges':rows,'pending':pending})
+
+@app.post('/admin/challenges/create')
+def admin_challenge_create(request: Request,title:str=Form(...),description:str=Form(...),category:str=Form('general'),points:int=Form(0),status:str=Form('draft'),start_date:str=Form(''),end_date:str=Form(''),eligibility_class:str=Form(''),eligibility_section:str=Form('')):
+    a=require_admin(request,'challenges'); category=category if category in ALLOWED_CATEGORIES else 'general'
+    if status not in {'draft','scheduled','active','completed','expired','archived'}: status='draft'
+    if points<0 or points>10000: return flash_redirect('/admin/challenges','Challenge points must be between 0 and 10,000.','error')
+    try:
+        title=_clean_text(title,140); description=_clean_text(description,5000); eligibility_class=_clean_text(eligibility_class,40,False); eligibility_section=_clean_text(eligibility_section,40,False)
+    except ValueError as exc: return flash_redirect('/admin/challenges',str(exc),'error')
+    with connect() as conn:
+        conn.execute('''INSERT INTO challenges(title,description,category,points,start_date,end_date,status,eligibility_class,eligibility_section,created_by,created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)''',(title.strip(),description.strip(),category,points,start_date or None,end_date or None,status,eligibility_class or None,eligibility_section or None,a['id'],iso_now()))
+        audit(conn,a['id'],'challenge_created',title.strip())
+    return flash_redirect('/admin/challenges','Challenge created.')
+
+
+@app.post('/admin/challenges/{challenge_id}/edit')
+def admin_challenge_edit(request: Request,challenge_id:int,title:str=Form(...),description:str=Form(...),category:str=Form('general'),points:int=Form(0),start_date:str=Form(''),end_date:str=Form(''),eligibility_class:str=Form(''),eligibility_section:str=Form('')):
+    a=require_admin(request,'challenges'); category=category if category in ALLOWED_CATEGORIES else 'general'
+    if points<0 or points>10000: return flash_redirect('/admin/challenges','Challenge points must be between 0 and 10,000.','error')
+    try:
+        title=_clean_text(title,140); description=_clean_text(description,5000); eligibility_class=_clean_text(eligibility_class,40,False); eligibility_section=_clean_text(eligibility_section,40,False)
+    except ValueError as exc: return flash_redirect('/admin/challenges',str(exc),'error')
+    with connect() as conn:
+        conn.execute('UPDATE challenges SET title=?,description=?,category=?,points=?,start_date=?,end_date=?,eligibility_class=?,eligibility_section=? WHERE id=?',(title,description,category,points,start_date or None,end_date or None,eligibility_class or None,eligibility_section or None,challenge_id))
+        audit(conn,a['id'],'challenge_updated',f'{challenge_id}: {title.strip()}')
+    return flash_redirect('/admin/challenges','Challenge updated.')
+
+@app.post('/admin/challenges/{challenge_id}/status')
+def admin_challenge_status(request: Request,challenge_id:int,status:str=Form(...)):
+    a=require_admin(request,'challenges')
+    if status not in {'draft','scheduled','active','completed','expired','archived'}: return flash_redirect('/admin/challenges','Invalid status.','error')
+    with connect() as conn:
+        conn.execute('UPDATE challenges SET status=? WHERE id=?',(status,challenge_id)); audit(conn,a['id'],'challenge_status_changed',f'{challenge_id}->{status}')
+    return flash_redirect('/admin/challenges','Challenge status updated.')
+
+@app.post('/admin/submissions/{participation_id}/review')
+def admin_submission_review(request: Request,participation_id:int,decision:str=Form(...),review_note:str=Form('')):
+    a=require_admin(request,'challenges')
+    if decision not in {'approved','rejected'}: return flash_redirect('/admin/challenges','Invalid review decision.','error')
+    try: review_note=_clean_text(review_note,1000,False)
+    except ValueError as exc: return flash_redirect('/admin/challenges',str(exc),'error')
+    with connect() as conn:
+        cp=conn.execute('''SELECT cp.*,c.points,c.category,c.title,u.full_name FROM challenge_participations cp
+                           JOIN challenges c ON c.id=cp.challenge_id JOIN users u ON u.id=cp.user_id WHERE cp.id=?''',(participation_id,)).fetchone()
+        if not cp: return flash_redirect('/admin/challenges','Submission not found.','error')
+        if decision=='approved' and not cp['awarded']:
+            conn.execute('INSERT INTO point_transactions(user_id,amount,category,reason,challenge_id,admin_id,created_at) VALUES (?,?,?,?,?,?,?)',
+                         (cp['user_id'],cp['points'],cp['category'],f'Challenge: {cp["title"]}',cp['challenge_id'],a['id'],iso_now()))
+            sync_achievements(conn,cp['user_id'])
+            conn.execute('UPDATE challenge_participations SET status="approved",review_note=?,awarded=1,updated_at=? WHERE id=?',(review_note,iso_now(),participation_id))
+            notify(conn,cp['user_id'],'Challenge approved',f'You earned {cp["points"]} points for {cp["title"]}.')
+        else:
+            conn.execute('UPDATE challenge_participations SET status=?,review_note=?,updated_at=? WHERE id=?',(decision,review_note,iso_now(),participation_id))
+            notify(conn,cp['user_id'],'Challenge reviewed',f'Your submission for {cp["title"]} was {decision}.')
+        audit(conn,a['id'],'submission_reviewed',f'{participation_id}->{decision}')
+    return flash_redirect('/admin/challenges','Submission reviewed.')
+
+
+@app.get('/admin/achievements', response_class=HTMLResponse)
+def admin_achievements(request: Request):
+    require_admin(request,'achievements')
+    with connect() as conn:
+        rows=conn.execute('SELECT * FROM achievements ORDER BY id DESC').fetchall()
+    return render(request,'admin_achievements.html',{'achievements':rows})
+
+@app.post('/admin/achievements/create')
+def admin_achievement_create(request: Request,name:str=Form(...),description:str=Form(...),category:str=Form('overall'),points_required:int=Form(...)):
+    a=require_admin(request,'achievements')
+    if category not in {'overall'}|ALLOWED_CATEGORIES: category='overall'
+    if points_required<0 or points_required>1_000_000: return flash_redirect('/admin/achievements','Points requirement is invalid.','error')
+    try: name=_clean_text(name,120); description=_clean_text(description,1000)
+    except ValueError as exc: return flash_redirect('/admin/achievements',str(exc),'error')
+    with connect() as conn:
+        conn.execute('INSERT INTO achievements(name,description,category,points_required,status,created_at) VALUES (?,?,?,?,"active",?)',(name,description,category,points_required,iso_now()))
+        audit(conn,a['id'],'achievement_created',name.strip())

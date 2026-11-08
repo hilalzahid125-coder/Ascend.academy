@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head"><div><span class="eyebrow">AUDIT TRAIL</span><h1>Activity log</h1><p>Review important administrator actions across the system.</p></div></section>
+<section class="panel table-panel"><div class="panel-head"><div><span class="eyebrow">RECORDED ACTIONS</span><h2>Latest activity</h2></div><input class="table-search" placeholder="Search activity..." oninput="filterRows(this.value,'activityTable')"></div><table id="activityTable"><thead><tr><th>Time</th><th>Admin</th><th>Action</th><th>Details</th></tr></thead><tbody>{% for l in logs %}<tr><td>{{ l.created_at[:16].replace('T',' ') }}</td><td>{{ l.admin_name or 'System' }}</td><td>{{ l.action.replace('_',' ')|title }}</td><td>{{ l.details or '—' }}</td></tr>{% else %}<tr><td colspan="4"><div class="empty">No activity recorded yet.</div></td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

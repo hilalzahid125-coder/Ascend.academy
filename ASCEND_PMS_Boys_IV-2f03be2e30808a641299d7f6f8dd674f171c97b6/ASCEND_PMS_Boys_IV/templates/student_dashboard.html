@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="student-home-hero">
+  <div class="student-home-copy">
+    <span class="eyebrow">YOUR ASCEND</span>
+    <h1>{{ user.full_name }}</h1>
+    <p>Keep building your score, completing challenges, and moving up the school leaderboard.</p>
+    <div class="student-home-scoreline">
+      <div><span>Total points</span><strong>{{ points }}</strong></div>
+      <div><span>Overall rank</span><strong>#{{ rank }}</strong></div>
+      <div><span>Class</span><strong>{{ user.class_name or '—' }}{{ ('-' ~ user.section_name) if user.section_name else '' }}</strong></div>
+      <div><span>Unread</span><strong>{{ unread_notifications }}</strong></div>
+    </div>
+  </div>
+  <div class="student-home-identity">
+    {% if user.profile_picture_path %}<img src="{{ user.profile_picture_path }}" alt="{{ user.full_name }} profile picture">{% else %}<div class="student-home-avatar-fallback">{{ user.full_name[:1]|upper }}</div>{% endif %}
+    <span>{{ user.admission_no }}</span>
+    <a href="/profile">View profile</a>
+  </div>
+</section>
+
+<section class="home-section home-leaderboard-section">
+  <div class="home-section-head"><div><span class="eyebrow">LIVE RANKINGS</span><h2>School leaderboard</h2><p>See who is leading across ASCEND right now.</p></div></div>
+  {% if leaders %}
+  <div class="home-podium">
+    {% if leaders|length > 1 %}<article class="home-pod second"><span class="home-rank">#2</span>{% if leaders[1].profile_picture_path %}<img src="{{ leaders[1].profile_picture_path }}" alt="{{ leaders[1].full_name }}">{% else %}<div class="home-pod-fallback">{{ leaders[1].full_name[:1] }}</div>{% endif %}<strong>{{ leaders[1].full_name }}</strong><small>{{ leaders[1].class_name or '—' }} · {{ leaders[1].points }} pts</small></article>{% endif %}
+    <article class="home-pod first"><span class="home-rank">#1</span>{% if leaders[0].profile_picture_path %}<img src="{{ leaders[0].profile_picture_path }}" alt="{{ leaders[0].full_name }}">{% else %}<div class="home-pod-fallback">{{ leaders[0].full_name[:1] }}</div>{% endif %}<strong>{{ leaders[0].full_name }}</strong><small>{{ leaders[0].class_name or '—' }} · {{ leaders[0].points }} pts</small></article>
+    {% if leaders|length > 2 %}<article class="home-pod third"><span class="home-rank">#3</span>{% if leaders[2].profile_picture_path %}<img src="{{ leaders[2].profile_picture_path }}" alt="{{ leaders[2].full_name }}">{% else %}<div class="home-pod-fallback">{{ leaders[2].full_name[:1] }}</div>{% endif %}<strong>{{ leaders[2].full_name }}</strong><small>{{ leaders[2].class_name or '—' }} · {{ leaders[2].points }} pts</small></article>{% endif %}
+  </div>
+  {% else %}<div class="empty">The leaderboard will appear as students begin earning points.</div>{% endif %}
+  <a class="btn primary home-section-button" href="/leaderboards">Open full leaderboard</a>
+</section>
+
+<section class="home-section">
+  <div class="home-section-head"><div><span class="eyebrow">ACTIVE & UPCOMING</span><h2>Challenges</h2><p>Your current opportunities to earn points and take part.</p></div></div>
+  <div class="home-challenge-grid">
+    {% for c in challenges %}<article class="home-challenge category-{{ c.category }}"><div class="home-challenge-top"><span class="challenge-icon">{{ c.category[:1]|upper }}</span><span class="badge {{ c.status }}">{{ c.status }}</span></div><h3>{{ c.title }}</h3><p>{{ c.description }}</p><div class="meta"><span>{{ c.category|title }}</span><span>+{{ c.points }} pts</span>{% if c.end_date %}<span>Due {{ c.end_date }}</span>{% endif %}</div>{% if c.participation_status %}<small class="home-participation">Your status: {{ c.participation_status|title }}</small>{% endif %}</article>{% else %}<div class="empty full">No open challenges right now.</div>{% endfor %}
+  </div>
+  <a class="btn primary home-section-button" href="/challenges">View all challenges</a>
+</section>
+
+<section class="home-section">
+  <div class="home-section-head"><div><span class="eyebrow">PROGRESS</span><h2>Achievements</h2><p>Milestones that turn your progress into recognition.</p></div></div>
+  <div class="home-progress-grid">
+    {% for a in achievements_preview %}<article class="home-progress-card"><div class="home-progress-symbol">✦</div><div class="grow"><span class="eyebrow">{{ a.category|title }} · {{ a.points_required }} pts</span><h3>{{ a.name }}</h3><p>{{ a.description }}</p>{% set pct=(a.current_points*100/a.points_required)|int if a.points_required else 100 %}<div class="progress"><span style="width:{{ [100,pct]|min }}%"></span></div>{% if a.unlocked_at %}<small class="home-unlocked">Unlocked</small>{% else %}<small>{{ a.current_points }} / {{ a.points_required }} points</small>{% endif %}</div></article>{% else %}<div class="empty full">No achievements are published yet.</div>{% endfor %}
+  </div>
+  <a class="btn ghost home-section-button" href="/achievements">See all achievements</a>
+</section>
+
+<section class="home-section">
+  <div class="home-section-head"><div><span class="eyebrow">RECOGNITION</span><h2>Rewards</h2><p>See what your points can unlock next.</p></div></div>
+  <div class="home-reward-grid">
+    {% for r in rewards_preview %}<article class="home-reward-card"><span class="home-reward-star">★</span><div><span class="eyebrow">{{ r.points_required }} POINTS</span><h3>{{ r.name }}</h3><p>{{ r.description }}</p><div class="progress"><span style="width:{{ [100,(points*100/r.points_required)|int]|min if r.points_required else 100 }}%"></span></div><small>{% if r.claim_status %}Claim: {{ r.claim_status|title }}{% elif points >= r.points_required %}Ready to claim{% else %}{{ points }} / {{ r.points_required }} points{% endif %}</small></div></article>{% else %}<div class="empty full">No rewards are currently available.</div>{% endfor %}
+  </div>
+  <a class="btn ghost home-section-button" href="/rewards">Open rewards</a>
+</section>
+
+<div class="content-grid main-side home-bottom-grid">
+  <section class="panel"><div class="panel-head"><div><span class="eyebrow">RECENT</span><h2>Points activity</h2></div><a href="/profile">Full history</a></div>{% for t in transactions %}<div class="activity-row"><span class="delta {{ 'plus' if t.amount>0 else 'minus' }}">{{ '%+d'|format(t.amount) }}</span><div><strong>{{ t.reason }}</strong><small>{{ t.category|title }}</small></div></div>{% else %}<div class="empty compact">No point activity yet.</div>{% endfor %}</section>
+  <section class="panel"><div class="panel-head"><div><span class="eyebrow">SCHOOL</span><h2>Announcements</h2></div></div>{% for a in announcements %}<article class="notice"><strong>{{ a.title }}</strong><p>{{ a.body }}</p></article>{% else %}<div class="empty compact">No announcements right now.</div>{% endfor %}</section>
+</div>
+{% endblock %}

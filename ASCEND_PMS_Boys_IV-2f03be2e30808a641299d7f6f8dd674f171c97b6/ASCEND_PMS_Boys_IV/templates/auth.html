@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Create account' if mode=='register' else 'Sign in' }} · {{ settings.app_name }}{% endblock %}
+{% block auth_content %}
+<div class="auth-shell">
+  <section class="auth-showcase">
+    <div class="showcase-inner">
+      <div class="school-lockup"><img src="{{ settings.school_logo_path }}" alt="School logo"><div><span>Official student platform</span><h2>{{ settings.school_name }}</h2></div></div>
+      <div class="hero-mark"><img src="/static/app-logo.svg" alt="{{ settings.app_name }}"></div>
+      <p class="eyebrow light">WELCOME TO</p>
+      <h1>{{ settings.app_name }}</h1>
+      <p class="hero-copy">{{ settings.tagline }}. Complete challenges, earn recognition and see your progress turn into real achievement.</p>
+      <div class="feature-pills"><span>Live rankings</span><span>School challenges</span><span>Rewards</span><span>Achievements</span></div>
+      <div class="creator">{{ settings.creator_credit }}</div>
+    </div>
+  </section>
+  <section class="auth-panel">
+    <div class="auth-card">
+      <div class="mobile-brand"><img src="/static/app-logo.svg"><strong>{{ settings.app_name }}</strong></div>
+      <span class="eyebrow">{{ 'FIRST TIME HERE?' if mode=='register' else 'WELCOME BACK' }}</span>
+      <h2>{{ 'Activate your student account' if mode=='register' else 'Sign in to continue' }}</h2>
+      <p class="muted">{{ 'Use the admission number and activation code provided by the school.' if mode=='register' else 'Use your admission number and password.' }}</p>
+      {% if msg %}<div class="toast {{ 'danger' if kind=='error' else '' }}">{{ msg }}</div>{% endif %}
+      {% if mode=='register' and settings.registration_enabled!='1' %}
+      <div class="status-box"><strong>Student activation is currently closed.</strong><br><span class="muted">The administrator will open activation after the real student roster has been imported.</span></div>
+      <p class="switch-copy"><a href="/login">Return to sign in</a></p>
+      {% elif mode=='register' %}
+      <form method="post" action="/register" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>Admission number<input name="admission_no" required placeholder="A-6738" autocomplete="username"></label>
+        <label>Activation code<input name="activation_code" required placeholder="Provided by the school"></label>
+        <div class="two-col"><label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><label>Confirm password<input name="confirm_password" type="password" required minlength="8" autocomplete="new-password"></label></div>
+        <button class="btn primary wide">Create account</button>
+      </form>
+      <p class="switch-copy">Already registered? <a href="/login">Sign in</a></p>
+      {% else %}
+      <form method="post" action="/login" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>Admission number<input name="admission_no" required placeholder="A-6738" autocomplete="username"></label>
+        <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+        <button class="btn primary wide">Sign in</button>
+      </form>
+      <p class="switch-copy">First time here? <a href="/register">Activate your account</a></p>
+      {% endif %}
+      <div class="auth-help">Need help? Ask your school administrator to reset your account or issue a new activation code.</div>
+      <div class="auth-links"><a href="/">Home</a><a href="/about">About</a><a href="/privacy">Privacy</a><span>v{{ app_version }}</span></div>
+    </div>
+  </section>
+</div>
+{% endblock %}

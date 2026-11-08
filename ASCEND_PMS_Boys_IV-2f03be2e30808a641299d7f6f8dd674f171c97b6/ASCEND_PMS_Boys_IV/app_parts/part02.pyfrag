@@ -1,0 +1,149 @@
+uest.cookies.get('pms_csrf') or new_token(24)
+    context.update({'request':request,'settings':settings(),'user':current_user(request),
+                    'msg':request.query_params.get('msg'),'kind':request.query_params.get('kind','success'),
+                    'csrf_token':csrf,
+                    'is_super_admin':is_super_admin(current_user(request)),
+                    'admin_permissions':_admin_permissions(current_user(request)),
+                    'staff_permission_labels':STAFF_PERMISSION_LABELS,
+                    'app_version':APP_VERSION})
+    response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
+    if not request.cookies.get('pms_csrf'):
+        response.set_cookie('pms_csrf',csrf,httponly=False,samesite='lax',
+                            secure=os.getenv('PMS_SECURE_COOKIE','0')=='1',max_age=7*24*3600)
+    return response
+
+def total_points(conn, user_id, category=None, since=None):
+    q='SELECT COALESCE(SUM(amount),0) AS total FROM point_transactions WHERE user_id=?'; args=[user_id]
+    if category and category!='overall': q+=' AND category=?'; args.append(category)
+    if since: q+=' AND created_at>=?'; args.append(since)
+    return conn.execute(q,args).fetchone()['total']
+
+def sync_achievements(conn, user_id):
+    achievements=conn.execute('SELECT * FROM achievements WHERE status="active" ORDER BY points_required').fetchall()
+    for ach in achievements:
+        category=ach['category']
+        points=total_points(conn,user_id,None if category=='overall' else category)
+        if points >= ach['points_required']:
+            exists=conn.execute('SELECT 1 FROM student_achievements WHERE achievement_id=? AND user_id=?',(ach['id'],user_id)).fetchone()
+            if not exists:
+                conn.execute('INSERT INTO student_achievements(achievement_id,user_id,unlocked_at) VALUES (?,?,?)',(ach['id'],user_id,iso_now()))
+                notify(conn,user_id,'Achievement unlocked',f'You unlocked {ach["name"]}.')
+
+def audit(conn, admin_id, action, details=''):
+    conn.execute('INSERT INTO audit_logs(admin_id,action,details,created_at) VALUES (?,?,?,?)',
+                 (admin_id,action,details,iso_now()))
+
+def notify(conn, user_id, title, body):
+    conn.execute('INSERT INTO notifications(user_id,title,body,created_at) VALUES (?,?,?,?)',
+                 (user_id,title,body,iso_now()))
+
+@app.middleware('http')
+async def security_middleware(request: Request, call_next):
+    if request.method not in {'GET','HEAD','OPTIONS'}:
+        try:
+            length=int(request.headers.get('content-length','0') or 0)
+        except ValueError:
+            length=0
+        if length > MAX_POST_BYTES:
+            return JSONResponse({'detail':'Request too large.'}, status_code=413)
+    response = await call_next(request)
+    response.headers['X-Content-Type-Options']='nosniff'
+    response.headers['X-Frame-Options']='DENY'
+    response.headers['Referrer-Policy']='same-origin'
+    response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
+    response.headers['Content-Security-Policy']="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    if os.getenv('PMS_SECURE_COOKIE','0')=='1':
+        response.headers['Strict-Transport-Security']='max-age=31536000; includeSubDomains'
+    if request.url.path not in {'/health'}:
+        response.headers.setdefault('Cache-Control','no-store')
+    return response
+
+@app.exception_handler(401)
+async def unauth(request, exc):
+    return RedirectResponse('/login', status_code=303)
+
+@app.exception_handler(403)
+async def forbidden(request, exc):
+    return render(request,'error.html',{'code':403,'title':'Access denied','message':'You do not have permission to view this page.'},403)
+
+@app.get('/', response_class=HTMLResponse)
+def home(request: Request):
+    u=current_user(request)
+    if u:
+        return RedirectResponse('/admin' if u['role']=='admin' else '/student',303)
+    return render(request,'landing.html')
+
+@app.get('/about', response_class=HTMLResponse)
+def about_page(request: Request):
+    return render(request,'about.html')
+
+@app.get('/privacy', response_class=HTMLResponse)
+def privacy_page(request: Request):
+    return render(request,'privacy.html')
+
+@app.get('/login', response_class=HTMLResponse)
+def login_page(request: Request): return render(request,'auth.html',{'mode':'login'})
+
+@app.get('/register', response_class=HTMLResponse)
+def register_page(request: Request): return render(request,'auth.html',{'mode':'register'})
+
+@app.post('/login')
+def login(request: Request, admission_no: str=Form(...), password: str=Form(...)):
+    admission_no=admission_no.strip().upper()[:32]
+    key=_attempt_key('login',request,admission_no); ip_key=_attempt_key('login-ip',request,'*')
+    with connect() as conn:
+        if _rate_limited(conn,key,8,15) or _rate_limited(conn,ip_key,30,15):
+            return flash_redirect('/login','Too many sign-in attempts. Please wait 15 minutes and try again.','error')
+        u=conn.execute('SELECT * FROM users WHERE admission_no=?',(admission_no,)).fetchone()
+        if not u or not u['password_hash'] or not verify_password(password,u['password_hash']):
+            _record_failure(conn,key); _record_failure(conn,ip_key)
+            return flash_redirect('/login','Incorrect admission number or password.','error')
+        if u['status']!='active':
+            _record_failure(conn,key); _record_failure(conn,ip_key)
+            return flash_redirect('/login','This account is not active. Please contact the school office.','error')
+        _clear_failures(conn,key)
+        token=new_token(); conn.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)',
+            (token_hash(token),u['id'],iso_expiry(),iso_now()))
+    r=RedirectResponse('/admin' if u['role']=='admin' else '/student',303)
+    r.set_cookie('pms_session',token,httponly=True,samesite='lax',secure=os.getenv('PMS_SECURE_COOKIE','0')=='1',max_age=7*24*3600)
+    return r
+
+@app.post('/register')
+def register(request: Request, admission_no: str=Form(...), activation_code: str=Form(...), password: str=Form(...), confirm_password: str=Form(...)):
+    s=settings()
+    if s.get('registration_enabled')!='1': return flash_redirect('/register','Student registration is currently closed.','error')
+    admission_no=admission_no.strip().upper()[:32]; activation_code=activation_code.strip().upper()[:32]
+    key=_attempt_key('register',request,admission_no); ip_key=_attempt_key('register-ip',request,'*')
+    if not ADMISSION_RE.match(admission_no): return flash_redirect('/register','Use a valid admission number, for example A-6738.','error')
+    if password!=confirm_password: return flash_redirect('/register','Your passwords do not match.','error')
+    if len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password):
+        return flash_redirect('/register','Password must be 8–128 characters and include letters and numbers.','error')
+    with connect() as conn:
+        if _rate_limited(conn,key,8,15) or _rate_limited(conn,ip_key,30,15):
+            return flash_redirect('/register','Too many activation attempts. Please wait 15 minutes and try again.','error')
+        u=conn.execute('SELECT * FROM users WHERE admission_no=?',(admission_no,)).fetchone()
+        if not u or u['role']!='student' or u['claimed'] or (u['activation_code'] or '').upper()!=activation_code:
+            _record_failure(conn,key); _record_failure(conn,ip_key)
+            return flash_redirect('/register','We could not activate this account. Check the admission number and activation code, or contact the school administrator.','error')
+        if u['activation_code_expires_at'] and u['activation_code_expires_at'] < _now().isoformat():
+            _record_failure(conn,key); _record_failure(conn,ip_key)
+            return flash_redirect('/register','This activation code has expired. Ask an administrator to issue a new one.','error')
+        _clear_failures(conn,key)
+        conn.execute('UPDATE users SET password_hash=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=?',(hash_password(password),u['id']))
+        notify(conn,u['id'],'Welcome to ASCEND','Your account is active. Start completing challenges and climbing the leaderboards.')
+    return flash_redirect('/login','Account created successfully. You can now sign in.')
+
+@app.post('/logout')
+def logout(request: Request):
+    token=request.cookies.get('pms_session')
+    if token:
+        with connect() as conn: conn.execute('DELETE FROM sessions WHERE token_hash=?',(token_hash(token),))
+    r=RedirectResponse('/login',303); r.delete_cookie('pms_session'); return r
+
+@app.get('/student', response_class=HTMLResponse)
+def student_dashboard(request: Request):
+    u=require_user(request,'student')
+    with connect() as conn:
+        points=total_points(conn,u['id'])
+        rank=conn.execute('''SELECT 1+COUNT(*) rank FROM (SELECT user_id,SUM(amount) total FROM point_transactions GROUP BY user_id) x
+                             WHERE x.total > ?''',(points,)).fetchone()['rank

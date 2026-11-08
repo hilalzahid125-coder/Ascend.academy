@@ -1,0 +1,131 @@
+
+        students=conn.execute('SELECT id FROM users WHERE role="student" AND status="active"').fetchall()
+        for student in students: sync_achievements(conn,student['id'])
+    return flash_redirect('/admin/achievements','Achievement created.')
+
+@app.post('/admin/achievements/{achievement_id}/status')
+def admin_achievement_status(request: Request,achievement_id:int,status:str=Form(...)):
+    a=require_admin(request,'achievements')
+    if status not in {'active','inactive'}: return flash_redirect('/admin/achievements','Invalid status.','error')
+    with connect() as conn:
+        conn.execute('UPDATE achievements SET status=? WHERE id=?',(status,achievement_id)); audit(conn,a['id'],'achievement_status_changed',f'{achievement_id}->{status}')
+    return flash_redirect('/admin/achievements','Achievement status updated.')
+
+@app.get('/admin/rewards', response_class=HTMLResponse)
+def admin_rewards(request: Request):
+    require_admin(request,'rewards')
+    with connect() as conn:
+        rows=conn.execute('SELECT * FROM rewards ORDER BY id DESC').fetchall()
+        claims=conn.execute('''SELECT rc.*,r.name,u.full_name,u.admission_no FROM reward_claims rc JOIN rewards r ON r.id=rc.reward_id JOIN users u ON u.id=rc.user_id ORDER BY rc.id DESC''').fetchall()
+    return render(request,'admin_rewards.html',{'rewards':rows,'claims':claims})
+
+@app.post('/admin/rewards/create')
+def admin_reward_create(request: Request,name:str=Form(...),description:str=Form(...),points_required:int=Form(...),quantity:Optional[int]=Form(None)):
+    a=require_admin(request,'rewards')
+    if points_required<0 or points_required>1_000_000 or (quantity is not None and (quantity<0 or quantity>100000)): return flash_redirect('/admin/rewards','Reward values are invalid.','error')
+    try: name=_clean_text(name,120); description=_clean_text(description,1500)
+    except ValueError as exc: return flash_redirect('/admin/rewards',str(exc),'error')
+    with connect() as conn:
+        conn.execute('INSERT INTO rewards(name,description,points_required,quantity,created_at) VALUES (?,?,?,?,?)',(name,description,points_required,quantity,iso_now())); audit(conn,a['id'],'reward_created',name)
+    return flash_redirect('/admin/rewards','Reward created.')
+
+
+@app.post('/admin/rewards/{reward_id}/status')
+def admin_reward_status(request: Request,reward_id:int,status:str=Form(...)):
+    a=require_admin(request,'rewards')
+    if status not in {'active','inactive'}: return flash_redirect('/admin/rewards','Invalid status.','error')
+    with connect() as conn:
+        conn.execute('UPDATE rewards SET status=? WHERE id=?',(status,reward_id)); audit(conn,a['id'],'reward_status_changed',f'{reward_id}->{status}')
+    return flash_redirect('/admin/rewards','Reward status updated.')
+
+@app.post('/admin/reward-claims/{claim_id}/status')
+def admin_reward_claim(request: Request,claim_id:int,status:str=Form(...)):
+    a=require_admin(request,'rewards')
+    if status not in {'pending','approved','rejected','fulfilled'}: return flash_redirect('/admin/rewards','Invalid status.','error')
+    with connect() as conn:
+        row=conn.execute('SELECT * FROM reward_claims WHERE id=?',(claim_id,)).fetchone()
+        if row:
+            conn.execute('UPDATE reward_claims SET status=? WHERE id=?',(status,claim_id)); notify(conn,row['user_id'],'Reward claim updated',f'Your reward claim is now {status}.'); audit(conn,a['id'],'reward_claim_updated',f'{claim_id}->{status}')
+    return flash_redirect('/admin/rewards','Claim updated.')
+
+@app.get('/admin/announcements', response_class=HTMLResponse)
+def admin_announcements(request: Request):
+    require_admin(request,'announcements')
+    with connect() as conn: rows=conn.execute('SELECT * FROM announcements ORDER BY id DESC').fetchall()
+    return render(request,'admin_announcements.html',{'announcements':rows})
+
+@app.post('/admin/announcements/create')
+def admin_announcement_create(request: Request,title:str=Form(...),body:str=Form(...),audience:str=Form('all'),class_name:str=Form(''),section_name:str=Form('')):
+    a=require_admin(request,'announcements'); audience=audience if audience in {'all','class','section'} else 'all'
+    try:
+        title=_clean_text(title,160); body=_clean_text(body,5000); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
+    except ValueError as exc: return flash_redirect('/admin/announcements',str(exc),'error')
+    with connect() as conn:
+        conn.execute('INSERT INTO announcements(title,body,audience,class_name,section_name,status,created_by,created_at) VALUES (?,?,?,?,?,"published",?,?)',(title.strip(),body.strip(),audience,class_name or None,section_name or None,a['id'],iso_now())); audit(conn,a['id'],'announcement_published',title.strip())
+    return flash_redirect('/admin/announcements','Announcement published.')
+
+
+@app.post('/admin/announcements/{announcement_id}/status')
+def admin_announcement_status(request: Request,announcement_id:int,status:str=Form(...)):
+    a=require_admin(request,'announcements')
+    if status not in {'published','archived'}: return flash_redirect('/admin/announcements','Invalid status.','error')
+    with connect() as conn:
+        conn.execute('UPDATE announcements SET status=? WHERE id=?',(status,announcement_id)); audit(conn,a['id'],'announcement_status_changed',f'{announcement_id}->{status}')
+    return flash_redirect('/admin/announcements','Announcement updated.')
+
+@app.get('/admin/activity', response_class=HTMLResponse)
+def admin_activity(request: Request):
+    require_admin(request,'activity')
+    with connect() as conn:
+        rows=conn.execute('''SELECT l.*,u.full_name admin_name FROM audit_logs l LEFT JOIN users u ON u.id=l.admin_id ORDER BY l.id DESC LIMIT 500''').fetchall()
+    return render(request,'admin_activity.html',{'logs':rows})
+
+@app.get('/admin/settings', response_class=HTMLResponse)
+def admin_settings(request: Request):
+    require_admin(request,super_only=True); return render(request,'admin_settings.html')
+
+@app.post('/admin/settings')
+def admin_settings_save(request: Request,school_name:str=Form(...),app_name:str=Form(...),tagline:str=Form(...),creator_credit:str=Form(...),registration_enabled:Optional[str]=Form(None)):
+    a=require_admin(request,super_only=True)
+    try:
+        school_name=_clean_text(school_name,160); app_name=_clean_text(app_name,80); tagline=_clean_text(tagline,160); creator_credit=_clean_text(creator_credit,160)
+    except ValueError as exc: return flash_redirect('/admin/settings',str(exc),'error')
+    vals={'school_name':school_name,'app_name':app_name,'tagline':tagline,'creator_credit':creator_credit,'registration_enabled':'1' if registration_enabled else '0'}
+    with connect() as conn:
+        for k,v in vals.items(): conn.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(k,v))
+        audit(conn,a['id'],'settings_updated',json.dumps(vals))
+    return flash_redirect('/admin/settings','Branding and registration settings saved.')
+
+@app.post('/admin/settings/logo')
+async def admin_logo_upload(request: Request, logo: UploadFile=File(...)):
+    a=require_admin(request,super_only=True)
+    ext=Path(logo.filename or '').suffix.lower()
+    if ext not in {'.png','.jpg','.jpeg','.webp'}:
+        return flash_redirect('/admin/settings','Please upload a PNG, JPG, or WEBP image. SVG uploads are disabled for security.','error')
+    data=await logo.read()
+    if len(data)>2_000_000: return flash_redirect('/admin/settings','Logo must be under 2 MB.','error')
+    try:
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS=20_000_000
+        image=Image.open(io.BytesIO(data)); image.verify()
+        image=Image.open(io.BytesIO(data))
+        if image.width>4000 or image.height>4000: return flash_redirect('/admin/settings','Logo dimensions are too large.','error')
+        if image.mode not in {'RGB','RGBA'}: image=image.convert('RGBA')
+        out=UPLOAD_DIR/'school_logo.png'
+        image.save(out,'PNG',optimize=True)
+    except Exception:
+        return flash_redirect('/admin/settings','That file is not a valid supported image.','error')
+    with connect() as conn:
+        conn.execute('INSERT INTO settings(key,value) VALUES ("school_logo_path",?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(f'/uploads/{out.name}',)); audit(conn,a['id'],'school_logo_updated',out.name)
+    return flash_redirect('/admin/settings','School logo updated.')
+
+@app.get('/admin/launch', response_class=HTMLResponse)
+def admin_launch(request: Request):
+    require_admin(request,super_only=True)
+    with connect() as conn:
+        demos=demo_counts(conn)
+        structure=get_settings(conn).get('competition_structure_version','0')
+        student_count=conn.execute('SELECT COUNT(*) c FROM users WHERE role="student"').fetchone()['c']
+    backups=list_backups()
+    db_size=DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    upload_files=[x for x in UPLOAD_DIR.iterdir() if x.is_f

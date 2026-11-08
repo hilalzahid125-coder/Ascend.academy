@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head"><div><span class="eyebrow">COMPETE & GROW</span><h1>Challenges</h1><p>Join school challenges, submit your work and earn points after approval.</p></div></section>
+<div class="challenge-grid">{% for c in challenges %}<article class="challenge-card category-{{ c.category }}">
+<div class="challenge-card-top"><span class="category-dot"></span><span class="badge {{ c.status }}">{{ c.status }}</span></div><h2>{{ c.title }}</h2><p>{{ c.description }}</p><div class="meta spread"><span>{{ c.category|title }}</span><strong>+{{ c.points }} pts</strong></div>{% if c.end_date %}<div class="deadline">Deadline: {{ c.end_date }}</div>{% endif %}
+{% if c.status=='active' %}
+{% if not c.participation_status %}<form method="post" action="/challenges/{{ c.id }}/join"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn primary wide">Join challenge</button></form>{% endif %}
+{% if c.participation_status in ['joined','rejected'] %}<form method="post" action="/challenges/{{ c.id }}/submit" class="stack small-gap"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><textarea name="submission_text" required placeholder="Describe your submission, result or proof...">{{ c.submission_text or '' }}</textarea><button class="btn primary wide">{{ 'Resubmit' if c.participation_status=='rejected' else 'Submit for review' }}</button></form>{% elif c.participation_status %}<div class="status-box">Submission status: <strong>{{ c.participation_status|title }}</strong></div>{% endif %}
+{% else %}<div class="status-box">This challenge is {{ c.status }}.</div>{% endif %}
+</article>{% else %}<div class="empty full"><strong>No challenges available</strong><p>Check back when your school publishes the next one.</p></div>{% endfor %}</div>
+{% endblock %}

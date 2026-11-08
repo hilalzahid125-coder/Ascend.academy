@@ -1,0 +1,17 @@
+ASCEND — PMS Boys IV v1.2
+=========================
+
+This package is the production-hardened build with student profile pictures,
+Super Admin / Staff Admin delegation, bulk roster onboarding and full backups.
+
+Railway:
+1. Keep the persistent volume mounted at /data.
+2. Deploy this code from GitHub.
+3. Keep PMS_SECURE_COOKIE=1 and PMS_DATA_DIR=/data.
+4. Sign in with the existing main admin; it becomes the protected Super Admin.
+5. Use "Admin team" to create trusted Staff Admins and choose their permissions.
+6. Use "Launch & backups" for production preparation and full ZIP backups.
+7. Bulk-import the real student roster when available.
+8. Enable student activation only when the roster and activation codes are ready.
+
+Do not run a demo seed script in production; demo seed files are intentionally not included.

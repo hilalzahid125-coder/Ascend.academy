@@ -1,0 +1,227 @@
+import os, re, json, sqlite3, secrets, csv, io, asyncio, hmac
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Optional, List
+
+from fastapi import FastAPI, Request, Form, HTTPException, UploadFile, File, Depends
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from db import connect, init_db, get_settings, ensure_admin, DB_PATH
+from security import hash_password, verify_password, new_token, new_activation_code, token_hash, stable_hash, iso_now, iso_expiry, activation_expiry
+
+from backups import create_backup, list_backups, prune_backups, run_scheduled_backup_if_due, BACKUP_DIR
+from competition import install_starter_structure, demo_counts, purge_known_demo_content
+
+BASE_DIR = Path(__file__).resolve().parent
+VERSION_FILE = BASE_DIR / 'VERSION'
+APP_VERSION = VERSION_FILE.read_text(encoding='utf-8').strip() if VERSION_FILE.exists() else '1.3.0'
+DATA_DIR = Path(os.getenv('PMS_DATA_DIR', BASE_DIR))
+UPLOAD_DIR = DATA_DIR / 'uploads'
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+async def csrf_protect(request: Request):
+    if request.method in {'GET','HEAD','OPTIONS','TRACE'}:
+        return
+    cookie = request.cookies.get('pms_csrf') or ''
+    try:
+        form = await request.form()
+        supplied = str(form.get('csrf_token') or '')
+    except Exception:
+        supplied = ''
+    if not cookie or not supplied or not hmac.compare_digest(cookie, supplied):
+        raise HTTPException(status_code=403, detail='Security token expired. Refresh the page and try again.')
+
+
+async def _backup_loop():
+    while True:
+        try:
+            run_scheduled_backup_if_due()
+        except Exception:
+            pass
+        await asyncio.sleep(60 * 60)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    admin_pass = os.getenv('PMS_ADMIN_PASSWORD')
+    if admin_pass:
+        ensure_admin(os.getenv('PMS_ADMIN_ID','ADMIN-0001'), os.getenv('PMS_ADMIN_NAME','School Administrator'), admin_pass)
+    try:
+        run_scheduled_backup_if_due()
+    except Exception:
+        pass
+    task = asyncio.create_task(_backup_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+app = FastAPI(title='ASCEND', lifespan=lifespan, dependencies=[Depends(csrf_protect)])
+app.mount('/static', StaticFiles(directory=BASE_DIR / 'static'), name='static')
+app.mount('/uploads', StaticFiles(directory=UPLOAD_DIR), name='uploads')
+templates = Jinja2Templates(directory=str(BASE_DIR / 'templates'))
+
+ADMISSION_RE = re.compile(r'^[A-Z]{1,4}-\d{3,6}$')
+ADMIN_ID_RE = re.compile(r'^[A-Z][A-Z0-9]{1,15}-[A-Z0-9]{3,12}$')
+ALLOWED_CATEGORIES = {'general','academic','sports','character','activity'}
+STAFF_PERMISSION_LABELS = {
+    'students':'Students & points',
+    'challenges':'Challenges & submissions',
+    'achievements':'Achievements',
+    'rewards':'Rewards',
+    'announcements':'Announcements',
+    'activity':'Activity log',
+}
+DEFAULT_STAFF_PERMISSIONS = set(STAFF_PERMISSION_LABELS)
+MAX_POST_BYTES = 5_000_000
+
+
+def _now(): return datetime.now(timezone.utc)
+
+def _client_ip(request: Request):
+    forwarded = request.headers.get('x-forwarded-for','')
+    if forwarded and os.getenv('PMS_TRUST_PROXY_HEADERS','1') == '1':
+        return forwarded.split(',')[0].strip()[:80]
+    return (request.client.host if request.client else 'unknown')[:80]
+
+def _attempt_key(kind: str, request: Request, identifier: str):
+    return stable_hash(f'{kind}|{_client_ip(request)}|{identifier.upper().strip()}')
+
+def _rate_limited(conn, key: str, limit: int=8, minutes: int=15):
+    cutoff=(_now()-timedelta(minutes=minutes)).isoformat()
+    conn.execute('DELETE FROM auth_attempts WHERE created_at<?',(cutoff,))
+    return conn.execute('SELECT COUNT(*) c FROM auth_attempts WHERE attempt_key=? AND created_at>=?',(key,cutoff)).fetchone()['c'] >= limit
+
+def _record_failure(conn, key: str):
+    conn.execute('INSERT INTO auth_attempts(attempt_key,created_at) VALUES (?,?)',(key,iso_now()))
+
+def _clear_failures(conn, key: str):
+    conn.execute('DELETE FROM auth_attempts WHERE attempt_key=?',(key,))
+
+def _clean_text(value: str, max_len: int, required: bool=True):
+    value=(value or '').strip()
+    if required and not value:
+        raise ValueError('A required field was empty.')
+    if len(value)>max_len:
+        raise ValueError(f'Text is too long (maximum {max_len} characters).')
+    return value
+
+def _csv_safe(value):
+    text=str(value or '')
+    if text.startswith(('=','+','-','@')):
+        return "'"+text
+    return text
+
+def _normalize_header(value):
+    return re.sub(r'[^a-z0-9]+','_',str(value or '').strip().lower()).strip('_')
+
+def _parse_roster_bytes(filename: str, data: bytes):
+    ext=Path(filename or '').suffix.lower()
+    rows=[]
+    if ext=='.csv':
+        text=data.decode('utf-8-sig')
+        reader=csv.DictReader(io.StringIO(text))
+        rows=[dict(r) for r in reader]
+    elif ext=='.xlsx':
+        from openpyxl import load_workbook
+        wb=load_workbook(io.BytesIO(data),read_only=True,data_only=True)
+        ws=wb.active
+        values=ws.iter_rows(values_only=True)
+        try: headers=[str(x or '') for x in next(values)]
+        except StopIteration: return []
+        for vals in values:
+            rows.append({headers[i]:(vals[i] if i<len(vals) else '') for i in range(len(headers))})
+    else:
+        raise ValueError('Upload a CSV or XLSX file.')
+    parsed=[]
+    aliases={
+      'admission_no':{'admission_no','admission_number','admission','admission_id','student_id'},
+      'full_name':{'full_name','name','student_name','student'},
+      'class_name':{'class','class_name','grade'},
+      'section_name':{'section','section_name'},
+    }
+    for source in rows:
+        norm={_normalize_header(k):v for k,v in source.items()}
+        out={}
+        for target,names in aliases.items():
+            out[target]=next((norm[n] for n in names if n in norm), '')
+        parsed.append(out)
+    return parsed
+
+
+def settings():
+    with connect() as conn:
+        return get_settings(conn)
+
+def flash_redirect(path: str, msg: str, kind: str='success'):
+    from urllib.parse import quote
+    return RedirectResponse(f'{path}?msg={quote(msg)}&kind={kind}', status_code=303)
+
+def current_user(request: Request):
+    token = request.cookies.get('pms_session')
+    if not token: return None
+    with connect() as conn:
+        row = conn.execute('''SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
+                              WHERE s.token_hash=? AND s.expires_at>?''',
+                           (token_hash(token), _now().isoformat())).fetchone()
+        return row
+
+def require_user(request: Request, role: Optional[str]=None):
+    user = current_user(request)
+    if not user: raise HTTPException(status_code=401)
+    if role and user['role'] != role: raise HTTPException(status_code=403)
+    if user['status'] != 'active': raise HTTPException(status_code=403)
+    return user
+
+
+def _admin_permissions(user):
+    if not user or user['role']!='admin': return set()
+    if user['admin_level']=='super': return set(STAFF_PERMISSION_LABELS)
+    raw=user['admin_permissions'] or ''
+    if not raw: return set(DEFAULT_STAFF_PERMISSIONS)
+    try:
+        values=json.loads(raw)
+        return {str(v) for v in values if str(v) in STAFF_PERMISSION_LABELS}
+    except Exception:
+        return set(DEFAULT_STAFF_PERMISSIONS)
+
+def require_admin(request: Request, permission: Optional[str]=None, super_only: bool=False):
+    user=require_user(request,'admin')
+    if user['admin_level']=='super': return user
+    if super_only: raise HTTPException(status_code=403)
+    if permission and permission not in _admin_permissions(user): raise HTTPException(status_code=403)
+    return user
+
+def is_super_admin(user):
+    return bool(user and user['role']=='admin' and user['admin_level']=='super')
+
+def _validate_password_strength(password: str):
+    return 12 <= len(password) <= 128 and bool(re.search(r'[A-Za-z]',password)) and bool(re.search(r'\d',password))
+
+def _save_profile_picture(data: bytes, user_id: int):
+    if len(data)>2_000_000:
+        raise ValueError('Profile photo must be under 2 MB.')
+    try:
+        from PIL import Image, ImageOps
+        Image.MAX_IMAGE_PIXELS=20_000_000
+        probe=Image.open(io.BytesIO(data)); probe.verify()
+        image=Image.open(io.BytesIO(data))
+        if image.width>4000 or image.height>4000:
+            raise ValueError('Profile photo dimensions are too large.')
+        image=ImageOps.exif_transpose(image).convert('RGB')
+        image=ImageOps.fit(image,(512,512),method=Image.Resampling.LANCZOS)
+        out=UPLOAD_DIR/f'profile_{user_id}.webp'
+        image.save(out,'WEBP',quality=88,method=6)
+        return f'/uploads/{out.name}'
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError('That file is not a valid supported image.')
+
+def render(request: Request, name: str, context=None, status_code=200):
+    context = context or {}
+    csrf = req

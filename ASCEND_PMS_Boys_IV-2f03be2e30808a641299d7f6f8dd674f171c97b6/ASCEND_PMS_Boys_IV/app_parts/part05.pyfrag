@@ -1,0 +1,193 @@
+(request: Request):
+    a=require_admin(request)
+    if is_super_admin(a):
+        return a
+    if not ({'students','challenges'} & _admin_permissions(a)):
+        raise HTTPException(status_code=403)
+    return a
+
+@app.get('/admin/reports', response_class=HTMLResponse)
+def admin_reports(request: Request):
+    a=_require_reports_access(request)
+    perms=_admin_permissions(a)
+    with connect() as conn:
+        stats={
+            'students':conn.execute('SELECT COUNT(*) c FROM users WHERE role="student"').fetchone()['c'],
+            'active_students':conn.execute('SELECT COUNT(*) c FROM users WHERE role="student" AND status="active"').fetchone()['c'],
+            'points':conn.execute('SELECT COALESCE(SUM(amount),0) c FROM point_transactions').fetchone()['c'],
+            'participations':conn.execute('SELECT COUNT(*) c FROM challenge_participations').fetchone()['c'],
+            'pending':conn.execute('SELECT COUNT(*) c FROM challenge_participations WHERE status="pending"').fetchone()['c'],
+        }
+        top=conn.execute('''SELECT u.full_name,u.admission_no,u.class_name,u.section_name,COALESCE(SUM(p.amount),0) points
+                            FROM users u LEFT JOIN point_transactions p ON p.user_id=u.id
+                            WHERE u.role='student' GROUP BY u.id ORDER BY points DESC,u.full_name LIMIT 8''').fetchall()
+    return render(request,'admin_reports.html',{'stats':stats,'top':top,'report_permissions':perms})
+
+@app.get('/admin/reports/students.csv')
+def admin_students_report_csv(request: Request):
+    require_admin(request,'students')
+    with connect() as conn:
+        rows=conn.execute('''SELECT u.admission_no,u.full_name,u.class_name,u.section_name,u.status,u.claimed,
+            COALESCE(SUM(p.amount),0) total_points,
+            COALESCE(SUM(CASE WHEN p.category='academic' THEN p.amount ELSE 0 END),0) academic_points,
+            COALESCE(SUM(CASE WHEN p.category='sports' THEN p.amount ELSE 0 END),0) sports_points,
+            COALESCE(SUM(CASE WHEN p.category='character' THEN p.amount ELSE 0 END),0) character_points,
+            COALESCE(SUM(CASE WHEN p.category='activity' THEN p.amount ELSE 0 END),0) activity_points
+            FROM users u LEFT JOIN point_transactions p ON p.user_id=u.id
+            WHERE u.role='student' GROUP BY u.id ORDER BY total_points DESC,u.full_name''').fetchall()
+    out=io.StringIO(); w=csv.writer(out)
+    w.writerow(['Admission Number','Full Name','Class','Section','Account Status','Activated','Total Points','Academic','Sports','Character','Activity'])
+    for r in rows:
+        w.writerow([_csv_safe(r['admission_no']),_csv_safe(r['full_name']),_csv_safe(r['class_name']),_csv_safe(r['section_name']),
+                    _csv_safe(r['status']),'Yes' if r['claimed'] else 'No',r['total_points'],r['academic_points'],r['sports_points'],r['character_points'],r['activity_points']])
+    return Response(out.getvalue(),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="ascend_student_points_report.csv"'})
+
+@app.get('/admin/reports/challenges.csv')
+def admin_challenges_report_csv(request: Request):
+    require_admin(request,'challenges')
+    with connect() as conn:
+        rows=conn.execute('''SELECT c.title,c.category,c.status challenge_status,c.points,u.admission_no,u.full_name,u.class_name,u.section_name,
+                                    cp.status participation_status,cp.awarded,cp.created_at,cp.updated_at
+                             FROM challenge_participations cp
+                             JOIN challenges c ON c.id=cp.challenge_id JOIN users u ON u.id=cp.user_id
+                             ORDER BY c.id DESC,cp.id DESC''').fetchall()
+    out=io.StringIO(); w=csv.writer(out)
+    w.writerow(['Challenge','Category','Challenge Status','Points','Admission Number','Student','Class','Section','Participation Status','Points Awarded','Joined At','Updated At'])
+    for r in rows:
+        w.writerow([_csv_safe(r['title']),_csv_safe(r['category']),_csv_safe(r['challenge_status']),r['points'],_csv_safe(r['admission_no']),
+                    _csv_safe(r['full_name']),_csv_safe(r['class_name']),_csv_safe(r['section_name']),_csv_safe(r['participation_status']),
+                    'Yes' if r['awarded'] else 'No',_csv_safe(r['created_at']),_csv_safe(r['updated_at'])])
+    return Response(out.getvalue(),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="ascend_challenge_report.csv"'})
+
+@app.get('/admin/students', response_class=HTMLResponse)
+def admin_students(request: Request):
+    require_admin(request,'students')
+    with connect() as conn:
+        rows=conn.execute('''SELECT u.*,COALESCE(SUM(p.amount),0) points FROM users u LEFT JOIN point_transactions p ON p.user_id=u.id
+                             WHERE u.role='student' GROUP BY u.id ORDER BY u.id DESC''').fetchall()
+    return render(request,'admin_students.html',{'students':rows})
+
+@app.get('/admin/students/import-template.csv')
+def admin_student_import_template(request: Request):
+    require_admin(request,'students')
+    content='Admission Number,Full Name,Class,Section\\nA-7001,Student Name,10,A\\n'
+    return Response(content,media_type='text/csv',headers={'Content-Disposition':'attachment; filename="ascend_student_import_template.csv"'})
+
+@app.get('/admin/students/activation-codes.csv')
+def admin_activation_codes_export(request: Request):
+    require_admin(request,'students')
+    with connect() as conn:
+        rows=conn.execute('''SELECT admission_no,full_name,class_name,section_name,activation_code,activation_code_expires_at
+                             FROM users WHERE role='student' AND claimed=0 AND activation_code IS NOT NULL ORDER BY class_name,section_name,full_name''').fetchall()
+    out=io.StringIO(); w=csv.writer(out)
+    w.writerow(['Admission Number','Full Name','Class','Section','Activation Code','Expires At'])
+    for r in rows:
+        w.writerow([_csv_safe(r['admission_no']),_csv_safe(r['full_name']),_csv_safe(r['class_name']),_csv_safe(r['section_name']),_csv_safe(r['activation_code']),_csv_safe(r['activation_code_expires_at'])])
+    return Response(out.getvalue(),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="ascend_activation_codes.csv"'})
+
+@app.post('/admin/students/import')
+async def admin_students_import(request: Request, roster: UploadFile=File(...)):
+    a=require_admin(request,'students')
+    data=await roster.read()
+    if len(data)>2_500_000:
+        return flash_redirect('/admin/students','Roster file must be under 2.5 MB.','error')
+    try:
+        source_rows=_parse_roster_bytes(roster.filename or '',data)
+    except Exception as exc:
+        return flash_redirect('/admin/students',f'Could not read roster: {str(exc)[:160]}','error')
+    if not source_rows:
+        return flash_redirect('/admin/students','The roster file contained no student rows.','error')
+    if len(source_rows)>2500:
+        return flash_redirect('/admin/students','Import is limited to 2,500 students at a time.','error')
+    created=[]; errors=[]; seen=set()
+    with connect() as conn:
+        existing={r['admission_no'] for r in conn.execute('SELECT admission_no FROM users').fetchall()}
+        for idx,row in enumerate(source_rows,start=2):
+            adm=str(row.get('admission_no') or '').strip().upper()
+            name=str(row.get('full_name') or '').strip()
+            cl=str(row.get('class_name') or '').strip()
+            sec=str(row.get('section_name') or '').strip()
+            if not ADMISSION_RE.match(adm):
+                errors.append(f'Row {idx}: invalid admission number {adm or "(blank)"}.'); continue
+            if not name or len(name)>120:
+                errors.append(f'Row {idx}: missing or invalid student name.'); continue
+            if len(cl)>40 or len(sec)>40:
+                errors.append(f'Row {idx}: class or section is too long.'); continue
+            if adm in existing or adm in seen:
+                errors.append(f'Row {idx}: {adm} already exists; skipped.'); continue
+            code=new_activation_code(); expiry=activation_expiry()
+            conn.execute('''INSERT INTO users(admission_no,full_name,role,status,class_name,section_name,activation_code,activation_code_expires_at,claimed,created_at)
+                            VALUES (?,?,'student','unclaimed',?,?,?,?,0,?)''',(adm,name,cl,sec,code,expiry,iso_now()))
+            created.append({'admission_no':adm,'full_name':name,'class_name':cl,'section_name':sec,'activation_code':code,'expires_at':expiry})
+            seen.add(adm)
+        audit(conn,a['id'],'student_bulk_import',f'created={len(created)}, skipped={len(errors)}')
+    return render(request,'admin_import_result.html',{'created':created[:200],'created_count':len(created),'errors':errors[:100],'error_count':len(errors)})
+
+@app.post('/admin/students/create')
+def admin_student_create(request: Request, admission_no:str=Form(...), full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form('')):
+    a=require_admin(request,'students'); admission_no=admission_no.strip().upper()
+    if not ADMISSION_RE.match(admission_no): return flash_redirect('/admin/students','Admission number format is invalid.','error')
+    code=new_activation_code()
+    try:
+        with connect() as conn:
+            conn.execute('''INSERT INTO users(admission_no,full_name,role,status,class_name,section_name,activation_code,activation_code_expires_at,claimed,created_at)
+                            VALUES (?,?,"student","unclaimed",?,?,?,?,0,?)''',(admission_no,_clean_text(full_name,120),_clean_text(class_name,40,False),_clean_text(section_name,40,False),code,activation_expiry(),iso_now()))
+            audit(conn,a['id'],'student_created',admission_no)
+        return flash_redirect('/admin/students',f'Student added. Activation code: {code}')
+    except sqlite3.IntegrityError:
+        return flash_redirect('/admin/students','That admission number already exists.','error')
+
+
+@app.post('/admin/students/{student_id}/edit')
+def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form('')):
+    a=require_admin(request,'students')
+    try:
+        full_name=_clean_text(full_name,120); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
+    except ValueError as exc: return flash_redirect('/admin/students',str(exc),'error')
+    with connect() as conn:
+        conn.execute('UPDATE users SET full_name=?,class_name=?,section_name=? WHERE id=? AND role="student"',(full_name,class_name,section_name,student_id))
+        audit(conn,a['id'],'student_updated',f'{student_id}: {full_name.strip()}')
+    return flash_redirect('/admin/students','Student details updated.')
+
+@app.post('/admin/students/{student_id}/photo')
+async def admin_student_photo(request: Request, student_id:int, photo:UploadFile=File(...)):
+    a=require_admin(request,'students')
+    ext=Path(photo.filename or '').suffix.lower()
+    if ext not in {'.png','.jpg','.jpeg','.webp'}: return flash_redirect('/admin/students','Please upload a PNG, JPG, or WEBP image.','error')
+    with connect() as conn:
+        student=conn.execute('SELECT id,admission_no FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
+    if not student: return flash_redirect('/admin/students','Student not found.','error')
+    try: path=_save_profile_picture(await photo.read(),student_id)
+    except ValueError as exc: return flash_redirect('/admin/students',str(exc),'error')
+    with connect() as conn:
+        conn.execute('UPDATE users SET profile_picture_path=? WHERE id=?',(path,student_id)); audit(conn,a['id'],'student_profile_photo_updated',student['admission_no'])
+    return flash_redirect('/admin/students','Student profile picture updated.')
+
+@app.post('/admin/students/{student_id}/photo/remove')
+def admin_student_photo_remove(request: Request, student_id:int):
+    a=require_admin(request,'students')
+    with connect() as conn:
+        student=conn.execute('SELECT id,admission_no FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
+        if not student: return flash_redirect('/admin/students','Student not found.','error')
+        conn.execute('UPDATE users SET profile_picture_path=NULL WHERE id=?',(student_id,)); audit(conn,a['id'],'student_profile_photo_removed',student['admission_no'])
+    path=UPLOAD_DIR/f'profile_{student_id}.webp'
+    if path.exists():
+        try: path.unlink()
+        except OSError: pass
+    return flash_redirect('/admin/students','Student profile picture removed.')
+
+@app.post('/admin/students/{student_id}/status')
+def admin_student_status(request: Request, student_id:int, status:str=Form(...)):
+    a=require_admin(request,'students')
+    if status not in {'active','disabled','unclaimed'}: return flash_redirect('/admin/students','Invalid status.','error')
+    with connect() as conn:
+        conn.execute('UPDATE users SET status=? WHERE id=? AND role="student"',(status,student_id))
+        if status!='active': conn.execute('DELETE FROM sessions WHERE user_id=?',(student_id,))
+        audit(conn,a['id'],'student_status_changed',f'{student_id}->{status}')
+    return flash_redirect('/admin/students','Student status updated.')
+
+@app.post('/admin/students/{student_id}/reset')
+def admin_student_reset(request: Request, student_id:int):
+    a=require_admin(request,'students'); code=new_activation_code()
+    with connect() as conn:
+        conn.execute
