@@ -8,8 +8,7 @@ uest.cookies.get('pms_csrf') or new_token(24)
                     'app_version':APP_VERSION})
     response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
     if not request.cookies.get('pms_csrf'):
-        response.set_cookie('pms_csrf',csrf,httponly=False,samesite='lax',
-                            secure=os.getenv('PMS_SECURE_COOKIE','0')=='1',max_age=7*24*3600)
+        set_app_cookie(response,'pms_csrf',csrf)
     return response
 
 def total_points(conn, user_id, category=None, since=None):
@@ -26,8 +25,9 @@ def sync_achievements(conn, user_id):
         if points >= ach['points_required']:
             exists=conn.execute('SELECT 1 FROM student_achievements WHERE achievement_id=? AND user_id=?',(ach['id'],user_id)).fetchone()
             if not exists:
-                conn.execute('INSERT INTO student_achievements(achievement_id,user_id,unlocked_at) VALUES (?,?,?)',(ach['id'],user_id,iso_now()))
-                notify(conn,user_id,'Achievement unlocked',f'You unlocked {ach["name"]}.')
+                created=conn.execute('INSERT OR IGNORE INTO student_achievements(achievement_id,user_id,unlocked_at) VALUES (?,?,?)',(ach['id'],user_id,iso_now()))
+                if created.rowcount:
+                    notify(conn,user_id,'Achievement unlocked',f'You unlocked {ach["name"]}.')
 
 def audit(conn, admin_id, action, details=''):
     conn.execute('INSERT INTO audit_logs(admin_id,action,details,created_at) VALUES (?,?,?,?)',
@@ -64,6 +64,11 @@ async def unauth(request, exc):
 
 @app.exception_handler(403)
 async def forbidden(request, exc):
+    if exc.detail == 'Security token expired. Refresh the page and try again.':
+        message = 'Your security session expired or cookies are unavailable. Refresh the sign-in page and try again.'
+        if request.url.path == '/register/academy':
+            return JSONResponse({'detail': message}, status_code=403)
+        return render(request,'error.html',{'code':403,'title':'Security session expired','message':message},403)
     return render(request,'error.html',{'code':403,'title':'Access denied','message':'You do not have permission to view this page.'},403)
 
 @app.get('/', response_class=HTMLResponse)
@@ -85,7 +90,7 @@ def privacy_page(request: Request):
 def login_page(request: Request): return render(request,'auth.html',{'mode':'login'})
 
 @app.get('/register', response_class=HTMLResponse)
-def register_page(request: Request): return render(request,'auth.html',{'mode':'register'})
+def register_page(request: Request): return render(request,'academy_signup.html')
 
 @app.post('/login')
 def login(request: Request, admission_no: str=Form(...), password: str=Form(...)):
@@ -105,7 +110,7 @@ def login(request: Request, admission_no: str=Form(...), password: str=Form(...)
         token=new_token(); conn.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)',
             (token_hash(token),u['id'],iso_expiry(),iso_now()))
     r=RedirectResponse('/admin' if u['role']=='admin' else '/student',303)
-    r.set_cookie('pms_session',token,httponly=True,samesite='lax',secure=os.getenv('PMS_SECURE_COOKIE','0')=='1',max_age=7*24*3600)
+    set_app_cookie(r,'pms_session',token,httponly=True)
     return r
 
 @app.post('/register')
@@ -119,10 +124,11 @@ def register(request: Request, admission_no: str=Form(...), activation_code: str
     if len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password):
         return flash_redirect('/register','Password must be 8–128 characters and include letters and numbers.','error')
     with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         if _rate_limited(conn,key,8,15) or _rate_limited(conn,ip_key,30,15):
             return flash_redirect('/register','Too many activation attempts. Please wait 15 minutes and try again.','error')
         u=conn.execute('SELECT * FROM users WHERE admission_no=?',(admission_no,)).fetchone()
-        if not u or u['role']!='student' or u['claimed'] or (u['activation_code'] or '').upper()!=activation_code:
+        if not u or u['role']!='student' or u['status']!='unclaimed' or u['claimed'] or not u['activation_code'] or not hmac.compare_digest(u['activation_code'].upper().encode('utf-8'),activation_code.encode('utf-8')):
             _record_failure(conn,key); _record_failure(conn,ip_key)
             return flash_redirect('/register','We could not activate this account. Check the admission number and activation code, or contact the school administrator.','error')
         if u['activation_code_expires_at'] and u['activation_code_expires_at'] < _now().isoformat():
@@ -133,12 +139,80 @@ def register(request: Request, admission_no: str=Form(...), activation_code: str
         notify(conn,u['id'],'Welcome to ASCEND','Your account is active. Start completing challenges and climbing the leaderboards.')
     return flash_redirect('/login','Account created successfully. You can now sign in.')
 
+@app.post('/register/academy')
+def academy_register(request: Request, profile: str=Form(...)):
+    def fail(message, status=400):
+        return JSONResponse({'detail': message}, status_code=status)
+
+    if settings().get('registration_enabled') != '1':
+        return fail('Student registration is currently closed.')
+    try:
+        data = json.loads(profile)
+        if not isinstance(data, dict): raise ValueError()
+        required = ('fullName', 'email', 'gender', 'dob', 'guardianName', 'guardianPhone',
+                    'country', 'province', 'program', 'schoolRegion', 'schoolType', 'grade',
+                    'admissionNo', 'activationCode', 'password', 'confirmPassword')
+        optional = ('phone', 'countryCode', 'section')
+        for name in required + optional:
+            value = data.get(name, '')
+            if not isinstance(value, str) or len(value) > (128 if name in ('password', 'confirmPassword') else 200):
+                raise ValueError()
+            if name in required and not value.strip(): raise ValueError()
+        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', data['email'].strip()): raise ValueError()
+        dob = datetime.strptime(data['dob'], '%Y-%m-%d').date()
+        if dob > _now().date(): raise ValueError()
+        if data['gender'] not in ('Female', 'Male', 'Non-binary', 'Prefer not to say'): raise ValueError()
+        if data['schoolType'] not in ('Public', 'Private', 'International', 'Cambridge Centre'): raise ValueError()
+        grades = {'O-Level': ('O-Level - Grade 9', 'O-Level - Grade 10', 'O-Level - Grade 11'),
+                  'A-Level': ('A-Level - AS (Grade 12)', 'A-Level - A2 (Grade 13)')}
+        if data['program'] not in grades or data['grade'] not in grades[data['program']]: raise ValueError()
+        subjects = data.get('subjects')
+        if not isinstance(subjects, list) or not subjects or any(x not in ('Maths', 'Computer Science') for x in subjects): raise ValueError()
+        if data.get('terms') is not True: raise ValueError()
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return fail('Please check your registration details and try again.')
+    admission_no = data['admissionNo'].strip().upper()
+    code = data['activationCode'].strip().upper()
+    password = data['password']
+    if not ADMISSION_RE.fullmatch(admission_no):
+        return fail('Use a valid admission number, for example A-6738.')
+    if password != data['confirmPassword']:
+        return fail('Your passwords do not match.')
+    if len(password) < 8 or not re.search(r'[A-Za-z]', password) or not re.search(r'\d', password):
+        return fail('Password must be 8–128 characters and include letters and numbers.')
+    key = _attempt_key('register', request, admission_no)
+    ip_key = _attempt_key('register-ip', request, '*')
+    with connect() as conn:
+        # Serialize code redemption so two requests cannot activate the same account.
+        conn.execute('BEGIN IMMEDIATE')
+        if _rate_limited(conn, key, 8, 15) or _rate_limited(conn, ip_key, 30, 15):
+            return fail('Too many activation attempts. Please wait 15 minutes and try again.', 429)
+        u = conn.execute('SELECT * FROM users WHERE admission_no=?', (admission_no,)).fetchone()
+        if not u or u['role'] != 'student' or u['status'] != 'unclaimed' or u['claimed'] or not u['activation_code'] or not hmac.compare_digest(u['activation_code'].upper().encode('utf-8'), code.encode('utf-8')):
+            _record_failure(conn, key); _record_failure(conn, ip_key)
+            return fail('We could not activate this account. Check the admission number and activation code, or contact the school administrator.')
+        if u['activation_code_expires_at'] and u['activation_code_expires_at'] < _now().isoformat():
+            _record_failure(conn, key); _record_failure(conn, ip_key)
+            return fail('This activation code has expired. Ask an administrator to issue a new one.')
+        _clear_failures(conn, key)
+        conn.execute('UPDATE users SET password_hash=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=?', (hash_password(password), u['id']))
+        # Keep submitted profile details separately from the school-managed student record.
+        saved = {name: data.get(name, '').strip() for name in ('fullName', 'email', 'phone', 'countryCode', 'gender', 'dob', 'guardianName', 'guardianPhone', 'country', 'province', 'program', 'schoolRegion', 'schoolType', 'grade', 'section')}
+        saved['subjects'] = subjects
+        conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET profile_json=excluded.profile_json,created_at=excluded.created_at', (u['id'], json.dumps(saved), iso_now()))
+        notify(conn, u['id'], 'Welcome to ASCEND', 'Your account is active. Start completing challenges and climbing the leaderboards.')
+        token = new_token()
+        conn.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)', (token_hash(token), u['id'], iso_expiry(), iso_now()))
+    response = JSONResponse({'redirect': '/student'})
+    set_app_cookie(response,'pms_session',token,httponly=True)
+    return response
+
 @app.post('/logout')
 def logout(request: Request):
     token=request.cookies.get('pms_session')
     if token:
         with connect() as conn: conn.execute('DELETE FROM sessions WHERE token_hash=?',(token_hash(token),))
-    r=RedirectResponse('/login',303); r.delete_cookie('pms_session'); return r
+    r=RedirectResponse('/login',303); set_app_cookie(r,'pms_session','',httponly=True,max_age=0); return r
 
 @app.get('/student', response_class=HTMLResponse)
 def student_dashboard(request: Request):

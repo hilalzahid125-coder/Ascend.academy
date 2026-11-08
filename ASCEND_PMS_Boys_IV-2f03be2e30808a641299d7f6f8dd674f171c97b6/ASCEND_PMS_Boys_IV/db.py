@@ -4,11 +4,26 @@ from contextlib import contextmanager
 from pathlib import Path
 from security import hash_password, iso_now
 
+# Fail closed on Vercel: SQLite and temporary files are not persistent.
+DATABASE_URL = os.getenv('PMS_DATABASE_URL', '')
+if os.getenv('VERCEL') == '1' and not DATABASE_URL:
+    raise RuntimeError('ASCEND on Vercel requires PMS_DATABASE_URL; SQLite is not persistent.')
+if os.getenv('VERCEL') == '1':
+    os.environ.setdefault('PMS_SECURE_COOKIE', '1')
+    if os.getenv('PMS_SECURE_COOKIE') != '1':
+        raise RuntimeError('ASCEND on Vercel requires secure cookies.')
+
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.getenv('PMS_DATA_DIR', BASE_DIR))
+DATA_DIR = Path(os.getenv('PMS_DATA_DIR', '/tmp/ascend' if os.getenv('VERCEL') == '1' else BASE_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path(os.getenv('PMS_DB_PATH', DATA_DIR / 'pms_rise.db'))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+if DATABASE_URL:
+    from pg_adapter import PostgresConnection, open_postgres
+    import psycopg
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
+else:
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 
 SCHEMA = r'''
 PRAGMA foreign_keys = ON;
@@ -33,6 +48,12 @@ CREATE TABLE IF NOT EXISTS users (
   profile_picture_path TEXT,
   admin_level TEXT CHECK(admin_level IN ('super','staff') OR admin_level IS NULL),
   admin_permissions TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS academy_signup_profiles (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  profile_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
@@ -170,8 +191,8 @@ DEFAULT_SETTINGS = {
     'school_name': 'Peshawar Model School Boys IV',
     'app_name': 'ASCEND',
     'tagline': 'Compete • Achieve • Grow',
-    'creator_credit': 'Made by Abdul Hanan Sethi',
-    'primary_color': '#f97316',
+    'creator_credit': 'Made by Hilal Zahid',
+    'primary_color': '#c20a0a',
     'registration_enabled': '0',
     'school_logo_path': '/static/school-mark.svg',
     'competition_structure_version': '0',
@@ -193,9 +214,9 @@ def _configure(conn):
 
 @contextmanager
 def connect():
-    conn = _configure(sqlite3.connect(DB_PATH, timeout=5))
+    conn = open_postgres(DATABASE_URL) if DATABASE_URL else _configure(sqlite3.connect(DB_PATH, timeout=5))
     try:
-        yield conn
+        yield PostgresConnection(conn) if DATABASE_URL else conn
         conn.commit()
     except Exception:
         conn.rollback()
@@ -230,12 +251,19 @@ def _migrate(conn):
 
 def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if DATABASE_URL:
+        with open_postgres(DATABASE_URL) as raw:
+            raw.execute('SELECT pg_advisory_xact_lock(638418625)')
+            for migration in sorted((BASE_DIR / 'supabase/migrations').glob('*.sql')):
+                raw.execute(migration.read_text(encoding='utf-8'))
     with connect() as conn:
-        conn.executescript(SCHEMA)
-        _migrate(conn)
+        if not DATABASE_URL:
+            conn.executescript(SCHEMA)
+            _migrate(conn)
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)', (k,v))
-        # Expired sessions and stale rate-limit records should not grow forever.
+        conn.execute("UPDATE settings SET value=? WHERE key='creator_credit' AND value=?", ('Made by Hilal Zahid', 'Made by Abdul Hanan Sethi'))
+        conn.execute("UPDATE settings SET value=? WHERE key='primary_color' AND lower(value)=?", ('#c20a0a', '#f97316'))
         now=datetime.now(timezone.utc).isoformat()
         old=(datetime.now(timezone.utc)-timedelta(days=2)).isoformat()
         conn.execute('DELETE FROM sessions WHERE expires_at < ?',(now,))
@@ -245,12 +273,20 @@ def init_db():
 def get_settings(conn=None):
     own = conn is None
     if own:
-        conn = _configure(sqlite3.connect(DB_PATH, timeout=5))
+        with connect() as own_conn:
+            return get_settings(own_conn)
     rows = conn.execute('SELECT key,value FROM settings').fetchall()
-    data = {r['key']: r['value'] for r in rows}
-    if own:
-        conn.close()
-    return data
+    return {r['key']: r['value'] for r in rows}
+
+
+def database_size():
+    if not DATABASE_URL:
+        return DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    with connect() as conn:
+        row = conn.execute("""SELECT COALESCE(SUM(pg_total_relation_size(c.oid)),0) AS size
+            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='ascend' AND c.relkind IN ('r','m')""").fetchone()
+        return row['size']
 
 
 def ensure_admin(admission_no: str, full_name: str, password: str):
@@ -262,10 +298,12 @@ def ensure_admin(admission_no: str, full_name: str, password: str):
     with connect() as conn:
         row = conn.execute('SELECT id,role,admin_level FROM users WHERE admission_no=?', (admission_no.upper(),)).fetchone()
         if row:
-            if row['role']=='admin' and row['admin_level']!='super':
-                conn.execute("UPDATE users SET admin_level='super' WHERE id=?",(row['id'],))
+            # Bootstrap never changes an existing user's role or password.
             return row['id']
         cur = conn.execute('''INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,admin_level,created_at)
-                            VALUES (?,?,?,?,?,?,?,?)''',
+                            VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(admission_no) DO NOTHING RETURNING id''',
                            (admission_no.upper(), full_name, hash_password(password), 'admin', 'active', 1, 'super', iso_now()))
-        return cur.lastrowid
+        inserted = cur.fetchone()
+        if inserted:
+            return inserted['id']
+        return conn.execute('SELECT id FROM users WHERE admission_no=? AND role=?', (admission_no.upper(), 'admin')).fetchone()['id']

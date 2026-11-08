@@ -9,18 +9,29 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from db import connect, init_db, get_settings, ensure_admin, DB_PATH
+from db import connect, init_db, get_settings, ensure_admin, DB_PATH, DATA_DIR, INTEGRITY_ERRORS, DATABASE_URL, database_size
 from security import hash_password, verify_password, new_token, new_activation_code, token_hash, stable_hash, iso_now, iso_expiry, activation_expiry
 
-from backups import create_backup, list_backups, prune_backups, run_scheduled_backup_if_due, BACKUP_DIR
+from backups import create_backup, list_backups, prune_backups, run_scheduled_backup_if_due, backup_bytes, BACKUP_DIR
 from competition import install_starter_structure, demo_counts, purge_known_demo_content
+from uploads import save_upload, delete_upload, get_upload, count_uploads
 
 BASE_DIR = Path(__file__).resolve().parent
 VERSION_FILE = BASE_DIR / 'VERSION'
 APP_VERSION = VERSION_FILE.read_text(encoding='utf-8').strip() if VERSION_FILE.exists() else '1.3.0'
-DATA_DIR = Path(os.getenv('PMS_DATA_DIR', BASE_DIR))
 UPLOAD_DIR = DATA_DIR / 'uploads'
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+def set_app_cookie(response, key, value, *, httponly=False, max_age=7*24*3600):
+    # Only the isolated HTTPS embedded preview needs third-party partitioned cookies.
+    # Normal deployments retain their existing same-site cookie policy.
+    partitioned = os.getenv('PMS_PREVIEW_PARTITIONED_COOKIES', '0') == '1'
+    response.set_cookie(key, value, httponly=httponly, max_age=max_age,
+                        samesite='none' if partitioned else 'lax',
+                        secure=partitioned or os.getenv('PMS_SECURE_COOKIE','0')=='1')
+    if partitioned:
+        response.raw_headers[-1] = (response.raw_headers[-1][0], response.raw_headers[-1][1] + b'; Partitioned')
+
 
 async def csrf_protect(request: Request):
     if request.method in {'GET','HEAD','OPTIONS','TRACE'}:
@@ -50,19 +61,31 @@ async def lifespan(app: FastAPI):
     admin_pass = os.getenv('PMS_ADMIN_PASSWORD')
     if admin_pass:
         ensure_admin(os.getenv('PMS_ADMIN_ID','ADMIN-0001'), os.getenv('PMS_ADMIN_NAME','School Administrator'), admin_pass)
-    try:
-        run_scheduled_backup_if_due()
-    except Exception:
-        pass
-    task = asyncio.create_task(_backup_loop())
+    if os.getenv('VERCEL') != '1':
+        try:
+            run_scheduled_backup_if_due()
+        except Exception:
+            pass
+    task = asyncio.create_task(_backup_loop()) if os.getenv('VERCEL') != '1' else None
     try:
         yield
     finally:
-        task.cancel()
+        if task:
+            task.cancel()
 
 app = FastAPI(title='ASCEND', lifespan=lifespan, dependencies=[Depends(csrf_protect)])
 app.mount('/static', StaticFiles(directory=BASE_DIR / 'static'), name='static')
-app.mount('/uploads', StaticFiles(directory=UPLOAD_DIR), name='uploads')
+if DATABASE_URL:
+    @app.get('/uploads/{name}')
+    def serve_upload(name: str):
+        if not re.fullmatch(r'(?:profile_\d+\.webp|school_logo\.png)', name):
+            raise HTTPException(404)
+        asset = get_upload(name)
+        if not asset:
+            raise HTTPException(404)
+        return Response(content=bytes(asset['data']), media_type=asset['content_type'])
+else:
+    app.mount('/uploads', StaticFiles(directory=UPLOAD_DIR), name='uploads')
 templates = Jinja2Templates(directory=str(BASE_DIR / 'templates'))
 
 ADMISSION_RE = re.compile(r'^[A-Z]{1,4}-\d{3,6}$')
@@ -214,9 +237,9 @@ def _save_profile_picture(data: bytes, user_id: int):
             raise ValueError('Profile photo dimensions are too large.')
         image=ImageOps.exif_transpose(image).convert('RGB')
         image=ImageOps.fit(image,(512,512),method=Image.Resampling.LANCZOS)
-        out=UPLOAD_DIR/f'profile_{user_id}.webp'
+        out = io.BytesIO()
         image.save(out,'WEBP',quality=88,method=6)
-        return f'/uploads/{out.name}'
+        return save_upload(f'profile_{user_id}.webp',out.getvalue(),'image/webp')
     except ValueError:
         raise
     except Exception:

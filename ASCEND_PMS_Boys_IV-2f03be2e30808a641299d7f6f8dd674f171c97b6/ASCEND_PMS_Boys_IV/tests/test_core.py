@@ -115,7 +115,8 @@ def test_launch_structure_backup_and_hardened_logo_upload():
     r=post(admin,'/admin/backups/create')
     assert r.status_code==303
     backup_dir=TEST_DIR/'backups'
-    assert any(backup_dir.glob('ascend_manual_*.zip'))
+    from backups import list_backups
+    assert any(b['name'].startswith('ascend_manual') for b in list_backups())
     bad_svg=b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
     r=post(admin,'/admin/settings/logo',files={'logo':('school.svg',bad_svg,'image/svg+xml')})
     assert r.status_code==303 and 'SVG%20uploads%20are%20disabled' in r.headers['location']
@@ -288,7 +289,7 @@ def test_super_admin_can_delete_student_with_cascade_but_staff_cannot():
         c.execute("DELETE FROM users WHERE admission_no='A-7999'")
         cur=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,class_name,section_name,claimed,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                       ('A-7999','Disposable Test Student',hash_password('Disposable123'),'student','active','9','A',1,iso_now()))
-        uid=cur.lastrowid
+        uid=c.execute("SELECT id FROM users WHERE admission_no='A-7999'").fetchone()['id']
         c.execute('INSERT INTO point_transactions(user_id,amount,category,reason,created_at) VALUES (?,?,?,?,?)',(uid,50,'academic','temporary',iso_now()))
         c.execute('INSERT INTO notifications(user_id,title,body,created_at) VALUES (?,?,?,?)',(uid,'Temp','Temp',iso_now()))
     staff=TestClient(app)
@@ -307,3 +308,313 @@ def test_super_admin_can_delete_student_with_cascade_but_staff_cannot():
         assert c.execute('SELECT 1 FROM users WHERE id=?',(uid,)).fetchone() is None
         assert c.execute('SELECT 1 FROM point_transactions WHERE user_id=?',(uid,)).fetchone() is None
         assert c.execute('SELECT 1 FROM notifications WHERE user_id=?',(uid,)).fetchone() is None
+
+
+def academy_profile(**changes):
+    profile = {'fullName': 'New Student', 'email': 'student@example.com', 'phone': '',
+               'countryCode': '+92', 'gender': 'Male', 'dob': '2010-02-03',
+               'guardianName': 'Parent', 'guardianPhone': '03001234567', 'country': 'Pakistan',
+               'province': 'Khyber Pakhtunkhwa', 'program': 'O-Level', 'subjects': ['Maths'],
+               'schoolRegion': 'Peshawar', 'schoolType': 'Private', 'grade': 'O-Level - Grade 10',
+               'section': 'A', 'admissionNo': 'A-9981', 'activationCode': 'CODE81',
+               'password': 'Student123', 'confirmPassword': 'Student123', 'terms': True, 'captcha': '5'}
+    profile.update(changes)
+    return profile
+
+
+def test_academy_signup_connects_real_dashboard():
+    import json
+    with connect() as c:
+        c.execute('''INSERT INTO users(admission_no,full_name,role,status,class_name,section_name,activation_code,claimed,created_at)
+                     VALUES ('A-9981','School Record','student','unclaimed','10','A','CODE81',0,?)''', (iso_now(),))
+    with TestClient(app) as client:
+        page = client.get('/register')
+        assert page.status_code == 200 and '/static/academy-signup/signup.js' in page.text
+        assert client.get('/static/academy-signup/signup.js').status_code == 200
+        bad = post(client, '/register/academy', {'profile': json.dumps(academy_profile(activationCode='WRONG'))})
+        assert bad.status_code == 400
+        assert client.get('/student', follow_redirects=False).status_code == 303
+        good = post(client, '/register/academy', {'profile': json.dumps(academy_profile())})
+        assert good.status_code == 200 and good.json()['redirect'] == '/student'
+        assert client.get('/student').status_code == 200
+        replay = post(client, '/register/academy', {'profile': json.dumps(academy_profile())})
+        assert replay.status_code == 400
+    with connect() as c:
+        row = c.execute("SELECT u.full_name,u.claimed,p.profile_json FROM users u JOIN academy_signup_profiles p ON p.user_id=u.id WHERE u.admission_no='A-9981'").fetchone()
+        assert row['full_name'] == 'School Record' and row['claimed'] == 1
+        saved = json.loads(row['profile_json'])
+        assert saved['email'] == 'student@example.com' and 'password' not in saved and 'activationCode' not in saved
+
+
+def test_academy_signup_respects_csrf_and_registration_setting():
+    import json
+    with TestClient(app) as client:
+        csrf(client, '/register')
+        assert client.post('/register/academy', data={'profile': json.dumps(academy_profile())}).status_code == 403
+        with connect() as c:
+            c.execute("UPDATE settings SET value='0' WHERE key='registration_enabled'")
+        try:
+            page = client.get('/register')
+            assert 'data-registration-enabled="0"' in page.text
+            assert post(client, '/register/academy', {'profile': json.dumps(academy_profile())}).status_code == 400
+        finally:
+            with connect() as c:
+                c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+
+
+def test_branding_defaults_migrate_without_overwriting_custom_credit():
+    from db import init_db, get_settings
+    with connect() as c:
+        original = get_settings(c)
+        c.execute("UPDATE settings SET value='Made by Abdul Hanan Sethi' WHERE key='creator_credit'")
+        c.execute("UPDATE settings SET value='#f97316' WHERE key='primary_color'")
+    try:
+        init_db()
+        with connect() as c:
+            migrated = get_settings(c)
+            assert migrated['creator_credit'] == 'Made by Hilal Zahid'
+            assert migrated['primary_color'] == '#c20a0a'
+        with TestClient(app) as client:
+            assert 'Made by Hilal Zahid' in client.get('/').text
+            assert '#c20a0a' in client.get('/static/style.css').text
+            assert '#c20a0a' in client.get('/static/app-logo.svg').text
+        with connect() as c:
+            c.execute("UPDATE settings SET value='Custom credit' WHERE key='creator_credit'")
+        init_db()
+        with connect() as c:
+            assert get_settings(c)['creator_credit'] == 'Custom credit'
+    finally:
+        with connect() as c:
+            c.execute("UPDATE settings SET value=? WHERE key='creator_credit'", (original['creator_credit'],))
+            c.execute("UPDATE settings SET value=? WHERE key='primary_color'", (original['primary_color'],))
+
+
+def test_end_to_end_academy_and_role_workflow():
+    """School creates a student; academy activation, challenges and rewards share real records."""
+    import json
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+    with TestClient(app) as owner, TestClient(app) as student, TestClient(app) as staff:
+        csrf(owner)
+        assert post(owner, '/login', {'admission_no':'ADMIN-0001','password':'StrongAdmin123'}).headers['location'] == '/admin'
+        assert post(owner, '/admin/students/create', {'admission_no':'A-9901','full_name':'Flow Student','class_name':'10','section_name':'A'}).status_code == 303
+        with connect() as c:
+            record = c.execute("SELECT id,activation_code FROM users WHERE admission_no='A-9901'").fetchone()
+            student_id, code = record['id'], record['activation_code']
+
+        page = student.get('/register')
+        assert page.status_code == 200 and 'data-registration-enabled="1"' in page.text
+        data = academy_profile(admissionNo='A-9901', activationCode=code, fullName='Flow Student')
+        # Match the browser's multipart FormData request, rather than only urlencoded requests.
+        activated = student.post('/register/academy', files={
+            'csrf_token': (None, student.cookies['pms_csrf']),
+            'profile': (None, json.dumps(data)),
+        })
+        assert activated.status_code == 200 and activated.json()['redirect'] == '/student'
+        assert 'Flow Student' in student.get('/student').text
+        assert student.get('/admin').status_code == 403
+        for path in ('/challenges','/leaderboards','/achievements','/rewards','/notifications','/profile'):
+            assert student.get(path).status_code == 200, path
+
+        assert post(owner, '/admin/admins/create', {'admin_id':'ADMIN-0099','full_name':'Workflow Staff','password':'StaffAdmin9900','permissions':['students','challenges']}).status_code == 303
+        csrf(staff)
+        assert post(staff, '/login', {'admission_no':'ADMIN-0099','password':'StaffAdmin9900'}).headers['location'] == '/admin'
+        assert staff.get('/admin/students').status_code == 200
+        assert staff.get('/admin/challenges').status_code == 200
+        assert staff.get('/admin/admins').status_code == 403
+        assert post(staff, '/admin/rewards/create', {'name':'Unauthorized','description':'No','points_required':'10'}).status_code == 403
+
+        for title, klass in [('Flow Challenge', '10'), ('Restricted Challenge', '9')]:
+            r=post(staff, '/admin/challenges/create', {'title':title,'description':'Show your work','category':'academic','points':'50','status':'active','eligibility_class':klass,'eligibility_section':'A'})
+            assert r.status_code == 303 and 'Challenge%20created' in r.headers['location']
+        assert post(owner,'/admin/achievements/create',{'name':'Flow Achievement','description':'Great work','category':'academic','points_required':'50'}).status_code == 303
+        assert post(owner,'/admin/rewards/create',{'name':'Flow Reward','description':'A prize','points_required':'50'}).status_code == 303
+        assert post(owner,'/admin/announcements/create',{'title':'Flow Announcement','body':'Welcome','audience':'class','class_name':'10'}).status_code == 303
+        with connect() as c:
+            allowed=c.execute("SELECT id FROM challenges WHERE title='Flow Challenge'").fetchone()['id']
+            restricted=c.execute("SELECT id FROM challenges WHERE title='Restricted Challenge'").fetchone()['id']
+            reward=c.execute("SELECT id FROM rewards WHERE name='Flow Reward'").fetchone()['id']
+        assert 'Flow Challenge' in student.get('/challenges').text
+        assert 'Restricted Challenge' not in student.get('/challenges').text
+        assert 'Flow Announcement' in student.get('/student').text
+        for action in ('join','submit'):
+            res=post(student,f'/challenges/{restricted}/{action}',{'submission_text':'not eligible'} if action=='submit' else {})
+            assert 'not%20eligible' in res.headers['location']
+        with connect() as c:
+            assert c.execute('SELECT 1 FROM challenge_participations WHERE challenge_id=? AND user_id=?',(restricted,student_id)).fetchone() is None
+        assert 'required%20points' in post(student,f'/rewards/{reward}/claim').headers['location']
+        assert 'Challenge%20joined' in post(student,f'/challenges/{allowed}/join').headers['location']
+        assert 'Submission%20sent' in post(student,f'/challenges/{allowed}/submit',{'submission_text':'Finished my work'}).headers['location']
+        with connect() as c:
+            participation=c.execute('SELECT id FROM challenge_participations WHERE challenge_id=? AND user_id=?',(allowed,student_id)).fetchone()['id']
+        assert 'Finished my work' in staff.get('/admin/challenges').text
+        assert 'Submission%20reviewed' in post(staff,f'/admin/submissions/{participation}/review',{'decision':'approved'}).headers['location']
+        assert 'not%20awaiting%20review' in post(staff,f'/admin/submissions/{participation}/review',{'decision':'approved'}).headers['location']
+        assert 'already%20been%20approved' in post(student,f'/challenges/{allowed}/submit',{'submission_text':'Again'}).headers['location']
+        with connect() as c:
+            assert c.execute('SELECT SUM(amount) n FROM point_transactions WHERE user_id=?',(student_id,)).fetchone()['n'] == 50
+            assert c.execute('SELECT COUNT(*) n FROM student_achievements sa JOIN achievements a ON a.id=sa.achievement_id WHERE sa.user_id=? AND a.name=?',(student_id,'Flow Achievement')).fetchone()['n'] == 1
+        assert 'Flow Achievement' in student.get('/achievements').text
+        assert 'Flow Student' in student.get('/leaderboards').text
+        assert 'Flow Reward' in student.get('/rewards').text
+        post(student,f'/rewards/{reward}/claim'); post(student,f'/rewards/{reward}/claim')
+        with connect() as c:
+            claim=c.execute('SELECT id,status FROM reward_claims WHERE reward_id=? AND user_id=?',(reward,student_id)).fetchone()
+            assert claim and claim['status']=='pending'
+            assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title='Reward claim submitted'",(student_id,)).fetchone()['n'] == 1
+        assert post(owner,f'/admin/reward-claims/{claim["id"]}/status',{'status':'approved'}).status_code==303
+        assert 'Approved' in student.get('/rewards').text
+        assert 'Reward claim updated' in student.get('/notifications').text
+        assert post(student,'/notifications/read-all').status_code == 303
+        assert post(student,'/logout').status_code == 303
+        assert student.get('/student',follow_redirects=False).status_code == 303
+        assert post(student,'/login',{'admission_no':'A-9901','password':'Student123'}).headers['location']=='/student'
+
+
+def test_activation_security_and_zero_point_reward():
+    import json
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        for adm, status, code in [('A-9902','disabled','SAFE01'),('A-9903','unclaimed',None)]:
+            c.execute('INSERT INTO users(admission_no,full_name,role,status,activation_code,claimed,created_at) VALUES (?,?,\'student\',?,?,0,?)',(adm,'Security Test',status,code,iso_now()))
+    with TestClient(app) as client:
+        csrf(client, '/register')
+        for adm, code in [('A-9902','SAFE01'),('A-9903','')]:
+            r=post(client,'/register',{'admission_no':adm,'activation_code':code,'password':'Student123','confirm_password':'Student123'})
+            assert r.status_code == 422 or (r.status_code == 303 and 'could%20not%20activate' in r.headers['location'])
+        r=post(client,'/register/academy',{'profile':json.dumps(academy_profile(admissionNo='A-9902', activationCode='SAFE01'))})
+        assert r.status_code==400
+    with TestClient(app) as owner:
+        csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+        r=post(owner,'/admin/rewards/create',{'name':'Zero Reward','description':'invalid','points_required':'0'})
+        assert 'invalid' in r.headers['location']
+        with connect() as c:
+            assert c.execute("SELECT 1 FROM rewards WHERE name='Zero Reward'").fetchone() is None
+
+
+def test_reward_inventory_cannot_be_over_approved():
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+        other_id=c.execute("SELECT id FROM users WHERE admission_no='A-7201'").fetchone()['id']
+    with TestClient(app) as owner, TestClient(app) as first, TestClient(app) as second:
+        csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+        csrf(first); post(first,'/login',{'admission_no':'A-9901','password':'Student123'})
+        csrf(second); post(second,'/login',{'admission_no':'A-7201','password':'Student7201'})
+        post(owner,f'/admin/students/{other_id}/points',{'amount':'50','category':'academic','reason':'Inventory test'})
+        post(owner,'/admin/rewards/create',{'name':'Limited Reward','description':'One available','points_required':'20','quantity':'1'})
+        with connect() as c:
+            reward=c.execute("SELECT id FROM rewards WHERE name='Limited Reward'").fetchone()['id']
+        assert 'submitted' in post(first,f'/rewards/{reward}/claim').headers['location']
+        assert 'submitted' in post(second,f'/rewards/{reward}/claim').headers['location']
+        with connect() as c:
+            claims=c.execute('SELECT id,user_id FROM reward_claims WHERE reward_id=? ORDER BY id',(reward,)).fetchall()
+            assert len(claims)==2
+        assert 'Claim%20updated' in post(owner,f'/admin/reward-claims/{claims[0]["id"]}/status',{'status':'approved'}).headers['location']
+        assert 'out%20of%20stock' in post(owner,f'/admin/reward-claims/{claims[1]["id"]}/status',{'status':'approved'}).headers['location']
+        with connect() as c:
+            assert c.execute("SELECT COUNT(*) n FROM reward_claims WHERE reward_id=? AND status IN ('approved','fulfilled')",(reward,)).fetchone()['n']==1
+        assert 'out%20of%20stock' in post(second,f'/rewards/{reward}/claim').headers['location']
+
+
+def test_simultaneous_challenge_reviews_award_only_once():
+    from concurrent.futures import ThreadPoolExecutor
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+    with TestClient(app) as first_admin, TestClient(app) as second_admin, TestClient(app) as student:
+        for admin in (first_admin, second_admin):
+            csrf(admin); post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+        csrf(student); post(student,'/login',{'admission_no':'A-9901','password':'Student123'})
+        post(first_admin,'/admin/challenges/create',{'title':'Concurrent Review','description':'Concurrency test','category':'academic','points':'30','status':'active'})
+        with connect() as c: challenge=c.execute("SELECT id FROM challenges WHERE title='Concurrent Review'").fetchone()['id']
+        post(student,f'/challenges/{challenge}/submit',{'submission_text':'Ready for review'})
+        with connect() as c: participation=c.execute('SELECT id FROM challenge_participations WHERE challenge_id=?',(challenge,)).fetchone()['id']
+        def review(admin):
+            return post(admin,f'/admin/submissions/{participation}/review',{'decision':'approved'}).headers['location']
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(review, (first_admin, second_admin)))
+        assert sum('Submission%20reviewed' in loc for loc in results) == 1
+        with connect() as c:
+            row=c.execute('SELECT COUNT(*) n,SUM(amount) total FROM point_transactions WHERE challenge_id=?',(challenge,)).fetchone()
+            assert row['n']==1 and row['total']==30
+
+
+def test_https_embedded_preview_cookie_settings(monkeypatch):
+    monkeypatch.setenv('PMS_PREVIEW_PARTITIONED_COOKIES','1')
+    with connect() as c: c.execute('DELETE FROM auth_attempts')
+    with TestClient(app, base_url='https://testserver') as client:
+        page=client.get('/login')
+        cookie=page.headers.get('set-cookie','').lower()
+        assert 'samesite=none' in cookie and 'secure' in cookie and 'partitioned' in cookie
+        r=post(client,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+        cookie=r.headers.get('set-cookie','').lower()
+        assert r.headers['location']=='/admin' and 'httponly' in cookie and 'secure' in cookie and 'partitioned' in cookie
+        assert client.get('/admin').status_code==200
+        out=post(client,'/logout')
+        assert 'partitioned' in out.headers.get('set-cookie','').lower()
+
+
+def test_security_error_is_visible_to_signed_out_users():
+    with TestClient(app) as client:
+        response = client.post('/login', data={'admission_no':'ADMIN-0001', 'password':'incorrect'})
+        assert response.status_code == 403
+        assert 'Security session expired' in response.text
+        assert 'cookies are unavailable' in response.text
+        assert 'Return to sign in' in response.text
+        response = client.post('/register/academy', data={'profile':'{}'})
+        assert response.status_code == 403 and 'security session' in response.json()['detail'].lower()
+
+
+def test_vercel_cannot_silently_use_ephemeral_sqlite():
+    import subprocess
+    env = dict(os.environ, VERCEL='1')
+    env.pop('PMS_DATABASE_URL', None)
+    result = subprocess.run([sys.executable, '-c', 'import db'], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert 'requires PMS_DATABASE_URL' in result.stderr
+
+
+def test_upload_can_be_served_and_backup_contains_data():
+    import io, zipfile
+    from PIL import Image
+    from backups import create_backup, backup_bytes
+    from db import DATABASE_URL
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+    with TestClient(app) as student:
+        csrf(student); post(student,'/login',{'admission_no':'A-9901','password':'Student123'})
+        picture=io.BytesIO(); Image.new('RGB',(80,80),(20,60,120)).save(picture,'PNG')
+        assert post(student,'/profile/photo',files={'photo':('photo.png',picture.getvalue(),'image/png')}).status_code == 303
+        with connect() as c:
+            row=c.execute("SELECT id,profile_picture_path FROM users WHERE admission_no='A-9901'").fetchone()
+        image=student.get(row['profile_picture_path'])
+        assert image.status_code==200 and image.headers['content-type'].startswith('image/webp')
+        archive=create_backup('test')
+        data=backup_bytes(archive.name)
+        assert data
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            assert 'ascend.db' in z.namelist()
+            assert 'uploads/profile_%s.webp' % row['id'] in z.namelist()
+            assert z.read('uploads/profile_%s.webp' % row['id']) == image.content
+        assert student.get('/uploads/not-a-photo').status_code==404
+
+
+def test_scheduled_backup_requires_secret(monkeypatch):
+    monkeypatch.setenv('CRON_SECRET', 'a-long-random-cron-secret')
+    with TestClient(app) as client:
+        assert client.get('/internal/scheduled-backup').status_code == 403
+        assert client.get('/internal/scheduled-backup', headers={'Authorization': 'Bearer wrong'}).status_code == 403
+        response = client.get('/internal/scheduled-backup', headers={'Authorization': 'Bearer a-long-random-cron-secret'})
+        assert response.status_code == 200
+        assert response.json() == {'ok': True, 'created': False}
+
+
+def test_bootstrap_does_not_promote_existing_staff():
+    with connect() as c:
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,admin_level,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                  ('BOOTSTRAP-STAFF','Staff',hash_password('Password123'),'admin','active',1,'staff',iso_now()))
+    ensure_admin('BOOTSTRAP-STAFF', 'Staff', 'DifferentPassword123')
+    with connect() as c:
+        row=c.execute("SELECT admin_level FROM users WHERE admission_no='BOOTSTRAP-STAFF'").fetchone()
+        assert row['admin_level'] == 'staff'

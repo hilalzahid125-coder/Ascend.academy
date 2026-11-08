@@ -70,9 +70,12 @@ def admin_submission_review(request: Request,participation_id:int,decision:str=F
     try: review_note=_clean_text(review_note,1000,False)
     except ValueError as exc: return flash_redirect('/admin/challenges',str(exc),'error')
     with connect() as conn:
+        # Serialize reviews so simultaneous approvals cannot award points twice.
+        conn.execute('BEGIN IMMEDIATE')
         cp=conn.execute('''SELECT cp.*,c.points,c.category,c.title,u.full_name FROM challenge_participations cp
                            JOIN challenges c ON c.id=cp.challenge_id JOIN users u ON u.id=cp.user_id WHERE cp.id=?''',(participation_id,)).fetchone()
         if not cp: return flash_redirect('/admin/challenges','Submission not found.','error')
+        if cp['status'] != 'pending': return flash_redirect('/admin/challenges','This submission is not awaiting review.','error')
         if decision=='approved' and not cp['awarded']:
             conn.execute('INSERT INTO point_transactions(user_id,amount,category,reason,challenge_id,admin_id,created_at) VALUES (?,?,?,?,?,?,?)',
                          (cp['user_id'],cp['points'],cp['category'],f'Challenge: {cp["title"]}',cp['challenge_id'],a['id'],iso_now()))

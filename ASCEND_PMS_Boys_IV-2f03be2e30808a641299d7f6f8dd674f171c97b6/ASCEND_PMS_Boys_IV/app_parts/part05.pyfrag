@@ -134,7 +134,7 @@ def admin_student_create(request: Request, admission_no:str=Form(...), full_name
                             VALUES (?,?,"student","unclaimed",?,?,?,?,0,?)''',(admission_no,_clean_text(full_name,120),_clean_text(class_name,40,False),_clean_text(section_name,40,False),code,activation_expiry(),iso_now()))
             audit(conn,a['id'],'student_created',admission_no)
         return flash_redirect('/admin/students',f'Student added. Activation code: {code}')
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
         return flash_redirect('/admin/students','That admission number already exists.','error')
 
 
@@ -170,10 +170,7 @@ def admin_student_photo_remove(request: Request, student_id:int):
         student=conn.execute('SELECT id,admission_no FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
         if not student: return flash_redirect('/admin/students','Student not found.','error')
         conn.execute('UPDATE users SET profile_picture_path=NULL WHERE id=?',(student_id,)); audit(conn,a['id'],'student_profile_photo_removed',student['admission_no'])
-    path=UPLOAD_DIR/f'profile_{student_id}.webp'
-    if path.exists():
-        try: path.unlink()
-        except OSError: pass
+    delete_upload(f'profile_{student_id}.webp')
     return flash_redirect('/admin/students','Student profile picture removed.')
 
 @app.post('/admin/students/{student_id}/status')

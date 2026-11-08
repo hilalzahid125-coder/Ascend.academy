@@ -24,12 +24,17 @@ def challenge_list(request: Request):
             ORDER BY CASE c.status WHEN 'active' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END,c.id DESC''',(u['id'],u['class_name'],u['section_name'])).fetchall()
     return render(request,'challenges.html',{'challenges':rows})
 
+def _student_can_enter_challenge(student, challenge):
+    return all(not challenge[field] or challenge[field] == student[student_field]
+               for field, student_field in (('eligibility_class', 'class_name'), ('eligibility_section', 'section_name')))
+
 @app.post('/challenges/{challenge_id}/join')
 def challenge_join(request: Request, challenge_id: int):
     u=require_user(request,'student')
     with connect() as conn:
         c=conn.execute('SELECT * FROM challenges WHERE id=?',(challenge_id,)).fetchone()
         if not c or c['status']!='active': return flash_redirect('/challenges','That challenge is not currently open.','error')
+        if not _student_can_enter_challenge(u, c): return flash_redirect('/challenges','You are not eligible for that challenge.','error')
         conn.execute('INSERT OR IGNORE INTO challenge_participations(challenge_id,user_id,status,created_at,updated_at) VALUES (?,?,?,?,?)',
                      (challenge_id,u['id'],'joined',iso_now(),iso_now()))
     return flash_redirect('/challenges','Challenge joined.')
@@ -42,6 +47,10 @@ def challenge_submit(request: Request, challenge_id: int, submission_text: str=F
     with connect() as conn:
         c=conn.execute('SELECT * FROM challenges WHERE id=?',(challenge_id,)).fetchone()
         if not c or c['status']!='active': return flash_redirect('/challenges','That challenge is not currently open.','error')
+        if not _student_can_enter_challenge(u, c): return flash_redirect('/challenges','You are not eligible for that challenge.','error')
+        existing=conn.execute('SELECT status,awarded FROM challenge_participations WHERE challenge_id=? AND user_id=?',(challenge_id,u['id'])).fetchone()
+        if existing and existing['awarded']:
+            return flash_redirect('/challenges','This challenge has already been approved.','error')
         conn.execute('''INSERT INTO challenge_participations(challenge_id,user_id,status,submission_text,created_at,updated_at)
                      VALUES (?,?,?,?,?,?) ON CONFLICT(challenge_id,user_id) DO UPDATE SET status='pending',submission_text=excluded.submission_text,updated_at=excluded.updated_at''',
                      (challenge_id,u['id'],'pending',submission_text.strip(),iso_now(),iso_now()))
@@ -104,7 +113,9 @@ def rewards(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
         points=total_points(conn,u['id'])
-        rows=conn.execute('''SELECT r.*,rc.status claim_status FROM rewards r LEFT JOIN reward_claims rc ON rc.reward_id=r.id AND rc.user_id=?
+        rows=conn.execute('''SELECT r.*,rc.status claim_status,
+                             (SELECT COUNT(*) FROM reward_claims reserved WHERE reserved.reward_id=r.id AND reserved.status IN ('approved','fulfilled')) reserved_count
+                             FROM rewards r LEFT JOIN reward_claims rc ON rc.reward_id=r.id AND rc.user_id=?
                              WHERE r.status='active' ORDER BY points_required''',(u['id'],)).fetchall()
     return render(request,'rewards.html',{'rewards':rows,'points':points})
 
@@ -115,8 +126,12 @@ def reward_claim(request: Request,reward_id:int):
         r=conn.execute('SELECT * FROM rewards WHERE id=? AND status="active"',(reward_id,)).fetchone()
         if not r: return flash_redirect('/rewards','Reward not available.','error')
         if total_points(conn,u['id'])<r['points_required']: return flash_redirect('/rewards','You have not reached the required points yet.','error')
-        conn.execute('INSERT OR IGNORE INTO reward_claims(reward_id,user_id,status,created_at) VALUES (?,?,"pending",?)',(reward_id,u['id'],iso_now()))
-        notify(conn,u['id'],'Reward claim submitted',f'Your claim for {r["name"]} is awaiting review.')
+        if r['quantity'] is not None:
+            reserved=conn.execute("SELECT COUNT(*) c FROM reward_claims WHERE reward_id=? AND status IN ('approved','fulfilled')", (reward_id,)).fetchone()['c']
+            if reserved >= r['quantity']: return flash_redirect('/rewards','This reward is out of stock.','error')
+        result=conn.execute('INSERT OR IGNORE INTO reward_claims(reward_id,user_id,status,created_at) VALUES (?,?,"pending",?)',(reward_id,u['id'],iso_now()))
+        if result.rowcount:
+            notify(conn,u['id'],'Reward claim submitted',f'Your claim for {r["name"]} is awaiting review.')
     return flash_redirect('/rewards','Reward claim submitted.')
 
 @app.get('/profile', response_class=HTMLResponse

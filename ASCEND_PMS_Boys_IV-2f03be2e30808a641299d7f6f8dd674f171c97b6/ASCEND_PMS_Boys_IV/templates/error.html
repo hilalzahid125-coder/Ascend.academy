@@ -1,1 +1,4 @@
-{% extends "base.html" %}{% block content %}<div class="error-state"><span class="eyebrow">ERROR {{ code }}</span><h1>{{ title }}</h1><p>{{ message }}</p><a class="btn primary" href="/">Return home</a></div>{% endblock %}
+{% extends "base.html" %}
+{% block title %}{{ title }} · {{ settings.app_name }}{% endblock %}
+{% block content %}{% include "_error_body.html" %}{% endblock %}
+{% block auth_content %}{% include "_error_body.html" %}{% endblock %}

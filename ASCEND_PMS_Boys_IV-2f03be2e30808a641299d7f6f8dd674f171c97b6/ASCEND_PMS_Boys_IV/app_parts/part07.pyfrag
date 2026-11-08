@@ -22,7 +22,7 @@ def admin_rewards(request: Request):
 @app.post('/admin/rewards/create')
 def admin_reward_create(request: Request,name:str=Form(...),description:str=Form(...),points_required:int=Form(...),quantity:Optional[int]=Form(None)):
     a=require_admin(request,'rewards')
-    if points_required<0 or points_required>1_000_000 or (quantity is not None and (quantity<0 or quantity>100000)): return flash_redirect('/admin/rewards','Reward values are invalid.','error')
+    if points_required<1 or points_required>1_000_000 or (quantity is not None and (quantity<0 or quantity>100000)): return flash_redirect('/admin/rewards','Reward values are invalid.','error')
     try: name=_clean_text(name,120); description=_clean_text(description,1500)
     except ValueError as exc: return flash_redirect('/admin/rewards',str(exc),'error')
     with connect() as conn:
@@ -43,9 +43,16 @@ def admin_reward_claim(request: Request,claim_id:int,status:str=Form(...)):
     a=require_admin(request,'rewards')
     if status not in {'pending','approved','rejected','fulfilled'}: return flash_redirect('/admin/rewards','Invalid status.','error')
     with connect() as conn:
+        # Reserve finite stock atomically when a claim is approved or fulfilled.
+        conn.execute('BEGIN IMMEDIATE')
         row=conn.execute('SELECT * FROM reward_claims WHERE id=?',(claim_id,)).fetchone()
         if row:
-            conn.execute('UPDATE reward_claims SET status=? WHERE id=?',(status,claim_id)); notify(conn,row['user_id'],'Reward claim updated',f'Your reward claim is now {status}.'); audit(conn,a['id'],'reward_claim_updated',f'{claim_id}->{status}')
+            reward=conn.execute('SELECT quantity FROM rewards WHERE id=?',(row['reward_id'],)).fetchone()
+            if status in {'approved','fulfilled'} and row['status'] not in {'approved','fulfilled'} and reward and reward['quantity'] is not None:
+                reserved=conn.execute("SELECT COUNT(*) c FROM reward_claims WHERE reward_id=? AND status IN ('approved','fulfilled')",(row['reward_id'],)).fetchone()['c']
+                if reserved >= reward['quantity']: return flash_redirect('/admin/rewards','This reward is out of stock.','error')
+            if row['status'] != status:
+                conn.execute('UPDATE reward_claims SET status=? WHERE id=?',(status,claim_id)); notify(conn,row['user_id'],'Reward claim updated',f'Your reward claim is now {status}.'); audit(conn,a['id'],'reward_claim_updated',f'{claim_id}->{status}')
     return flash_redirect('/admin/rewards','Claim updated.')
 
 @app.get('/admin/announcements', response_class=HTMLResponse)
@@ -111,12 +118,13 @@ async def admin_logo_upload(request: Request, logo: UploadFile=File(...)):
         image=Image.open(io.BytesIO(data))
         if image.width>4000 or image.height>4000: return flash_redirect('/admin/settings','Logo dimensions are too large.','error')
         if image.mode not in {'RGB','RGBA'}: image=image.convert('RGBA')
-        out=UPLOAD_DIR/'school_logo.png'
+        out=io.BytesIO()
         image.save(out,'PNG',optimize=True)
+        save_upload('school_logo.png',out.getvalue(),'image/png')
     except Exception:
         return flash_redirect('/admin/settings','That file is not a valid supported image.','error')
     with connect() as conn:
-        conn.execute('INSERT INTO settings(key,value) VALUES ("school_logo_path",?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(f'/uploads/{out.name}',)); audit(conn,a['id'],'school_logo_updated',out.name)
+        conn.execute('INSERT INTO settings(key,value) VALUES ("school_logo_path",?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',('/uploads/school_logo.png',)); audit(conn,a['id'],'school_logo_updated','school_logo.png')
     return flash_redirect('/admin/settings','School logo updated.')
 
 @app.get('/admin/launch', response_class=HTMLResponse)
@@ -127,5 +135,6 @@ def admin_launch(request: Request):
         structure=get_settings(conn).get('competition_structure_version','0')
         student_count=conn.execute('SELECT COUNT(*) c FROM users WHERE role="student"').fetchone()['c']
     backups=list_backups()
-    db_size=DB_PATH.stat().st_size if DB_PATH.exists() else 0
-    upload_files=[x for x in UPLOAD_DIR.iterdir() if x.is_f
+    db_size=database_size()
+    upload_count=count_uploads()
+    #

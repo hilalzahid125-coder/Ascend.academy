@@ -1,0 +1,1 @@
+<div class="error-state" id="main-content"><span class="eyebrow">ERROR {{ code }}</span><h1>{{ title }}</h1><p>{{ message }}</p><a class="btn primary" href="{{ '/login' if code == 403 else '/' }}">{{ 'Return to sign in' if code == 403 else 'Return home' }}</a></div>

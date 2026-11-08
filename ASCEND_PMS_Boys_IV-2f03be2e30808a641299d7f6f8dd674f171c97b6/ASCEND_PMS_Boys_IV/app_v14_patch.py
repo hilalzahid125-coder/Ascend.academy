@@ -15,8 +15,7 @@ def render(request: Request, name: str, context=None, status_code=200):
                     'app_version':APP_VERSION})
     response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
     if not request.cookies.get('pms_csrf'):
-        response.set_cookie('pms_csrf',csrf,httponly=False,samesite='lax',
-                            secure=os.getenv('PMS_SECURE_COOKIE','0')=='1',max_age=7*24*3600)
+        set_app_cookie(response,'pms_csrf',csrf)
     return response
 
 
@@ -105,8 +104,5 @@ def admin_student_delete(request: Request, student_id:int):
         conn.execute('DELETE FROM users WHERE id=? AND role="student"',(student_id,))
         audit(conn,a['id'],'student_deleted',f'{admission_no}: {full_name}')
     if photo_path and photo_path.startswith('/uploads/'):
-        candidate=(UPLOAD_DIR/Path(photo_path).name).resolve()
-        if candidate.parent==UPLOAD_DIR.resolve() and candidate.exists():
-            try: candidate.unlink()
-            except OSError: pass
+        delete_upload(Path(photo_path).name)
     return flash_redirect('/admin/students',f'Student {admission_no} and linked student data were deleted.')

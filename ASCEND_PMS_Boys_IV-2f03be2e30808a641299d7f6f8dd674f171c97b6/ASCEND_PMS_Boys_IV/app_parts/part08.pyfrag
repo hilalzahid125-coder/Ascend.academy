@@ -3,7 +3,7 @@ ile()] if UPLOAD_DIR.exists() else []
         'demo_counts':demos,'structure_version':structure,'backups':backups,
         'student_count':student_count,'secure_cookie':os.getenv('PMS_SECURE_COOKIE','0')=='1',
         'backup_enabled':os.getenv('PMS_BACKUP_ENABLED','1')=='1','db_path':str(DB_PATH),
-        'db_size':db_size,'upload_count':len(upload_files),'last_backup':backups[0] if backups else None
+        'db_size':db_size,'upload_count':upload_count,'last_backup':backups[0] if backups else None
     })
 
 @app.post('/admin/launch/prepare-production')
@@ -51,9 +51,9 @@ def admin_backup_create(request: Request):
 def admin_backup_download(request: Request, filename: str):
     require_admin(request,super_only=True)
     if not re.fullmatch(r'ascend_[a-z0-9_-]+_\d{8}_\d{6}\.(?:db|zip)',filename): raise HTTPException(404)
-    path=(BACKUP_DIR/filename).resolve()
-    if path.parent.resolve()!=BACKUP_DIR.resolve() or not path.exists(): raise HTTPException(404)
-    return FileResponse(path,media_type='application/zip' if path.suffix=='.zip' else 'application/octet-stream',filename=filename)
+    data=backup_bytes(filename)
+    if data is None: raise HTTPException(404)
+    return Response(data, media_type='application/zip' if filename.endswith('.zip') else 'application/octet-stream', headers={'Content-Disposition':f'attachment; filename="{filename}"'})
 
 @app.post('/admin/security/password')
 def admin_change_password(request: Request,current_password:str=Form(...),new_password:str=Form(...),confirm_password:str=Form(...)):
@@ -69,6 +69,16 @@ def admin_change_password(request: Request,current_password:str=Form(...),new_pa
         conn.execute('DELETE FROM sessions WHERE user_id=? AND token_hash!=?',(a['id'],keep_hash))
         audit(conn,a['id'],'admin_password_changed','Other admin sessions signed out')
     return flash_redirect('/admin/launch','Admin password updated. Other sessions were signed out.')
+
+@app.get('/internal/scheduled-backup')
+def scheduled_backup(request: Request):
+    # Vercel sends this bearer token on cron invocations. No token, no backup.
+    secret=os.getenv('CRON_SECRET','')
+    provided=request.headers.get('authorization','')
+    if not secret or not hmac.compare_digest(provided.encode('utf-8'), ('Bearer '+secret).encode('utf-8')):
+        raise HTTPException(status_code=403)
+    path=run_scheduled_backup_if_due()
+    return {'ok': True, 'created': bool(path)}
 
 @app.get('/health')
 def health(): return {'ok':True,'app':'ASCEND','version':APP_VERSION}

@@ -23,10 +23,7 @@ async def profile_photo_upload(request: Request, photo: UploadFile=File(...)):
 @app.post('/profile/photo/remove')
 def profile_photo_remove(request: Request):
     u=require_user(request,'student')
-    path=UPLOAD_DIR/f'profile_{u["id"]}.webp'
-    if path.exists():
-        try: path.unlink()
-        except OSError: pass
+    delete_upload(f'profile_{u["id"]}.webp')
     with connect() as conn:
         conn.execute('UPDATE users SET profile_picture_path=NULL WHERE id=?',(u['id'],))
     return flash_redirect('/profile','Profile picture removed.')
@@ -72,7 +69,7 @@ def admin_team_create(request: Request, admin_id:str=Form(...), full_name:str=Fo
                             VALUES (?,?,?,"admin","active",1,"staff",?,?)''',(admin_id,full_name,hash_password(password),json.dumps(allowed),iso_now()))
             audit(conn,owner['id'],'staff_admin_created',f'{admin_id}: {full_name}')
         return flash_redirect('/admin/admins','Staff admin created successfully.')
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
         return flash_redirect('/admin/admins','That admin ID already exists.','error')
 
 @app.post('/admin/admins/{admin_id}/edit')
