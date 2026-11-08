@@ -1,2 +1,19 @@
+[project]
+name = "ascend-academy"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110,<1",
+  "uvicorn[standard]>=0.27,<1",
+  "jinja2>=3.1,<4",
+  "python-multipart>=0.0.9,<1",
+  "openpyxl>=3.1,<4",
+  "pillow>=10,<13",
+  "psycopg[binary]>=3.2,<4",
+]
+
 [tool.vercel]
 entrypoint = "api.index:app"
+
+[tool.vercel.fastapi.static]
+cdn = false

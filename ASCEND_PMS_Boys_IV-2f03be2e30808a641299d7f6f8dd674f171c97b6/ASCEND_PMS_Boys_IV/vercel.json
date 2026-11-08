@@ -6,6 +6,5 @@
       "maxDuration": 60
     }
   },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
   "crons": [{ "path": "/internal/scheduled-backup", "schedule": "0 2 * * *" }]
 }

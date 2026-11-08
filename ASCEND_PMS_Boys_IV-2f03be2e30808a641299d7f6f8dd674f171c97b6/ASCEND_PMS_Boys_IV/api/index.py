@@ -4,6 +4,9 @@ Vercel's Python runtime may not invoke FastAPI lifespan hooks. Bootstrap the
 schema and optional initial admin at cold start; the initialization is idempotent.
 """
 import os
+# The application loads its route fragments dynamically. Explicit imports let
+# Vercel's dependency tracer discover packages referenced in those fragments.
+import fastapi, jinja2, multipart, openpyxl, PIL, psycopg, psycopg_binary  # noqa: F401
 from app import app
 from db import init_db, ensure_admin, connect
 
