@@ -748,7 +748,7 @@ export default function App() {
         {!registrationEnabled ? (
           <div className="bg-white rounded-3xl border border-black/10 shadow-xl p-8 text-center">
             <h1 className="text-2xl font-extrabold">Student registration is currently closed</h1>
-            <p className="mt-3 text-black/60">Please contact the school office for help activating your account.</p>
+            <p className="mt-3 text-black/60">Please contact the academy office for help activating your account.</p>
             <a href="/login" className="inline-block mt-6 text-[#C20A0A] font-bold">Return to sign in</a>
           </div>
         ) : (
@@ -988,7 +988,7 @@ export default function App() {
                     <p className="text-[13px] text-black/60 font-medium mt-1">Step 4 of 4 — Lock it in! The bird is on guard 🔐</p>
 
                     <div className="mt-6 space-y-4">
-                      <p className="text-[13px] text-black/60">Use the admission number and activation code provided by your school to connect your account to your student dashboard.</p>
+                      <p className="text-[13px] text-black/60">Use the admission number and activation code provided by your academy to connect your account to your student dashboard.</p>
                       <div>
                         <label htmlFor="admissionNo" className="text-[11px] font-extrabold tracking-widest text-black/60">ADMISSION NUMBER *</label>
                         <input id="admissionNo" value={formData.admissionNo} onChange={e => updateField("admissionNo", e.target.value)} placeholder="A-6738" autoComplete="username" className="mt-1.5 w-full border-2 border-black/10 rounded-xl px-3 py-3 text-[14px] font-semibold" />
@@ -996,7 +996,7 @@ export default function App() {
                       </div>
                       <div>
                         <label htmlFor="activationCode" className="text-[11px] font-extrabold tracking-widest text-black/60">ACTIVATION CODE *</label>
-                        <input id="activationCode" value={formData.activationCode} onChange={e => updateField("activationCode", e.target.value)} placeholder="School-issued code" className="mt-1.5 w-full border-2 border-black/10 rounded-xl px-3 py-3 text-[14px] font-semibold" />
+                        <input id="activationCode" value={formData.activationCode} onChange={e => updateField("activationCode", e.target.value)} placeholder="Academy-issued code" className="mt-1.5 w-full border-2 border-black/10 rounded-xl px-3 py-3 text-[14px] font-semibold" />
                         {errors.activationCode && <p className="text-[11px] text-red-500 font-bold">{errors.activationCode}</p>}
                       </div>
                       <div>

@@ -9,7 +9,7 @@
   <main>
     <section class="landing-hero">
       <div class="landing-copy">
-        <span class="eyebrow">PESHAWAR MODEL SCHOOL BOYS IV</span>
+        <span class="eyebrow">{{ settings.school_name }}</span>
         <h1>Turn effort into <em>achievement.</em></h1>
         <p>{{ settings.app_name }} brings academy challenges, recognition, rewards and leaderboards into one focused student experience.</p>
         <div class="landing-actions"><a class="btn primary" href="/login">Student & admin sign in</a><a class="btn ghost" href="/register">Activate student account</a></div>
@@ -26,12 +26,12 @@
         <article><span>ACADEMIC</span><h3>Recognize learning</h3><p>Reward quizzes, reading, projects and academic milestones without losing the academy-wide view.</p></article>
         <article><span>SPORTS</span><h3>Celebrate participation</h3><p>Run sports challenges and competitions with the same familiar interface and a subtle category identity.</p></article>
         <article><span>CHARACTER</span><h3>Encourage good habits</h3><p>Recognize discipline, responsibility, teamwork and positive contribution.</p></article>
-        <article><span>ACTIVITIES</span><h3>Make involvement visible</h3><p>Give school events, clubs and creative activities a meaningful place in student progress.</p></article>
+        <article><span>ACTIVITIES</span><h3>Make involvement visible</h3><p>Give academy events, clubs and creative activities a meaningful place in student progress.</p></article>
       </div>
     </section>
     <section class="landing-split">
-      <div><span class="eyebrow">FOR STUDENTS</span><h2>A clear reason to keep going.</h2><p>Students can see their rank, recent points, active challenges, achievements, rewards and notifications without a cluttered school-portal experience.</p></div>
-      <div><span class="eyebrow">FOR SCHOOL STAFF</span><h2>Everything managed without code.</h2><p>Authorized admins can manage students, challenges, points, announcements and reports from protected controls. The Super Admin keeps ownership of sensitive settings.</p></div>
+      <div><span class="eyebrow">FOR STUDENTS</span><h2>A clear reason to keep going.</h2><p>Students can see their rank, recent points, active challenges, achievements, rewards and notifications without a cluttered academy-portal experience.</p></div>
+      <div><span class="eyebrow">FOR ACADEMY STAFF</span><h2>Everything managed without code.</h2><p>Authorized admins can manage students, challenges, points, announcements and reports from protected controls. The Super Admin keeps ownership of sensitive settings.</p></div>
     </section>
   </main>
   <footer class="public-footer"><div><strong>{{ settings.app_name }}</strong><span>{{ settings.tagline }}</span></div><div><a href="/about">About</a><a href="/privacy">Privacy</a><a href="/login">Sign in</a></div><small>{{ settings.creator_credit }} · v{{ app_version }}</small></footer>
