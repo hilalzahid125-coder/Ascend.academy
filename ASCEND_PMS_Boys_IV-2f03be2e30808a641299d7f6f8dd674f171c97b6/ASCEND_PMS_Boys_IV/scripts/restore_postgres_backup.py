@@ -42,8 +42,12 @@ def restore_backup(archive):
             tables={r['name'] for r in sqlite.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if not set(expected).issubset(tables):
                 raise ValueError('Backup is missing required tables.')
+            class_tables=['class_schedules','class_sessions','class_attendance']
+            present=set(class_tables) & tables
+            if present and present != set(class_tables):
+                raise ValueError('Backup has an incomplete class data set.')
             snapshot=[]
-            for table in expected:
+            for table in expected + (class_tables if present else []):
                 columns=[r['name'] for r in sqlite.execute(f'PRAGMA table_info({table})')]
                 rows=[tuple(r[c] for c in columns) for r in sqlite.execute(f'SELECT * FROM {table}')]
                 snapshot.append((table,columns,rows))
@@ -52,6 +56,10 @@ def restore_backup(archive):
         init_db()
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
+            # Older backups predate My Classes; clearing the newer tables prevents
+            # stale data and foreign keys from surviving a full restore.
+            if not present:
+                for table in reversed(class_tables): conn.execute(f'DELETE FROM {table}')
             for table, _, _ in reversed(snapshot): conn.execute(f'DELETE FROM {table}')
             conn.execute('DELETE FROM file_assets')
             for table, columns, rows in snapshot:

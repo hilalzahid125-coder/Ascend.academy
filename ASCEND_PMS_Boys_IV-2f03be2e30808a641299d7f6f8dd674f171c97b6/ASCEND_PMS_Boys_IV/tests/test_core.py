@@ -679,3 +679,89 @@ def test_roster_template_and_unsupported_grade_validation():
         r=post(owner,'/admin/students/import',files={'roster':('roster.csv',b'Admission Number,Full Name,Grade,Section\nA-8877,Invalid Grade,Grade 2,A\n','text/csv')})
         assert r.status_code==200 and 'valid O-Level or A-Level' in r.text
         with connect() as c: assert not c.execute("SELECT 1 FROM users WHERE admission_no='A-8877'").fetchone()
+
+
+def test_my_classes_schedule_roster_attendance_and_isolation(monkeypatch):
+    import json
+    import app as app_module
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(app_module, '_class_now', lambda: datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo('Asia/Karachi')))
+    with connect() as c:
+        for admission,name,grade,subjects in [
+            ('T-8401','Class Student One','O-Level - Grade 9',['Maths','Computer Science']),
+            ('T-8402','Class Student Two','O-Level - Grade 9',['Maths']),
+            ('T-8403','Class Student Three','O-Level - Grade 10',['Maths'])]:
+            c.execute('''INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,class_name,created_at)
+                VALUES (?,?,?,'student','active',1,?,?)''',(admission,name,hash_password('ClassTest1234'),grade,iso_now()))
+            u=c.execute('SELECT id FROM users WHERE admission_no=?',(admission,)).fetchone()
+            c.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?)',(u['id'],json.dumps({'subjects':subjects}),iso_now()))
+        ids={r['admission_no']:r['id'] for r in c.execute("SELECT id,admission_no FROM users WHERE admission_no IN ('T-8401','T-8402','T-8403')").fetchall()}
+        admin_id=c.execute("SELECT id FROM users WHERE admission_no='ADMIN-0001'").fetchone()['id']
+    admin=TestClient(app); csrf(admin); post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    student=TestClient(app); csrf(student); post(student,'/login',{'admission_no':'T-8401','password':'ClassTest1234'})
+    other=TestClient(app); csrf(other); post(other,'/login',{'admission_no':'T-8403','password':'ClassTest1234'})
+    assert student.get('/admin/my-classes').status_code==403
+    assert other.get('/my-classes').status_code==200
+    data={'grade':'O-Level - Grade 9','subject':'Maths','teacher_id':str(admin_id),'recurrence':'weekly','weekday':'0','start_time':'09:00','duration_minutes':'60'}
+    assert post(admin,'/admin/my-classes/create',data).status_code==303
+    with connect() as c: schedule=c.execute("SELECT id FROM class_schedules WHERE grade=? AND subject=?",(data['grade'],data['subject'])).fetchone()['id']
+    assert '09:00' in student.get('/my-classes').text
+    assert '09:00' not in other.get('/my-classes').text
+    assert 'Class Student Two' in admin.get('/admin/my-classes').text
+    # A single-student change must not move the rest of the grade.
+    r=post(admin,'/admin/my-classes/update',{'selection':f'{schedule}:{ids["T-8401"]}','start_time':'11:00'})
+    assert 'updated' in r.headers['location'].lower()
+    assert '11:00' in student.get('/my-classes').text and '09:00' not in student.get('/my-classes').text
+    second=TestClient(app); csrf(second); post(second,'/login',{'admission_no':'T-8402','password':'ClassTest1234'})
+    assert '09:00' in second.get('/my-classes').text and '11:00' not in second.get('/my-classes').text
+    # Base roster excludes the individually rescheduled student.
+    post(admin,f'/admin/my-classes/{schedule}/start')
+    with connect() as c:
+        session=c.execute('SELECT id FROM class_sessions WHERE schedule_id=?',(schedule,)).fetchone()['id']
+        roster=c.execute('SELECT student_id,status FROM class_attendance WHERE session_id=?',(session,)).fetchall()
+        assert [r['student_id'] for r in roster]==[ids['T-8402']]
+        assert c.execute('SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title=?',(ids['T-8402'],'Class session started')).fetchone()['n']==1
+    assert 'Coming soon' in second.get('/my-classes').text
+    assert 'Coming soon' not in student.get('/my-classes').text
+    assert post(student,f'/admin/my-classes/session/{session}/end').status_code==403
+    assert 'already%20been%20started' in post(admin,f'/admin/my-classes/{schedule}/start').headers['location']
+    post(admin,f'/admin/my-classes/session/{session}/end')
+    post(admin,f'/admin/my-classes/session/{session}/attendance',{f'attendance_{ids["T-8402"]}':'present'})
+    response=second.get('/my-classes').text
+    assert '100<small>%</small>' in response and '1 <small>class</small>' in response
+    assert '100<small>%</small>' not in student.get('/my-classes').text
+    with connect() as c:
+        assert c.execute('SELECT status FROM class_attendance WHERE session_id=? AND student_id=?',(session,ids['T-8402'])).fetchone()['status']=='present'
+        assert c.execute('SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title=?',(ids['T-8402'],'Attendance updated')).fetchone()['n']==1
+    # Once-only schedule runs only on its specified date.
+    data.update({'recurrence':'once','class_date':'2026-11-10','start_time':'14:00'})
+    post(admin,'/admin/my-classes/create',data)
+    with connect() as c: once=c.execute("SELECT id FROM class_schedules WHERE recurrence='once'").fetchone()['id']
+    assert 'scheduled%20day' in post(admin,f'/admin/my-classes/{once}/start').headers['location']
+
+
+def test_my_classes_subject_edit_and_student_deletion():
+    import json
+    admin=TestClient(app); csrf(admin); post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    with connect() as c:
+        student=c.execute("SELECT id FROM users WHERE admission_no='T-8401'").fetchone()['id']
+        override=c.execute('SELECT id FROM class_schedules WHERE student_id=? AND parent_id IS NOT NULL',(student,)).fetchone()['id']
+        original=c.execute('SELECT parent_id FROM class_schedules WHERE id=?',(override,)).fetchone()['parent_id']
+    # Removing an individual override restores the group class, and reapplying it works.
+    assert 'removed' in post(admin,f'/admin/my-classes/{override}/remove').headers['location'].lower()
+    assert 'updated' in post(admin,'/admin/my-classes/update',{'selection':f'{original}:{student}','start_time':'12:00'}).headers['location'].lower()
+    with connect() as c:
+        assert c.execute('SELECT active,start_time FROM class_schedules WHERE id=?',(override,)).fetchone()['start_time']=='12:00'
+    data={'full_name':'Class Student One','class_name':'O-Level - Grade 9','subjects_present':'1','subjects':'Computer Science'}
+    assert 'updated' in post(admin,f'/admin/students/{student}/edit',data).headers['location'].lower()
+    with connect() as c:
+        profile=json.loads(c.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(student,)).fetchone()['profile_json'])
+        assert profile['subjects']==['Computer Science']
+    client=TestClient(app); csrf(client); post(client,'/login',{'admission_no':'T-8401','password':'ClassTest1234'})
+    assert '12:00' not in client.get('/my-classes').text
+    # Existing student deletion remains functional even with class data.
+    assert post(admin,f'/admin/students/{student}/delete').status_code==303
+    with connect() as c:
+        assert c.execute('SELECT id FROM users WHERE id=?',(student,)).fetchone() is None
+        assert c.execute('SELECT id FROM class_schedules WHERE id=?',(override,)).fetchone() is None

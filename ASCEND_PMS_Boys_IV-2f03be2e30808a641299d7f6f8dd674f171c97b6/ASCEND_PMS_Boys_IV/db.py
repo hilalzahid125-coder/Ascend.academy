@@ -28,6 +28,31 @@ else:
 SCHEMA = r'''
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS class_schedules (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ parent_id INTEGER REFERENCES class_schedules(id),
+ student_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+ grade TEXT NOT NULL, subject TEXT NOT NULL, teacher_id INTEGER NOT NULL REFERENCES users(id),
+ recurrence TEXT NOT NULL CHECK(recurrence IN ('weekly','once')),
+ weekday INTEGER, class_date TEXT, start_time TEXT NOT NULL, duration_minutes INTEGER NOT NULL,
+ active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+ UNIQUE(parent_id, student_id)
+);
+CREATE TABLE IF NOT EXISTS class_sessions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ schedule_id INTEGER NOT NULL REFERENCES class_schedules(id) ON DELETE CASCADE, session_date TEXT NOT NULL,
+ subject TEXT NOT NULL, grade TEXT NOT NULL, start_time TEXT NOT NULL, duration_minutes INTEGER NOT NULL,
+ teacher_id INTEGER NOT NULL REFERENCES users(id), started_by INTEGER NOT NULL REFERENCES users(id),
+ status TEXT NOT NULL CHECK(status IN ('live','ended')), started_at TEXT NOT NULL, ended_at TEXT,
+ UNIQUE(schedule_id,session_date)
+);
+CREATE TABLE IF NOT EXISTS class_attendance (
+ session_id INTEGER NOT NULL REFERENCES class_sessions(id) ON DELETE CASCADE, student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ status TEXT CHECK(status IN ('present','absent') OR status IS NULL), marked_by INTEGER REFERENCES users(id), marked_at TEXT,
+ PRIMARY KEY(session_id,student_id)
+);
+CREATE INDEX IF NOT EXISTS idx_class_attendance_student ON class_attendance(student_id);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

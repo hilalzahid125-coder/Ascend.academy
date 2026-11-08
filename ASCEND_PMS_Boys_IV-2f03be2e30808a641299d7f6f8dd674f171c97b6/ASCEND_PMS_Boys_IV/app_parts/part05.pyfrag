@@ -147,12 +147,14 @@ def admin_student_create(request: Request, admission_no:str=Form(...), full_name
 @app.post('/admin/students/{student_id}/edit')
 def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form(''),
                        guardian_name:Optional[str]=Form(None), phone:Optional[str]=Form(None), country_code:Optional[str]=Form(None),
-                       email:Optional[str]=Form(None), country:Optional[str]=Form(None), school_name:Optional[str]=Form(None)):
+                       email:Optional[str]=Form(None), country:Optional[str]=Form(None), school_name:Optional[str]=Form(None),
+                       subjects_present:Optional[str]=Form(None), subjects:Optional[List[str]]=Form(None)):
     a=require_admin(request,'students')
     try:
         full_name=_clean_text(full_name,120); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
         supplied={'guardianName':guardian_name,'phone':phone,'countryCode':country_code,'email':email,'country':country,'schoolName':school_name}
         supplied={k:_clean_text(v,20 if k=='countryCode' else 200,False) for k,v in supplied.items() if v is not None}
+        if subjects_present is not None and any(x not in ACADEMY_SUBJECTS for x in (subjects or [])): raise ValueError('Choose valid subjects.')
         if supplied.get('email') and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', supplied['email']): raise ValueError('Enter a valid email address.')
     except ValueError as exc: return flash_redirect('/admin/students',str(exc),'error')
     with connect() as conn:
@@ -163,8 +165,13 @@ def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...)
             return flash_redirect('/admin/students','Choose a valid academy grade.','error')
         conn.execute('UPDATE users SET full_name=?,class_name=?,section_name=? WHERE id=? AND role="student"',(full_name,class_name,section_name,student_id))
         row=conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(student_id,)).fetchone()
-        if row or any(supplied.values()):
+        if row or any(supplied.values()) or subjects_present is not None:
             profile=academy_profile_from_row(row)
+            previous_subjects=profile.get('subjects',[])
+            if subjects_present is not None:
+                profile['subjects']=[s for s in ACADEMY_SUBJECTS if s in (subjects or [])]
+                if profile['subjects'] != previous_subjects:
+                    notify(conn,student_id,'Subjects updated','Your enrolled subjects have changed. Open My Classes to see your timetable.')
             profile.update(supplied); profile['fullName']=full_name; profile['grade']=class_name; profile['section']=section_name
             if class_name in ACADEMY_GRADES: profile['program']='O-Level' if class_name.startswith('O-Level') else 'A-Level'
             conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET profile_json=excluded.profile_json', (student_id,json.dumps(profile),iso_now()))

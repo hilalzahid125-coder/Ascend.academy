@@ -1,0 +1,244 @@
+
+# My Classes: schedules are Pakistan-local; sessions and attendance are snapshots.
+from zoneinfo import ZoneInfo
+from datetime import date, time
+PAKISTAN = ZoneInfo('Asia/Karachi')
+WEEKDAYS = ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')
+
+def _class_now():
+    return datetime.now(PAKISTAN)
+
+def _class_students(conn):
+    rows=conn.execute("""SELECT u.id,u.full_name,u.admission_no,u.class_name,p.profile_json
+        FROM users u LEFT JOIN academy_signup_profiles p ON p.user_id=u.id
+        WHERE u.role='student' AND u.status='active' ORDER BY u.full_name,u.id""").fetchall()
+    return [dict(r, subjects=[x for x in academy_profile_from_row(r).get('subjects', []) if x in ACADEMY_SUBJECTS] if isinstance(academy_profile_from_row(r).get('subjects', []), list) else []) for r in rows]
+
+def _schedules(conn):
+    return [dict(r) for r in conn.execute('''SELECT s.*,u.full_name teacher_name FROM class_schedules s
+        JOIN users u ON u.id=s.teacher_id WHERE s.active=1 ORDER BY s.start_time,s.id''').fetchall()]
+
+def _members(schedule, students, schedules):
+    overridden={s['student_id'] for s in schedules if s['parent_id']==schedule['id']}
+    return [st for st in students if st['class_name']==schedule['grade'] and schedule['subject'] in st['subjects']
+            and (st['id']==schedule['student_id'] if schedule['student_id'] else st['id'] not in overridden)]
+
+def _day_label(s):
+    return (WEEKDAYS[s['weekday']]+' · weekly') if s['recurrence']=='weekly' else (s['class_date']+' · once')
+
+def _end_time(s):
+    start=datetime.strptime(s['start_time'],'%H:%M')
+    return (start+timedelta(minutes=s['duration_minutes'])).strftime('%H:%M')
+
+def _due_today(s, today):
+    return (s['recurrence']=='weekly' and s['weekday']==today.weekday()) or (s['recurrence']=='once' and s['class_date']==today.isoformat())
+
+def _class_values(form, conn):
+    grade=str(form.get('grade','')).strip(); subject=str(form.get('subject','')).strip()
+    recurrence=str(form.get('recurrence','')); day=str(form.get('weekday','')); class_date=str(form.get('class_date','')).strip()
+    start=str(form.get('start_time','')).strip(); duration=str(form.get('duration_minutes','')).strip()
+    teacher=str(form.get('teacher_id',''))
+    if grade not in ACADEMY_GRADES or subject not in ACADEMY_SUBJECTS: raise ValueError('Choose a valid grade and subject.')
+    if not teacher.isdigit() or not conn.execute("SELECT id FROM users WHERE id=? AND role='admin' AND status='active'",(int(teacher),)).fetchone(): raise ValueError('Choose an active teacher.')
+    if not re.fullmatch(r'\d{2}:\d{2}',start): raise ValueError('Enter a valid start time.')
+    try: parsed=time.fromisoformat(start); mins=int(duration)
+    except ValueError: raise ValueError('Enter a valid time and duration.')
+    if not 5<=mins<=480 or parsed.hour*60+parsed.minute+mins>1440: raise ValueError('Duration must be 5–480 minutes and end by midnight.')
+    if recurrence=='weekly':
+        if day not in [str(i) for i in range(7)]: raise ValueError('Choose a weekday.')
+        weekday=int(day); class_date=None
+    elif recurrence=='once':
+        try: date.fromisoformat(class_date)
+        except ValueError: raise ValueError('Choose a valid class date.')
+        weekday=None
+    else: raise ValueError('Choose weekly or one-off scheduling.')
+    return (grade,subject,int(teacher),recurrence,weekday,class_date,start,mins)
+
+def _class_notify(conn, students, title, body):
+    for st in students: notify(conn,st['id'],title,body)
+
+@app.get('/my-classes', response_class=HTMLResponse)
+def my_classes(request: Request):
+    user=require_user(request,'student')
+    with connect() as conn:
+        students=_class_students(conn); own=next((s for s in students if s['id']==user['id']),None)
+        schedules=_schedules(conn)
+        subject_filter=request.query_params.get('subject','')
+        own_schedules=[dict(s, day_label=_day_label(s), end_time=_end_time(s)) for s in schedules if own and own in _members(s,students,schedules) and (s['recurrence']=='weekly' or s['class_date']>=_class_now().date().isoformat()) and (not subject_filter or s['subject']==subject_filter)]
+        records=[dict(r) for r in conn.execute('''SELECT a.status,s.session_date,s.subject,s.start_time,s.id,s.status session_status
+            FROM class_attendance a JOIN class_sessions s ON s.id=a.session_id WHERE a.student_id=?
+            ORDER BY s.session_date DESC,s.start_time DESC,s.id DESC''',(user['id'],)).fetchall()]
+    streak=0
+    for r in records:
+        if r['session_status']!='ended' or not r['status']: continue
+        if r['status']=='absent': break
+        streak+=1
+    best=run=0
+    for r in reversed(records):
+        if r['session_status']!='ended' or not r['status']: continue
+        run=run+1 if r['status']=='present' else 0
+        best=max(best,run)
+    today=_class_now().date()
+    stats=[]
+    for days in (7,30):
+        selected=[r for r in records if r['session_status']=='ended' and r['status'] and today-timedelta(days=days-1)<=date.fromisoformat(r['session_date'])<=today]
+        present=sum(r['status']=='present' for r in selected)
+        stats.append({'days':days,'total':len(selected),'present':present,'percent':round(100*present/len(selected)) if selected else None})
+    live=[r for r in records if r['session_status']=='live']
+    return render(request,'my_classes_student.html',{'subjects':(own or {}).get('subjects',[]),'schedules':own_schedules,'stats':stats,'streak':streak,'best':best,'live':live,'today':today.isoformat(),'subject_filter':subject_filter})
+
+@app.get('/admin/my-classes', response_class=HTMLResponse)
+def admin_my_classes(request: Request):
+    require_admin(request)
+    grade=request.query_params.get('grade',''); subject=request.query_params.get('subject',''); teacher=request.query_params.get('teacher',''); hour=request.query_params.get('time',''); query=request.query_params.get('q','').strip()[:120]
+    with connect() as conn:
+        students=_class_students(conn); schedules=_schedules(conn)
+        teachers=conn.execute("SELECT id,full_name FROM users WHERE role='admin' AND status='active' ORDER BY full_name").fetchall()
+        today=_class_now().date()
+        started={r['schedule_id'] for r in conn.execute('SELECT schedule_id FROM class_sessions WHERE session_date=?',(today.isoformat(),)).fetchall()}
+        rows=[]
+        for s in schedules:
+            if grade and grade!=s['grade'] or subject and subject!=s['subject'] or teacher and teacher!=str(s['teacher_id']) or hour and hour!=s['start_time']: continue
+            members=_members(s,students,schedules)
+            if query and not any(query.casefold() in (st['full_name']+' '+st['admission_no']).casefold() for st in members): continue
+            rows.append(dict(s, members=members,day_label=_day_label(s),end_time=_end_time(s), due=_due_today(s,today), started=s['id'] in started))
+        sessions=[dict(r) for r in conn.execute('''SELECT s.*,u.full_name teacher_name FROM class_sessions s JOIN users u ON u.id=s.teacher_id
+            ORDER BY s.id DESC LIMIT 100''').fetchall()]
+        for session in sessions:
+            session['roster']=[dict(r) for r in conn.execute('''SELECT a.student_id,a.status,u.full_name,u.admission_no FROM class_attendance a
+                JOIN users u ON u.id=a.student_id WHERE a.session_id=? ORDER BY u.full_name,u.id''',(session['id'],)).fetchall()]
+    return render(request,'my_classes_admin.html',{'rows':rows,'students':students,'teachers':teachers,'subjects':ACADEMY_SUBJECTS,'weekdays':WEEKDAYS,'sessions':sessions,'filters':{'grade':grade,'subject':subject,'teacher':teacher,'time':hour,'q':query},'today':_class_now().date().isoformat()})
+
+@app.post('/admin/my-classes/create')
+async def class_create(request: Request):
+    admin=require_admin(request); form=await request.form()
+    try:
+        with connect() as conn:
+            values=_class_values(form,conn); students=_class_students(conn); student_id=str(form.get('student_id','')).strip()
+            target=None
+            if student_id:
+                if not student_id.isdigit(): raise ValueError('Choose a valid student.')
+                target=next((s for s in students if s['id']==int(student_id)),None)
+                if not target or target['class_name']!=values[0] or values[1] not in target['subjects']: raise ValueError('The student must be active, in that grade and enrolled in that subject.')
+            conn.execute('''INSERT INTO class_schedules(grade,subject,teacher_id,recurrence,weekday,class_date,start_time,duration_minutes,student_id,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)''',values+(target['id'] if target else None,iso_now()))
+            recipients=[target] if target else [s for s in students if s['class_name']==values[0] and values[1] in s['subjects']]
+            _class_notify(conn,recipients,'Class scheduled',f'{values[1]} has been added to your timetable. Open My Classes for details.')
+            audit(conn,admin['id'],'Class scheduled',f'{values[0]} · {values[1]}')
+    except ValueError as e: return flash_redirect('/admin/my-classes',str(e),'error')
+    return flash_redirect('/admin/my-classes','Class added to the timetable.')
+
+@app.post('/admin/my-classes/update')
+async def class_update(request: Request):
+    admin=require_admin(request); form=await request.form(); selected=form.getlist('selection')
+    if not selected: return flash_redirect('/admin/my-classes','Select at least one schedule or student.','error')
+    try:
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            schedules=_schedules(conn); students=_class_students(conn); by_id={s['id']:s for s in schedules}; edits=[]
+            for item in selected:
+                parts=str(item).split(':')
+                if len(parts)!=2 or not all(p.isdigit() for p in parts): raise ValueError('Invalid selection.')
+                sid,uid=map(int,parts); s=by_id.get(sid)
+                if not s: raise ValueError('A selected class no longer exists. Refresh and try again.')
+                members=_members(s,students,schedules)
+                if uid and not any(st['id']==uid for st in members): raise ValueError('A selected student no longer belongs to this class.')
+                edits.append((s,uid,members))
+            if len(set(selected))!=len(selected) or any(uid and any(t['id']==s['id'] and not u for t,u,_ in edits) for s,uid,_ in edits): raise ValueError('Choose either the whole class or individual students, not both.')
+            start=str(form.get('start_time','')).strip(); duration=str(form.get('duration_minutes','')).strip(); subject=str(form.get('subject','')).strip(); teacher=str(form.get('teacher_id','')).strip()
+            if not any((start,duration,subject,teacher)): raise ValueError('Enter at least one change.')
+            recipients={}
+            for s,uid,members in edits:
+                vals={'grade':s['grade'],'subject':subject or s['subject'],'teacher_id':teacher or s['teacher_id'],'recurrence':s['recurrence'],'weekday':s['weekday'] if s['weekday'] is not None else '', 'class_date':s['class_date'] or '', 'start_time':start or s['start_time'],'duration_minutes':duration or s['duration_minutes']}
+                v=_class_values(vals,conn)
+                affected=[st for st in members if not uid or st['id']==uid]
+                if (uid or s['student_id']) and (not affected or v[1] not in affected[0]['subjects']): raise ValueError('A selected student is not enrolled in the new subject.')
+                if uid and not s['student_id']:
+                    conn.execute('''INSERT INTO class_schedules(parent_id,student_id,grade,subject,teacher_id,recurrence,weekday,class_date,start_time,duration_minutes,created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(parent_id,student_id) DO UPDATE SET
+                        grade=excluded.grade,subject=excluded.subject,teacher_id=excluded.teacher_id,recurrence=excluded.recurrence,
+                        weekday=excluded.weekday,class_date=excluded.class_date,start_time=excluded.start_time,
+                        duration_minutes=excluded.duration_minutes,active=1''',(s['id'],uid)+v+(iso_now(),))
+                else:
+                    conn.execute('''UPDATE class_schedules SET grade=?,subject=?,teacher_id=?,recurrence=?,weekday=?,class_date=?,start_time=?,duration_minutes=? WHERE id=?''',v+(s['id'],))
+                for st in affected: recipients[st['id']]=st
+                if not uid and subject and subject!=s['subject']:
+                    for st in students:
+                        if st['class_name']==s['grade'] and subject in st['subjects'] and not s['student_id']: recipients[st['id']]=st
+            _class_notify(conn,recipients.values(),'Timetable updated','Your class timetable has changed. Open My Classes to see the latest schedule.')
+            audit(conn,admin['id'],'Class schedule updated',f'{len(edits)} selection(s)')
+    except (ValueError, *INTEGRITY_ERRORS) as e: return flash_redirect('/admin/my-classes',str(e) if isinstance(e,ValueError) else 'This schedule changed. Refresh and try again.','error')
+    return flash_redirect('/admin/my-classes','Selected schedules updated.')
+
+@app.post('/admin/my-classes/{schedule_id}/start')
+def class_start(request: Request, schedule_id: int):
+    admin=require_admin(request)
+    try:
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE'); schedules=_schedules(conn); s=next((x for x in schedules if x['id']==schedule_id),None); today=_class_now().date()
+            if not s or not _due_today(s,today): raise ValueError('A session can only be started on its scheduled day in Pakistan time.')
+            if conn.execute('SELECT id FROM class_sessions WHERE schedule_id=? AND session_date=?',(schedule_id,today.isoformat())).fetchone(): raise ValueError('This class session has already been started today.')
+            members=_members(s,_class_students(conn),schedules)
+            # Do not count the same student twice for one recurring class if an
+            # individual override was edited or removed on the session date.
+            family=s['parent_id'] or s['id']
+            recorded={r['student_id'] for r in conn.execute('''SELECT a.student_id FROM class_attendance a
+                JOIN class_sessions x ON x.id=a.session_id JOIN class_schedules cs ON cs.id=x.schedule_id
+                WHERE x.session_date=? AND (cs.id=? OR cs.parent_id=?)''',(today.isoformat(),family,family)).fetchall()}
+            members=[st for st in members if st['id'] not in recorded]
+            if not members: raise ValueError('No eligible students remain for this class session today.')
+            conn.execute('''INSERT INTO class_sessions(schedule_id,session_date,subject,grade,start_time,duration_minutes,teacher_id,started_by,status,started_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)''',(schedule_id,today.isoformat(),s['subject'],s['grade'],s['start_time'],s['duration_minutes'],s['teacher_id'],admin['id'],'live',iso_now()))
+            session=conn.execute('SELECT id FROM class_sessions WHERE schedule_id=? AND session_date=?',(schedule_id,today.isoformat())).fetchone()
+            for st in members: conn.execute('INSERT INTO class_attendance(session_id,student_id) VALUES (?,?)',(session['id'],st['id']))
+            _class_notify(conn,members,'Class session started',f"Your {s['subject']} session has started. The online joining method is coming later.")
+            audit(conn,admin['id'],'Class session started',f"Session {session['id']}")
+    except (ValueError, *INTEGRITY_ERRORS) as e: return flash_redirect('/admin/my-classes',str(e) if isinstance(e,ValueError) else 'This session was already started.','error')
+    return flash_redirect('/admin/my-classes','Session started. Students have been notified; online joining is not connected yet.')
+
+@app.post('/admin/my-classes/session/{session_id}/end')
+def class_end(request: Request, session_id: int):
+    admin=require_admin(request)
+    with connect() as conn:
+        changed=conn.execute("UPDATE class_sessions SET status='ended',ended_at=? WHERE id=? AND status='live'",(iso_now(),session_id))
+        if not changed.rowcount: return flash_redirect('/admin/my-classes','Session is not live.','error')
+        audit(conn,admin['id'],'Class session ended',f'Session {session_id}')
+    return flash_redirect('/admin/my-classes','Session ended. Please mark attendance below.')
+
+@app.post('/admin/my-classes/session/{session_id}/attendance')
+async def class_mark(request: Request, session_id: int):
+    admin=require_admin(request); form=await request.form()
+    with connect() as conn:
+        session=conn.execute('SELECT * FROM class_sessions WHERE id=?',(session_id,)).fetchone()
+        if not session or session['status']!='ended': return flash_redirect('/admin/my-classes','End the session before marking attendance.','error')
+        roster=conn.execute('SELECT student_id,status FROM class_attendance WHERE session_id=?',(session_id,)).fetchall()
+        values=[(r,str(form.get(f"attendance_{r['student_id']}",'')).strip()) for r in roster]
+        if any(v not in ('','present','absent') for _,v in values): return flash_redirect('/admin/my-classes','Invalid attendance selection.','error')
+        for row,value in values:
+            value=value or None
+            if value!=row['status']:
+                conn.execute('UPDATE class_attendance SET status=?,marked_by=?,marked_at=? WHERE session_id=? AND student_id=?',(value,admin['id'],iso_now(),session_id,row['student_id']))
+                if value: notify(conn,row['student_id'],'Attendance updated',f"Your {session['subject']} attendance for {session['session_date']} was marked {value}.")
+        audit(conn,admin['id'],'Class attendance saved',f'Session {session_id}')
+    return flash_redirect('/admin/my-classes','Attendance saved. Unmarked students remain pending.')
+
+@app.post('/admin/my-classes/{schedule_id}/remove')
+def class_remove(request: Request, schedule_id: int):
+    admin=require_admin(request)
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        schedules=_schedules(conn); s=next((x for x in schedules if x['id']==schedule_id),None)
+        if not s: return flash_redirect('/admin/my-classes','Schedule not found.','error')
+        affected=[s]+[x for x in schedules if x['parent_id']==schedule_id]
+        ids=[x['id'] for x in affected]
+        for sid in ids:
+            if conn.execute("SELECT id FROM class_sessions WHERE schedule_id=? AND status='live'",(sid,)).fetchone():
+                return flash_redirect('/admin/my-classes','End live sessions before removing their schedules.','error')
+        students=_class_students(conn); recipients={}
+        for item in affected:
+            for st in _members(item,students,schedules): recipients[st['id']]=st
+            conn.execute('UPDATE class_schedules SET active=0 WHERE id=?',(item['id'],))
+        # Removing an individual override restores the original grade-wide class.
+        _class_notify(conn,recipients.values(),'Timetable updated','A class schedule has been removed or restored. Open My Classes to view your timetable.')
+        audit(conn,admin['id'],'Class schedule removed',f'Schedule {schedule_id}')
+    return flash_redirect('/admin/my-classes','Schedule removed. Session history is preserved.')

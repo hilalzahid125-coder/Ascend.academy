@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/v12.css?v=red-1">
   <link rel="stylesheet" href="/static/v13.css?v=red-1">
   <link rel="stylesheet" href="/static/v14.css?v=academy-2">
+  <link rel="stylesheet" href="/static/my-classes.css?v=1">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -25,6 +26,7 @@
     <nav>
       {% if user.role == 'admin' %}
       <a href="/admin" class="{{ 'active' if request.url.path=='/admin' else '' }}">Overview</a>
+      <a href="/admin/my-classes" class="{{ 'active' if request.url.path.startswith('/admin/my-classes') else '' }}">My Classes</a>
       {% if is_super_admin or 'students' in admin_permissions %}<a href="/admin/students" class="{{ 'active' if request.url.path.startswith('/admin/students') else '' }}">Students & points</a>{% endif %}
       {% if is_super_admin or 'challenges' in admin_permissions %}<a href="/admin/challenges" class="{{ 'active' if request.url.path.startswith('/admin/challenges') else '' }}">Challenges</a>{% endif %}
       {% if is_super_admin or 'achievements' in admin_permissions %}<a href="/admin/achievements" class="{{ 'active' if request.url.path.startswith('/admin/achievements') else '' }}">Achievements</a>{% endif %}
@@ -37,6 +39,7 @@
       <a href="/admin/account" class="{{ 'active' if request.url.path.startswith('/admin/account') else '' }}">My admin account</a>
       {% else %}
       <a href="/student" class="{{ 'active' if request.url.path=='/student' else '' }}">Overview</a>
+      <a href="/my-classes" class="{{ 'active' if request.url.path=='/my-classes' else '' }}">My Classes</a>
       <a href="/challenges" class="{{ 'active' if request.url.path.startswith('/challenges') else '' }}">Challenges</a>
       <a href="/leaderboards" class="{{ 'active' if request.url.path=='/leaderboards' else '' }}">Leaderboards</a>
       <a href="/achievements" class="{{ 'active' if request.url.path=='/achievements' else '' }}">Achievements</a>
@@ -64,5 +67,5 @@
   </main>
 </div>
 {% else %}{% block auth_content %}{% endblock %}{% endif %}
-<script src="/static/app.js?v=academy-3"></script>
+<script src="/static/app.js?v=academy-4"></script>
 </body></html>
