@@ -56,8 +56,9 @@ def test_csrf_and_security_headers():
 def test_registration_login_and_role_guard():
     with TestClient(app) as client:
         csrf(client,'/register')
-        r=post(client,'/register',{'admission_no':'A-6738','activation_code':'CODE01','password':'Student123','confirm_password':'Student123'})
-        assert r.status_code == 303
+        import json
+        r=post(client,'/register/academy',{'profile':json.dumps(academy_profile(admissionNo='A-6738',activationCode='CODE01',fullName='Ahmed Khan'))})
+        assert r.status_code == 200
         r=post(client,'/login',{'admission_no':'A-6738','password':'Student123'})
         assert r.status_code == 303 and r.headers['location']=='/student'
         assert client.get('/student').status_code == 200
@@ -86,7 +87,7 @@ def test_bulk_csv_import_and_activation_export():
     admin=TestClient(app)
     csrf(admin)
     post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
-    csv_data='Admission Number,Full Name,Class,Section\nA-7101,Ali Test,9,B\nA-7102,Umar Test,8,A\n'
+    csv_data='Admission Number,Full Name,Class,Section\nA-7101,Ali Test,O-Level - Grade 9,B\nA-7102,Umar Test,O-Level - Grade 10,A\n'
     r=post(admin,'/admin/students/import',files={'roster':('students.csv',csv_data.encode(),'text/csv')})
     assert r.status_code==200
     assert '2 students added' in r.text
@@ -126,7 +127,7 @@ def test_production_bulk_onboarding_after_prepare():
     admin=TestClient(app)
     csrf(admin)
     post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
-    csv_data='Admission Number,Full Name,Class,Section\nA-7201,Production Student,10,A\n'
+    csv_data='Admission Number,Full Name,Class,Section\nA-7201,Production Student,O-Level - Grade 10,A\n'
     r=post(admin,'/admin/students/import',files={'roster':('production.csv',csv_data.encode(),'text/csv')})
     assert r.status_code==200
     with connect() as c:
@@ -136,8 +137,9 @@ def test_production_bulk_onboarding_after_prepare():
     post(admin,'/admin/settings',{'school_name':'Peshawar Model School Boys IV','app_name':'ASCEND','tagline':'Compete • Achieve • Grow','creator_credit':'Made by Abdul Hanan Sethi','registration_enabled':'on'})
     student_client=TestClient(app)
     csrf(student_client,'/register')
-    r=post(student_client,'/register',{'admission_no':'A-7201','activation_code':code,'password':'Student7201','confirm_password':'Student7201'})
-    assert r.status_code==303 and r.headers['location'].startswith('/login?')
+    import json
+    r=post(student_client,'/register/academy',{'profile':json.dumps(academy_profile(admissionNo='A-7201',activationCode=code,fullName='Production Student',password='Student7201',confirmPassword='Student7201'))})
+    assert r.status_code==200 and r.json()['redirect']=='/student'
     r=post(student_client,'/login',{'admission_no':'A-7201','password':'Student7201'})
     assert r.status_code==303 and r.headers['location']=='/student'
 
@@ -256,7 +258,7 @@ def test_student_home_has_leaderboard_challenge_achievement_reward_previews():
     post(client,'/login',{'admission_no':'A-7201','password':'Student7201'})
     page=client.get('/student')
     assert page.status_code==200
-    assert 'School leaderboard' in page.text
+    assert 'Academy leaderboard' in page.text
     assert 'View all challenges' in page.text
     assert 'Achievements' in page.text
     assert 'Rewards' in page.text
@@ -311,11 +313,11 @@ def test_super_admin_can_delete_student_with_cascade_but_staff_cannot():
 
 
 def academy_profile(**changes):
-    profile = {'fullName': 'New Student', 'email': 'student@example.com', 'phone': '',
+    profile = {'fullName': 'New Student', 'email': 'student@example.com', 'phone': '03001112222',
                'countryCode': '+92', 'gender': 'Male', 'dob': '2010-02-03',
                'guardianName': 'Parent', 'guardianPhone': '03001234567', 'country': 'Pakistan',
                'province': 'Khyber Pakhtunkhwa', 'program': 'O-Level', 'subjects': ['Maths'],
-               'schoolRegion': 'Peshawar', 'schoolType': 'Private', 'grade': 'O-Level - Grade 10',
+               'schoolName': 'Test School', 'schoolRegion': 'Peshawar', 'schoolType': 'Private', 'grade': 'O-Level - Grade 10',
                'section': 'A', 'admissionNo': 'A-9981', 'activationCode': 'CODE81',
                'password': 'Student123', 'confirmPassword': 'Student123', 'terms': True, 'captcha': '5'}
     profile.update(changes)
@@ -341,7 +343,7 @@ def test_academy_signup_connects_real_dashboard():
         assert replay.status_code == 400
     with connect() as c:
         row = c.execute("SELECT u.full_name,u.claimed,p.profile_json FROM users u JOIN academy_signup_profiles p ON p.user_id=u.id WHERE u.admission_no='A-9981'").fetchone()
-        assert row['full_name'] == 'School Record' and row['claimed'] == 1
+        assert row['full_name'] == 'New Student' and row['claimed'] == 1
         saved = json.loads(row['profile_json'])
         assert saved['email'] == 'student@example.com' and 'password' not in saved and 'activationCode' not in saved
 
@@ -398,7 +400,7 @@ def test_end_to_end_academy_and_role_workflow():
     with TestClient(app) as owner, TestClient(app) as student, TestClient(app) as staff:
         csrf(owner)
         assert post(owner, '/login', {'admission_no':'ADMIN-0001','password':'StrongAdmin123'}).headers['location'] == '/admin'
-        assert post(owner, '/admin/students/create', {'admission_no':'A-9901','full_name':'Flow Student','class_name':'10','section_name':'A'}).status_code == 303
+        assert post(owner, '/admin/students/create', {'admission_no':'A-9901','full_name':'Flow Student','class_name':'O-Level - Grade 10','section_name':'A'}).status_code == 303
         with connect() as c:
             record = c.execute("SELECT id,activation_code FROM users WHERE admission_no='A-9901'").fetchone()
             student_id, code = record['id'], record['activation_code']
@@ -425,12 +427,12 @@ def test_end_to_end_academy_and_role_workflow():
         assert staff.get('/admin/admins').status_code == 403
         assert post(staff, '/admin/rewards/create', {'name':'Unauthorized','description':'No','points_required':'10'}).status_code == 403
 
-        for title, klass in [('Flow Challenge', '10'), ('Restricted Challenge', '9')]:
+        for title, klass in [('Flow Challenge', 'O-Level - Grade 10'), ('Restricted Challenge', 'O-Level - Grade 9')]:
             r=post(staff, '/admin/challenges/create', {'title':title,'description':'Show your work','category':'academic','points':'50','status':'active','eligibility_class':klass,'eligibility_section':'A'})
             assert r.status_code == 303 and 'Challenge%20created' in r.headers['location']
         assert post(owner,'/admin/achievements/create',{'name':'Flow Achievement','description':'Great work','category':'academic','points_required':'50'}).status_code == 303
         assert post(owner,'/admin/rewards/create',{'name':'Flow Reward','description':'A prize','points_required':'50'}).status_code == 303
-        assert post(owner,'/admin/announcements/create',{'title':'Flow Announcement','body':'Welcome','audience':'class','class_name':'10'}).status_code == 303
+        assert post(owner,'/admin/announcements/create',{'title':'Flow Announcement','body':'Welcome','audience':'class','class_name':'O-Level - Grade 10'}).status_code == 303
         with connect() as c:
             allowed=c.execute("SELECT id FROM challenges WHERE title='Flow Challenge'").fetchone()['id']
             restricted=c.execute("SELECT id FROM challenges WHERE title='Restricted Challenge'").fetchone()['id']
@@ -483,7 +485,7 @@ def test_activation_security_and_zero_point_reward():
         csrf(client, '/register')
         for adm, code in [('A-9902','SAFE01'),('A-9903','')]:
             r=post(client,'/register',{'admission_no':adm,'activation_code':code,'password':'Student123','confirm_password':'Student123'})
-            assert r.status_code == 422 or (r.status_code == 303 and 'could%20not%20activate' in r.headers['location'])
+            assert r.status_code == 303 and 'complete%20the%20academy%20registration' in r.headers['location']
         r=post(client,'/register/academy',{'profile':json.dumps(academy_profile(admissionNo='A-9902', activationCode='SAFE01'))})
         assert r.status_code==400
     with TestClient(app) as owner:
@@ -618,3 +620,62 @@ def test_bootstrap_does_not_promote_existing_staff():
     with connect() as c:
         row=c.execute("SELECT admin_level FROM users WHERE admission_no='BOOTSTRAP-STAFF'").fetchone()
         assert row['admin_level'] == 'staff'
+
+
+def test_academy_details_are_consistent_and_private():
+    import json
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+        row=c.execute("SELECT id,full_name,class_name,section_name FROM users WHERE admission_no='A-9901'").fetchone()
+        student_id=row['id']
+    with TestClient(app) as student, TestClient(app) as owner:
+        csrf(student); post(student,'/login',{'admission_no':'A-9901','password':'Student123'})
+        overview=student.get('/student')
+        assert overview.status_code == 200
+        for text in ('Flow Student','O-Level - Grade 10','Test School','Pakistan','Maths'):
+            assert text in overview.text
+        assert 'Attendance' not in overview.text
+        csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+        listing=owner.get('/admin/students').text
+        for text in ('Parent','03001112222','student@example.com','Pakistan','Test School','O-Level - Grade 10'):
+            assert text in listing
+        updated=post(owner,f'/admin/students/{student_id}/edit',{
+            'full_name':'Flow Student','class_name':'A-Level - AS (Grade 12)','section_name':'B',
+            'guardian_name':'Parent Updated','phone':'123456789','country_code':'+92',
+            'email':'updated@example.com','country':'Pakistan','school_name':'Updated School'})
+        assert updated.status_code == 303 and 'updated' in updated.headers['location']
+        overview=student.get('/student').text
+        assert 'A-Level - AS (Grade 12)' in overview and 'Updated School' in overview
+        with connect() as c:
+            stored=json.loads(c.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(student_id,)).fetchone()['profile_json'])
+            assert stored['guardianName']=='Parent Updated' and stored['program']=='A-Level'
+            assert stored['subjects']==['Maths']
+        # A bad new grade is rejected without overwriting the record.
+        bad=post(owner,f'/admin/students/{student_id}/edit',{'full_name':'Flow Student','class_name':'Grade 3','section_name':'B'})
+        assert 'valid%20academy%20grade' in bad.headers['location']
+        with connect() as c:
+            assert c.execute('SELECT class_name FROM users WHERE id=?',(student_id,)).fetchone()['class_name']=='A-Level - AS (Grade 12)'
+        assert student.get('/admin/students').status_code == 403
+
+
+def test_signup_rejects_unsupported_grade_subject_and_missing_school():
+    import json
+    with connect() as c:
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        c.execute('DELETE FROM auth_attempts')
+    with TestClient(app) as client:
+        csrf(client,'/register')
+        for changed in ({'grade':'Grade 3'}, {'subjects':['Physics']}, {'schoolName':''}, {'phone':''}):
+            result=post(client,'/register/academy',{'profile':json.dumps(academy_profile(**changed))})
+            assert result.status_code==400
+
+
+def test_roster_template_and_unsupported_grade_validation():
+    with connect() as c: c.execute('DELETE FROM auth_attempts')
+    with TestClient(app) as owner:
+        csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+        template=owner.get('/admin/students/import-template.csv')
+        assert template.text.splitlines()[1]=='A-7001,Student Name,O-Level - Grade 10,A'
+        r=post(owner,'/admin/students/import',files={'roster':('roster.csv',b'Admission Number,Full Name,Grade,Section\nA-8877,Invalid Grade,Grade 2,A\n','text/csv')})
+        assert r.status_code==200 and 'valid O-Level or A-Level' in r.text
+        with connect() as c: assert not c.execute("SELECT 1 FROM users WHERE admission_no='A-8877'").fetchone()

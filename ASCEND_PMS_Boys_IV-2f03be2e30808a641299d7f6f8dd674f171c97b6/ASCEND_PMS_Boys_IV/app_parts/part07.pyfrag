@@ -66,6 +66,7 @@ def admin_announcement_create(request: Request,title:str=Form(...),body:str=Form
     a=require_admin(request,'announcements'); audience=audience if audience in {'all','class','section'} else 'all'
     try:
         title=_clean_text(title,160); body=_clean_text(body,5000); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
+        if class_name and class_name not in ACADEMY_GRADES: raise ValueError('Choose a valid academy grade.')
     except ValueError as exc: return flash_redirect('/admin/announcements',str(exc),'error')
     with connect() as conn:
         conn.execute('INSERT INTO announcements(title,body,audience,class_name,section_name,status,created_by,created_at) VALUES (?,?,?,?,?,"published",?,?)',(title.strip(),body.strip(),audience,class_name or None,section_name or None,a['id'],iso_now())); audit(conn,a['id'],'announcement_published',title.strip())

@@ -4,11 +4,11 @@
   <div class="student-home-copy">
     <span class="eyebrow">YOUR ASCEND</span>
     <h1>{{ user.full_name }}</h1>
-    <p>Keep building your score, completing challenges, and moving up the school leaderboard.</p>
+    <p>Keep building your score, completing challenges, and moving up the academy leaderboard.</p>
     <div class="student-home-scoreline">
       <div><span>Total points</span><strong>{{ points }}</strong></div>
       <div><span>Overall rank</span><strong>#{{ rank }}</strong></div>
-      <div><span>Class</span><strong>{{ user.class_name or '—' }}{{ ('-' ~ user.section_name) if user.section_name else '' }}</strong></div>
+      <div><span>Grade</span><strong>{{ user.class_name or '—' }}{{ ('-' ~ user.section_name) if user.section_name else '' }}</strong></div>
       <div><span>Unread</span><strong>{{ unread_notifications }}</strong></div>
     </div>
   </div>
@@ -19,8 +19,19 @@
   </div>
 </section>
 
+<section class="panel academy-profile-summary" aria-label="Your academy details">
+  <div class="panel-head"><div><span class="eyebrow">YOUR DETAILS</span><h2>Academy overview</h2></div><a href="/profile">View profile</a></div>
+  <div class="academy-details-grid">
+    <div><span>Name</span><strong>{{ user.full_name }}</strong></div>
+    <div><span>Grade</span><strong>{{ user.class_name or 'Not provided' }}</strong></div>
+    <div><span>School</span><strong>{{ academy_profile.get('schoolName') or 'Not provided' }}</strong></div>
+    <div><span>Country</span><strong>{{ academy_profile.get('country') or 'Not provided' }}</strong></div>
+    <div><span>Subjects</span><strong>{{ academy_profile.get('subjects', [])|join(', ') or 'Not provided' }}</strong></div>
+  </div>
+</section>
+
 <section class="home-section home-leaderboard-section">
-  <div class="home-section-head"><div><span class="eyebrow">LIVE RANKINGS</span><h2>School leaderboard</h2><p>See who is leading across ASCEND right now.</p></div></div>
+  <div class="home-section-head"><div><span class="eyebrow">LIVE RANKINGS</span><h2>Academy leaderboard</h2><p>See who is leading across ASCEND right now.</p></div></div>
   {% if leaders %}
   <div class="home-podium">
     {% if leaders|length > 1 %}<article class="home-pod second"><span class="home-rank">#2</span>{% if leaders[1].profile_picture_path %}<img src="{{ leaders[1].profile_picture_path }}" alt="{{ leaders[1].full_name }}">{% else %}<div class="home-pod-fallback">{{ leaders[1].full_name[:1] }}</div>{% endif %}<strong>{{ leaders[1].full_name }}</strong><small>{{ leaders[1].class_name or '—' }} · {{ leaders[1].points }} pts</small></article>{% endif %}

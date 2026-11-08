@@ -18,6 +18,7 @@ type FormDataType = {
   province: string
   program: string
   subjects: string[]
+  schoolName: string
   schoolRegion: string
   schoolType: string
   grade: string
@@ -121,6 +122,7 @@ export default function App() {
     province: "",
     program: "O-Level",
     subjects: ["Maths", "Computer Science"],
+    schoolName: "",
     schoolRegion: "",
     schoolType: "",
     grade: "",
@@ -454,6 +456,7 @@ export default function App() {
     if (s === 1) {
       if (!formData.fullName.trim()) e.fullName = "Required"
       if (!formData.email.trim() || !/\S+@\S+\.\S+/.test(formData.email)) e.email = "Valid email required"
+      if (!formData.phone.trim()) e.phone = "Required"
       if (!formData.gender) e.gender = "Required"
       if (!formData.dob || formData.dob > new Date().toISOString().slice(0, 10)) e.dob = "Enter a valid date of birth"
     }
@@ -464,6 +467,7 @@ export default function App() {
       if (!formData.province) e.province = "Required"
     }
     if (s === 3) {
+      if (!formData.schoolName.trim()) e.schoolName = "Required"
       if (!formData.schoolRegion.trim()) e.schoolRegion = "Required"
       if (!formData.schoolType) e.schoolType = "Required"
       if (!formData.grade) e.grade = "Required"
@@ -793,13 +797,14 @@ export default function App() {
                       </div>
 
                       <div>
-                        <label className="text-[11px] font-extrabold tracking-widest text-black/60">PHONE NUMBER (OPTIONAL)</label>
+                        <label className="text-[11px] font-extrabold tracking-widest text-black/60">PHONE NUMBER *</label>
                         <div className={`mt-1.5 flex items-center border-2 rounded-xl bg-white overflow-hidden transition-all ${focusedField === "phone" ? "border-[#C20A0A] shadow-[0_0_0_4px_rgba(194,10,10,0.08)]" : "border-black/10"}`}>
                           <select value={formData.countryCode} onChange={e => updateField("countryCode", e.target.value)} className="px-3 py-2.5 bg-black/[0.04] border-r border-black/10 text-[13px] font-bold outline-none">
                             <option>+92</option><option>+1</option><option>+44</option><option>+91</option><option>+61</option><option>+971</option>
                           </select>
                           <input onFocus={e => onFieldFocus("phone", e.currentTarget)} onBlur={onFieldBlur} value={formData.phone} onChange={e => updateField("phone", e.target.value)} placeholder="(555) 000-0000" className="flex-1 px-3 py-2.5 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                         </div>
+                        {errors.phone && <p className="text-[11px] text-red-500 font-bold mt-1">{errors.phone}</p>}
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -933,6 +938,11 @@ export default function App() {
 
                     <div className="mt-5 p-4 rounded-2xl border border-black/10 bg-[#FFFBFB]">
                       <h4 className="text-[12px] font-extrabold tracking-widest text-black/70">WHERE YOU STUDY</h4>
+                      <div className="mt-3">
+                        <label className="text-[11px] font-bold text-black/60">School name *</label>
+                        <input value={formData.schoolName} onChange={e => updateField("schoolName", e.target.value)} maxLength={200} placeholder="Enter your school name" className={`mt-1.5 w-full border-2 rounded-xl px-3 py-2.5 text-[13px] font-semibold outline-none bg-white ${errors.schoolName ? "border-red-400" : "border-black/10"}`} />
+                        {errors.schoolName && <p className="text-[11px] text-red-500 font-bold mt-1">{errors.schoolName}</p>}
+                      </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
                         <div>
                           <label className="text-[11px] font-bold text-black/60">School state / region *</label>

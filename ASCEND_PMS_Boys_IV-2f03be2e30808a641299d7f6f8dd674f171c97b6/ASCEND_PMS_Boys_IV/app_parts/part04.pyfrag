@@ -2,9 +2,10 @@
 def profile(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
+        profile=academy_profile_from_row(conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(u['id'],)).fetchone())
         points=total_points(conn,u['id'])
         tx=conn.execute('SELECT * FROM point_transactions WHERE user_id=? ORDER BY id DESC LIMIT 50',(u['id'],)).fetchall()
-    return render(request,'profile.html',{'points':points,'transactions':tx})
+    return render(request,'profile.html',{'points':points,'transactions':tx,'academy_profile':profile})
 
 @app.post('/profile/photo')
 async def profile_photo_upload(request: Request, photo: UploadFile=File(...)):

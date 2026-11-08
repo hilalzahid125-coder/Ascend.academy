@@ -105,7 +105,7 @@ def login(request: Request, admission_no: str=Form(...), password: str=Form(...)
             return flash_redirect('/login','Incorrect admission number or password.','error')
         if u['status']!='active':
             _record_failure(conn,key); _record_failure(conn,ip_key)
-            return flash_redirect('/login','This account is not active. Please contact the school office.','error')
+            return flash_redirect('/login','This account is not active. Please contact the academy office.','error')
         _clear_failures(conn,key)
         token=new_token(); conn.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)',
             (token_hash(token),u['id'],iso_expiry(),iso_now()))
@@ -114,30 +114,9 @@ def login(request: Request, admission_no: str=Form(...), password: str=Form(...)
     return r
 
 @app.post('/register')
-def register(request: Request, admission_no: str=Form(...), activation_code: str=Form(...), password: str=Form(...), confirm_password: str=Form(...)):
-    s=settings()
-    if s.get('registration_enabled')!='1': return flash_redirect('/register','Student registration is currently closed.','error')
-    admission_no=admission_no.strip().upper()[:32]; activation_code=activation_code.strip().upper()[:32]
-    key=_attempt_key('register',request,admission_no); ip_key=_attempt_key('register-ip',request,'*')
-    if not ADMISSION_RE.match(admission_no): return flash_redirect('/register','Use a valid admission number, for example A-6738.','error')
-    if password!=confirm_password: return flash_redirect('/register','Your passwords do not match.','error')
-    if len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password):
-        return flash_redirect('/register','Password must be 8–128 characters and include letters and numbers.','error')
-    with connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        if _rate_limited(conn,key,8,15) or _rate_limited(conn,ip_key,30,15):
-            return flash_redirect('/register','Too many activation attempts. Please wait 15 minutes and try again.','error')
-        u=conn.execute('SELECT * FROM users WHERE admission_no=?',(admission_no,)).fetchone()
-        if not u or u['role']!='student' or u['status']!='unclaimed' or u['claimed'] or not u['activation_code'] or not hmac.compare_digest(u['activation_code'].upper().encode('utf-8'),activation_code.encode('utf-8')):
-            _record_failure(conn,key); _record_failure(conn,ip_key)
-            return flash_redirect('/register','We could not activate this account. Check the admission number and activation code, or contact the school administrator.','error')
-        if u['activation_code_expires_at'] and u['activation_code_expires_at'] < _now().isoformat():
-            _record_failure(conn,key); _record_failure(conn,ip_key)
-            return flash_redirect('/register','This activation code has expired. Ask an administrator to issue a new one.','error')
-        _clear_failures(conn,key)
-        conn.execute('UPDATE users SET password_hash=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=?',(hash_password(password),u['id']))
-        notify(conn,u['id'],'Welcome to ASCEND','Your account is active. Start completing challenges and climbing the leaderboards.')
-    return flash_redirect('/login','Account created successfully. You can now sign in.')
+def register_legacy(request: Request):
+    # Old clients cannot skip the academy profile and grade validation.
+    return flash_redirect('/register','Please complete the academy registration form.','error')
 
 @app.post('/register/academy')
 def academy_register(request: Request, profile: str=Form(...)):
@@ -149,10 +128,10 @@ def academy_register(request: Request, profile: str=Form(...)):
     try:
         data = json.loads(profile)
         if not isinstance(data, dict): raise ValueError()
-        required = ('fullName', 'email', 'gender', 'dob', 'guardianName', 'guardianPhone',
+        required = ('fullName', 'email', 'phone', 'schoolName', 'gender', 'dob', 'guardianName', 'guardianPhone',
                     'country', 'province', 'program', 'schoolRegion', 'schoolType', 'grade',
                     'admissionNo', 'activationCode', 'password', 'confirmPassword')
-        optional = ('phone', 'countryCode', 'section')
+        optional = ('countryCode', 'section')
         for name in required + optional:
             value = data.get(name, '')
             if not isinstance(value, str) or len(value) > (128 if name in ('password', 'confirmPassword') else 200):
@@ -190,14 +169,14 @@ def academy_register(request: Request, profile: str=Form(...)):
         u = conn.execute('SELECT * FROM users WHERE admission_no=?', (admission_no,)).fetchone()
         if not u or u['role'] != 'student' or u['status'] != 'unclaimed' or u['claimed'] or not u['activation_code'] or not hmac.compare_digest(u['activation_code'].upper().encode('utf-8'), code.encode('utf-8')):
             _record_failure(conn, key); _record_failure(conn, ip_key)
-            return fail('We could not activate this account. Check the admission number and activation code, or contact the school administrator.')
+            return fail('We could not activate this account. Check the admission number and activation code, or contact the academy administrator.')
         if u['activation_code_expires_at'] and u['activation_code_expires_at'] < _now().isoformat():
             _record_failure(conn, key); _record_failure(conn, ip_key)
             return fail('This activation code has expired. Ask an administrator to issue a new one.')
         _clear_failures(conn, key)
-        conn.execute('UPDATE users SET password_hash=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=?', (hash_password(password), u['id']))
+        conn.execute('UPDATE users SET password_hash=?,full_name=?,class_name=?,section_name=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=?', (hash_password(password), data['fullName'].strip(), data['grade'].strip(), data.get('section', '').strip(), u['id']))
         # Keep submitted profile details separately from the school-managed student record.
-        saved = {name: data.get(name, '').strip() for name in ('fullName', 'email', 'phone', 'countryCode', 'gender', 'dob', 'guardianName', 'guardianPhone', 'country', 'province', 'program', 'schoolRegion', 'schoolType', 'grade', 'section')}
+        saved = {name: data.get(name, '').strip() for name in ('fullName', 'email', 'phone', 'countryCode', 'gender', 'dob', 'guardianName', 'guardianPhone', 'country', 'province', 'program', 'schoolName', 'schoolRegion', 'schoolType', 'grade', 'section')}
         saved['subjects'] = subjects
         conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET profile_json=excluded.profile_json,created_at=excluded.created_at', (u['id'], json.dumps(saved), iso_now()))
         notify(conn, u['id'], 'Welcome to ASCEND', 'Your account is active. Start completing challenges and climbing the leaderboards.')

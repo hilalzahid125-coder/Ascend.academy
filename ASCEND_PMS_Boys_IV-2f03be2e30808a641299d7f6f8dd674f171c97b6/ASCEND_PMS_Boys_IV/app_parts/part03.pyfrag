@@ -74,7 +74,7 @@ def leaderboards(request: Request, category: str='overall', period: str='all', c
     if cond: q+=' AND '+' AND '.join(cond)
     if class_name: wh.append('u.class_name=?'); args.append(class_name)
     if section_name: wh.append('u.section_name=?'); args.append(section_name)
-    q+=' WHERE '+' AND '.join(wh)+' GROUP BY u.id ORDER BY points DESC,u.full_name ASC'
+    q+=' WHERE '+' AND '.join(wh)+' GROUP BY u.id ORDER BY points DESC,u.full_name ASC,u.id ASC'
     with connect() as conn:
         rows=conn.execute(q,args).fetchall()
         classes=[r['class_name'] for r in conn.execute('SELECT DISTINCT class_name FROM users WHERE role="student" AND class_name IS NOT NULL AND class_name!="" ORDER BY class_name').fetchall()]

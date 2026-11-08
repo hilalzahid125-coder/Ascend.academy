@@ -63,14 +63,19 @@ def admin_challenges_report_csv(request: Request):
 def admin_students(request: Request):
     require_admin(request,'students')
     with connect() as conn:
-        rows=conn.execute('''SELECT u.*,COALESCE(SUM(p.amount),0) points FROM users u LEFT JOIN point_transactions p ON p.user_id=u.id
-                             WHERE u.role='student' GROUP BY u.id ORDER BY u.id DESC''').fetchall()
-    return render(request,'admin_students.html',{'students':rows})
+        rows=conn.execute('''SELECT u.*, sp.profile_json, COALESCE(SUM(p.amount),0) points FROM users u
+                             LEFT JOIN academy_signup_profiles sp ON sp.user_id=u.id
+                             LEFT JOIN point_transactions p ON p.user_id=u.id
+                             WHERE u.role='student' GROUP BY u.id,sp.profile_json ORDER BY u.id DESC''').fetchall()
+        students=[]
+        for row in rows:
+            item=dict(row); item['academy_profile']=academy_profile_from_row(row); students.append(item)
+    return render(request,'admin_students.html',{'students':students,'academy_grades':ACADEMY_GRADES})
 
 @app.get('/admin/students/import-template.csv')
 def admin_student_import_template(request: Request):
     require_admin(request,'students')
-    content='Admission Number,Full Name,Class,Section\\nA-7001,Student Name,10,A\\n'
+    content='Admission Number,Full Name,Grade,Section\nA-7001,Student Name,O-Level - Grade 10,A\n'
     return Response(content,media_type='text/csv',headers={'Content-Disposition':'attachment; filename="ascend_student_import_template.csv"'})
 
 @app.get('/admin/students/activation-codes.csv')
@@ -111,8 +116,8 @@ async def admin_students_import(request: Request, roster: UploadFile=File(...)):
                 errors.append(f'Row {idx}: invalid admission number {adm or "(blank)"}.'); continue
             if not name or len(name)>120:
                 errors.append(f'Row {idx}: missing or invalid student name.'); continue
-            if len(cl)>40 or len(sec)>40:
-                errors.append(f'Row {idx}: class or section is too long.'); continue
+            if (cl and cl not in ACADEMY_GRADES) or len(sec)>40:
+                errors.append(f'Row {idx}: choose a valid O-Level or A-Level grade and section.'); continue
             if adm in existing or adm in seen:
                 errors.append(f'Row {idx}: {adm} already exists; skipped.'); continue
             code=new_activation_code(); expiry=activation_expiry()
@@ -127,6 +132,7 @@ async def admin_students_import(request: Request, roster: UploadFile=File(...)):
 def admin_student_create(request: Request, admission_no:str=Form(...), full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form('')):
     a=require_admin(request,'students'); admission_no=admission_no.strip().upper()
     if not ADMISSION_RE.match(admission_no): return flash_redirect('/admin/students','Admission number format is invalid.','error')
+    if class_name.strip() and class_name.strip() not in ACADEMY_GRADES: return flash_redirect('/admin/students','Choose a valid academy grade.','error')
     code=new_activation_code()
     try:
         with connect() as conn:
@@ -139,14 +145,30 @@ def admin_student_create(request: Request, admission_no:str=Form(...), full_name
 
 
 @app.post('/admin/students/{student_id}/edit')
-def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form('')):
+def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form(''),
+                       guardian_name:Optional[str]=Form(None), phone:Optional[str]=Form(None), country_code:Optional[str]=Form(None),
+                       email:Optional[str]=Form(None), country:Optional[str]=Form(None), school_name:Optional[str]=Form(None)):
     a=require_admin(request,'students')
     try:
         full_name=_clean_text(full_name,120); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
+        supplied={'guardianName':guardian_name,'phone':phone,'countryCode':country_code,'email':email,'country':country,'schoolName':school_name}
+        supplied={k:_clean_text(v,20 if k=='countryCode' else 200,False) for k,v in supplied.items() if v is not None}
+        if supplied.get('email') and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', supplied['email']): raise ValueError('Enter a valid email address.')
     except ValueError as exc: return flash_redirect('/admin/students',str(exc),'error')
     with connect() as conn:
+        student=conn.execute('SELECT id, class_name FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
+        if not student: return flash_redirect('/admin/students','Student not found.','error')
+        # Preserve untouched legacy values; never create new unsupported grades.
+        if class_name and class_name not in ACADEMY_GRADES and class_name != (student['class_name'] or ''):
+            return flash_redirect('/admin/students','Choose a valid academy grade.','error')
         conn.execute('UPDATE users SET full_name=?,class_name=?,section_name=? WHERE id=? AND role="student"',(full_name,class_name,section_name,student_id))
-        audit(conn,a['id'],'student_updated',f'{student_id}: {full_name.strip()}')
+        row=conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(student_id,)).fetchone()
+        if row or any(supplied.values()):
+            profile=academy_profile_from_row(row)
+            profile.update(supplied); profile['fullName']=full_name; profile['grade']=class_name; profile['section']=section_name
+            if class_name in ACADEMY_GRADES: profile['program']='O-Level' if class_name.startswith('O-Level') else 'A-Level'
+            conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET profile_json=excluded.profile_json', (student_id,json.dumps(profile),iso_now()))
+        audit(conn,a['id'],'student_updated',f'{student_id}: {full_name}')
     return flash_redirect('/admin/students','Student details updated.')
 
 @app.post('/admin/students/{student_id}/photo')

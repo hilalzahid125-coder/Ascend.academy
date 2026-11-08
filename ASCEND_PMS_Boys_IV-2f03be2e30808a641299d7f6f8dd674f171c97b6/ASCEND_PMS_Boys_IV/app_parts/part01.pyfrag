@@ -125,6 +125,19 @@ def _record_failure(conn, key: str):
 def _clear_failures(conn, key: str):
     conn.execute('DELETE FROM auth_attempts WHERE attempt_key=?',(key,))
 
+ACADEMY_GRADES = ('O-Level - Grade 9', 'O-Level - Grade 10', 'O-Level - Grade 11',
+                  'A-Level - AS (Grade 12)', 'A-Level - A2 (Grade 13)')
+ACADEMY_SUBJECTS = ('Maths', 'Computer Science')
+
+def academy_profile_from_row(row):
+    if not row or not row['profile_json']:
+        return {}
+    try:
+        profile = json.loads(row['profile_json'])
+        return profile if isinstance(profile, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
 def _clean_text(value: str, max_len: int, required: bool=True):
     value=(value or '').strip()
     if required and not value:
@@ -185,13 +198,18 @@ def flash_redirect(path: str, msg: str, kind: str='success'):
     return RedirectResponse(f'{path}?msg={quote(msg)}&kind={kind}', status_code=303)
 
 def current_user(request: Request):
+    if hasattr(request.state, 'current_user'):
+        return request.state.current_user
     token = request.cookies.get('pms_session')
-    if not token: return None
+    if not token:
+        request.state.current_user = None
+        return None
     with connect() as conn:
         row = conn.execute('''SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
                               WHERE s.token_hash=? AND s.expires_at>?''',
                            (token_hash(token), _now().isoformat())).fetchone()
-        return row
+    request.state.current_user = row
+    return row
 
 def require_user(request: Request, role: Optional[str]=None):
     user = current_user(request)

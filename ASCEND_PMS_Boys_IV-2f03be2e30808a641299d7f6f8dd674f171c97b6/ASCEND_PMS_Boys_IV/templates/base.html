@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="ASCEND — the student challenge, recognition and leaderboard platform for Peshawar Model School Boys IV.">
+  <meta name="description" content="ASCEND — the academy student challenge, recognition and leaderboard platform.">
   <meta name="theme-color" content="#c20a0a"><meta name="color-scheme" content="light">
   <title>{% block title %}{{ settings.app_name }}{% endblock %}</title>
   <link rel="icon" href="/static/app-logo.svg?v=red-1" type="image/svg+xml">
   <link rel="stylesheet" href="/static/style.css?v=red-1">
   <link rel="stylesheet" href="/static/v12.css?v=red-1">
   <link rel="stylesheet" href="/static/v13.css?v=red-1">
-  <link rel="stylesheet" href="/static/v14.css?v=red-1">
+  <link rel="stylesheet" href="/static/v14.css?v=academy-2">
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -21,7 +21,7 @@
       <img src="/static/app-logo.svg?v=red-1" alt="{{ settings.app_name }}">
       <span><strong>{{ settings.app_name }}</strong><small>{{ settings.tagline }}</small></span>
     </a>
-    <div class="school-chip"><img src="{{ settings.school_logo_path }}" alt="School logo"><span>{{ settings.school_name }}</span></div>
+    <div class="school-chip"><img src="{{ settings.school_logo_path }}" alt="Academy logo"><span>{{ settings.school_name }}</span></div>
     <nav>
       {% if user.role == 'admin' %}
       <a href="/admin" class="{{ 'active' if request.url.path=='/admin' else '' }}">Overview</a>
@@ -36,7 +36,7 @@
       {% if is_super_admin %}<div class="nav-divider"><span>SUPER ADMIN</span></div><a href="/admin/admins" class="{{ 'active' if request.url.path.startswith('/admin/admins') else '' }}">Admin team</a><a href="/admin/settings" class="{{ 'active' if request.url.path.startswith('/admin/settings') else '' }}">Brand & settings</a><a href="/admin/launch" class="{{ 'active' if request.url.path.startswith('/admin/launch') or request.url.path.startswith('/admin/backups') else '' }}">Launch & backups</a>{% endif %}
       <a href="/admin/account" class="{{ 'active' if request.url.path.startswith('/admin/account') else '' }}">My admin account</a>
       {% else %}
-      <a href="/student" class="{{ 'active' if request.url.path=='/student' else '' }}">Home</a>
+      <a href="/student" class="{{ 'active' if request.url.path=='/student' else '' }}">Overview</a>
       <a href="/challenges" class="{{ 'active' if request.url.path.startswith('/challenges') else '' }}">Challenges</a>
       <a href="/leaderboards" class="{{ 'active' if request.url.path=='/leaderboards' else '' }}">Leaderboards</a>
       <a href="/achievements" class="{{ 'active' if request.url.path=='/achievements' else '' }}">Achievements</a>
@@ -64,5 +64,5 @@
   </main>
 </div>
 {% else %}{% block auth_content %}{% endblock %}{% endif %}
-<script src="/static/app.js?v=1.4.0"></script>
+<script src="/static/app.js?v=academy-2"></script>
 </body></html>

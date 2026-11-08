@@ -188,7 +188,7 @@ CREATE INDEX IF NOT EXISTS idx_auth_attempts_key_time ON auth_attempts(attempt_k
 '''
 
 DEFAULT_SETTINGS = {
-    'school_name': 'Peshawar Model School Boys IV',
+    'school_name': 'ASCEND Academy',
     'app_name': 'ASCEND',
     'tagline': 'Compete • Achieve • Grow',
     'creator_credit': 'Made by Hilal Zahid',
@@ -262,6 +262,9 @@ def init_db():
             _migrate(conn)
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)', (k,v))
+        migrated=conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)', ('academy_identity_migrated','1'))
+        if migrated.rowcount:
+            conn.execute("UPDATE settings SET value=? WHERE key='school_name' AND value=?", ('ASCEND Academy', 'Peshawar Model School Boys IV'))
         conn.execute("UPDATE settings SET value=? WHERE key='creator_credit' AND value=?", ('Made by Hilal Zahid', 'Made by Abdul Hanan Sethi'))
         conn.execute("UPDATE settings SET value=? WHERE key='primary_color' AND lower(value)=?", ('#c20a0a', '#f97316'))
         now=datetime.now(timezone.utc).isoformat()

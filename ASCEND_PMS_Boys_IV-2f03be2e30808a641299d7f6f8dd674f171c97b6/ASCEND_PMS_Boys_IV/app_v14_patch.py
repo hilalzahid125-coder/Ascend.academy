@@ -12,7 +12,7 @@ def render(request: Request, name: str, context=None, status_code=200):
                     'is_super_admin':is_super_admin(user),
                     'admin_permissions':_admin_permissions(user),
                     'staff_permission_labels':STAFF_PERMISSION_LABELS,
-                    'app_version':APP_VERSION})
+                    'app_version':APP_VERSION,'academy_grades':ACADEMY_GRADES})
     response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
     if not request.cookies.get('pms_csrf'):
         set_app_cookie(response,'pms_csrf',csrf)
@@ -27,18 +27,19 @@ _v14_remove_route('/student','GET')
 def student_dashboard(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
+        profile=academy_profile_from_row(conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(u['id'],)).fetchone())
         points=total_points(conn,u['id'])
         rank=conn.execute('''SELECT 1+COUNT(*) rank FROM (
-                                SELECT u2.id,COALESCE(SUM(p.amount),0) total
+                                SELECT u2.id,u2.full_name,COALESCE(SUM(p.amount),0) total
                                 FROM users u2 LEFT JOIN point_transactions p ON p.user_id=u2.id
                                 WHERE u2.role='student' AND u2.status='active'
                                 GROUP BY u2.id
-                             ) x WHERE x.total > ?''',(points,)).fetchone()['rank']
+                             ) x WHERE x.total > ? OR (x.total = ? AND (x.full_name < ? OR (x.full_name = ? AND x.id < ?)))''',(points,points,u['full_name'],u['full_name'],u['id'])).fetchone()['rank']
         leaders=conn.execute('''SELECT u2.id,u2.full_name,u2.admission_no,u2.class_name,u2.section_name,u2.profile_picture_path,
                                        COALESCE(SUM(p.amount),0) points
                                 FROM users u2 LEFT JOIN point_transactions p ON p.user_id=u2.id
                                 WHERE u2.role='student' AND u2.status='active'
-                                GROUP BY u2.id ORDER BY points DESC,u2.full_name ASC LIMIT 3''').fetchall()
+                                GROUP BY u2.id ORDER BY points DESC,u2.full_name ASC,u2.id ASC LIMIT 3''').fetchall()
         challenges=conn.execute('''SELECT c.*, cp.status participation_status FROM challenges c
                                    LEFT JOIN challenge_participations cp ON cp.challenge_id=c.id AND cp.user_id=?
                                    WHERE c.status IN ('active','scheduled')
@@ -69,7 +70,7 @@ def student_dashboard(request: Request):
                                       ORDER BY id DESC LIMIT 3''',(u['class_name'],u['class_name'],u['section_name'])).fetchall()
         unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(u['id'],)).fetchone()['c']
     return render(request,'student_dashboard.html',{
-        'points':points,'rank':rank,'leaders':leaders,'challenges':challenges,
+        'points':points,'rank':rank,'academy_profile':profile,'leaders':leaders,'challenges':challenges,
         'achievements_preview':achievement_preview,'rewards_preview':rewards_preview,
         'transactions':tx,'announcements':announcements,'unread_notifications':unread
     })
