@@ -44,42 +44,106 @@ document.addEventListener('touchend',e=>{
 
 function openAdminPassword(id,name){document.getElementById('adminPasswordForm').action='/admin/admins/'+id+'/password';document.getElementById('adminPasswordTitle').textContent='Reset password · '+name;openModal('adminPassword')}
 
-// Sidebar GET navigation keeps the shared shell in place. Forms and downloads
-// retain ordinary browser navigation, and no private page is cached.
+// Keep the authenticated application shell in place for page navigation and
+// form saves. HTML is always fetched fresh; private pages are never cached.
 (function(){
   if(!document.querySelector('.app-shell')) return;
-  let controller=null, serial=0;
-  async function navigate(url, push){
+  const pages=new Set(['/student','/challenges','/leaderboards','/achievements','/rewards','/notifications','/profile',
+    '/admin','/admin/students','/admin/challenges','/admin/achievements','/admin/rewards','/admin/announcements',
+    '/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/about','/privacy']);
+  let controller=null, serial=0, saving=false, pendingPop=null;
+  function loading(on){
+    let bar=document.querySelector('.nav-loading');
+    if(on && !bar){bar=document.createElement('div');bar.className='nav-loading';bar.setAttribute('aria-hidden','true');document.body.append(bar)}
+    if(!on) bar?.remove();
+    const page=document.getElementById('main-content');
+    if(page){if(on)page.setAttribute('aria-busy','true');else page.removeAttribute('aria-busy')}
+  }
+  function notice(message){
+    const page=document.getElementById('main-content'); if(!page) return;
+    let box=document.getElementById('navigationNotice');
+    const container=document.querySelector('.modal.open .modal-card') || page;
+    if(!box){box=document.createElement('div');box.id='navigationNotice';box.className='toast danger';box.setAttribute('role','alert');container.prepend(box)}
+    else if(!container.contains(box))container.prepend(box);
+    box.textContent=message;
+  }
+  function applyPage(html, url, mode){
+    const doc=new DOMParser().parseFromString(html,'text/html');
+    const next=doc.getElementById('main-content'), nextNav=doc.querySelector('#sidebar nav');
+    const current=document.getElementById('main-content'), nav=document.querySelector('#sidebar nav');
+    if(!next || !nextNav || !current || !nav) return false;
+    current.replaceChildren(...next.childNodes); nav.innerHTML=nextNav.innerHTML;
+    // Settings and profile photo changes can also alter the shared shell.
+    const newTop=doc.querySelector('.topbar'), top=document.querySelector('.topbar');
+    if(top && newTop) top.replaceWith(newTop);
+    const newBrand=doc.querySelector('.school-chip'), brand=document.querySelector('.school-chip');
+    if(brand && newBrand) brand.replaceWith(newBrand);
+    document.title=doc.title;
+    if(mode==='push') history.pushState({ascendNavigation:true},'',url);
+    else if(mode==='replace') history.replaceState({ascendNavigation:true},'',url);
+    closeSidebar(); window.scrollTo(0,0);
+    current.setAttribute('tabindex','-1');current.focus({preventScroll:true});
+    return true;
+  }
+  async function navigate(url, mode='push'){
+    if(saving){notice('A change is still being saved. Please wait.');return}
     const sequence=++serial;
-    if(controller) controller.abort();
-    controller=new AbortController();
-    let indicator=document.querySelector('.nav-loading');
-    if(!indicator){indicator=document.createElement('div');indicator.className='nav-loading';indicator.setAttribute('aria-hidden','true');document.body.append(indicator)}
-    const current=document.getElementById('main-content');
-    current?.setAttribute('aria-busy','true');
+    if(controller) controller.abort(); controller=new AbortController();
+    loading(true);
     try{
       const response=await fetch(url,{credentials:'same-origin',headers:{'X-Requested-With':'ASCEND-Navigation'},signal:controller.signal,cache:'no-store'});
-      if(!response.ok || response.redirected || !response.headers.get('content-type')?.includes('text/html')) {location.assign(response.url||url);return}
-      const doc=new DOMParser().parseFromString(await response.text(),'text/html');
-      const next=doc.getElementById('main-content'), nextNav=doc.querySelector('#sidebar nav');
-      if(!next || !nextNav || !current || sequence!==serial) {if(sequence===serial)location.assign(url);return}
-      current.replaceChildren(...next.childNodes);
-      const nav=document.querySelector('#sidebar nav');
-      if(nav) nav.innerHTML=nextNav.innerHTML;
-      document.title=doc.title;
-      if(push) history.pushState({ascendNavigation:true},'',url);
-      closeSidebar();
-      window.scrollTo(0,0);
-      current.setAttribute('tabindex','-1');current.focus({preventScroll:true});
+      if(sequence!==serial)return;
+      if(!response.ok || !response.headers.get('content-type')?.includes('text/html')) {location.assign(response.url||url);return}
+      const html=await response.text(); if(sequence!==serial)return;
+      const finalUrl=response.url||url;
+      if(!applyPage(html,finalUrl,mode)) location.assign(finalUrl);
     }catch(err){if(err.name!=='AbortError') location.assign(url)}
-    finally{if(sequence===serial){indicator.remove();current?.removeAttribute('aria-busy')}}
+    finally{if(sequence===serial)loading(false)}
   }
   document.addEventListener('click',event=>{
-    const link=event.target.closest('#sidebar nav a');
+    const link=event.target.closest('.app-shell a');
     if(!link || event.defaultPrevented || event.button!==0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || link.hasAttribute('download') || link.target) return;
     const url=new URL(link.href,location.href);
-    if(url.origin!==location.origin || url.hash) return;
-    event.preventDefault();navigate(url.href,true);
+    if(url.origin!==location.origin || url.hash || !pages.has(url.pathname)) return;
+    event.preventDefault(); navigate(url.href);
   });
-  window.addEventListener('popstate',()=>navigate(location.href,false));
+  document.addEventListener('submit',async event=>{
+    const form=event.target;
+    if(event.defaultPrevented || !(form instanceof HTMLFormElement) || !form.closest('#main-content') || form.target || form.hasAttribute('data-no-ajax')) return;
+    const submitter=event.submitter;
+    const method=(submitter?.getAttribute('formmethod') || form.method || 'get').toLowerCase();
+    const url=new URL(submitter?.getAttribute('formaction') || form.action || location.href,location.href);
+    if(url.origin!==location.origin || !['get','post'].includes(method))return;
+    if(method==='get' && !pages.has(url.pathname))return;
+    event.preventDefault();
+    if(saving){notice('A change is still being saved. Please wait.');return}
+    const data=new FormData(form);
+    if(submitter && submitter.name) data.append(submitter.name,submitter.value);
+    if(method==='get'){
+      url.search=new URLSearchParams(Array.from(data,([key,value])=>[key,value instanceof File?value.name:value])).toString();
+      navigate(url.href);return;
+    }
+    // Never automatically retry a POST: it might already have been committed.
+    if(controller)controller.abort(); ++serial; saving=true; loading(true);
+    const buttons=Array.from(form.querySelectorAll('button:not([type]),button[type=submit],input[type=submit]'));
+    const disabled=buttons.map(button=>button.disabled);buttons.forEach(button=>button.disabled=true);
+    try{
+      const response=await fetch(url.href,{method:'POST',body:data,credentials:'same-origin',headers:{'X-Requested-With':'ASCEND-Navigation'},cache:'no-store'});
+      const finalUrl=new URL(response.url||url.href,location.href);
+      if(finalUrl.origin!==location.origin || finalUrl.pathname==='/login'){location.assign(finalUrl.href);return}
+      if(!response.ok){notice(response.status===403?'Your session or security token may have expired. Refresh and sign in again if needed.':`The change could not be confirmed (HTTP ${response.status}). Check the form and try again.`);return}
+      if(!response.headers.get('content-type')?.includes('text/html')){notice('The server responded unexpectedly. Check whether the change was saved before trying again.');return}
+      const html=await response.text();
+      // Non-redirect POST responses such as the bulk-import result are displayed
+      // in place without putting a POST-only URL into browser history.
+      const destination=response.redirected ? finalUrl.href : location.href;
+      const mode=response.redirected && finalUrl.pathname!==location.pathname ? 'push' : 'replace';
+      if(!applyPage(html,destination,mode))notice('The change may have been saved, but the page could not update. Refresh to check.');
+    }catch(err){notice('The connection was interrupted. The change may or may not have saved; check before trying again.')}
+    finally{
+      buttons.forEach((button,i)=>button.disabled=disabled[i]);saving=false;loading(false);
+      if(pendingPop){const url=pendingPop;pendingPop=null;navigate(url,'none')}
+    }
+  });
+  window.addEventListener('popstate',()=>{if(saving) pendingPop=location.href;else navigate(location.href,'none')});
 })();
