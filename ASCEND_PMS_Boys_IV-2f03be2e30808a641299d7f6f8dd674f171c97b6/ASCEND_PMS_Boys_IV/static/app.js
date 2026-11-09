@@ -19,6 +19,18 @@ document.addEventListener('click',e=>{if(e.target.classList.contains('modal'))e.
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.querySelectorAll('.modal.open').forEach(m=>m.classList.remove('open'));closeSidebar()}});
 function openStudentEdit(id,name,cls,section,profile={}){document.getElementById('studentEditForm').action=`/admin/students/${id}/edit`;document.getElementById('studentEditName').value=name;const grade=document.getElementById('studentEditClass');if(cls && !Array.from(grade.options).some(o=>o.value===cls)){const opt=new Option(`${cls} (existing)`,cls);opt.dataset.legacy='1';grade.add(opt)}grade.value=cls;document.getElementById('studentEditSection').value=section;for(const [id,key] of [['studentEditGuardian','guardianName'],['studentEditPhone','phone'],['studentEditCountryCode','countryCode'],['studentEditEmail','email'],['studentEditCountry','country'],['studentEditSchool','schoolName']])document.getElementById(id).value=profile[key]||'';document.querySelectorAll('#studentEditForm input[name=subjects]').forEach(box=>box.checked=Array.isArray(profile.subjects)&&profile.subjects.includes(box.value));openModal('editStudent')}
 function openChallengeEdit(id,title,description,category,points,start,end,cls,section){document.getElementById('challengeEditForm').action=`/admin/challenges/${id}/edit`;document.getElementById('challengeEditTitle').value=title;document.getElementById('challengeEditDescription').value=description;document.getElementById('challengeEditCategory').value=category;document.getElementById('challengeEditPoints').value=points;document.getElementById('challengeEditStart').value=start;document.getElementById('challengeEditEnd').value=end;const grade=document.getElementById('challengeEditClass');if(cls && !Array.from(grade.options).some(o=>o.value===cls)){grade.add(new Option(`${cls} (existing)`,cls))}grade.value=cls;document.getElementById('challengeEditSection').value=section;openModal('challengeEditModal')}
+function openStudentMore(id,name,path,status,grade,section,profile){
+  document.getElementById('studentMoreTitle').textContent=name;
+  document.getElementById('studentMoreEdit').onclick=()=>{closeModal('studentMore');openStudentEdit(id,name,grade,section,profile)};
+  document.getElementById('studentMorePoints').onclick=()=>{closeModal('studentMore');openPoints(id,name)};
+  document.getElementById('studentMorePhoto').onclick=()=>{closeModal('studentMore');openStudentPhoto(id,name,path)};
+  document.getElementById('studentMoreReset').action='/admin/students/'+id+'/reset';
+  document.getElementById('studentMoreStatus').action='/admin/students/'+id+'/status';
+  document.getElementById('studentMoreStatusValue').value=status==='disabled'?'active':'disabled';
+  document.getElementById('studentMoreStatusButton').textContent=status==='disabled'?'Enable account':'Disable account';
+  const deletion=document.getElementById('studentMoreDelete');if(deletion)deletion.action='/admin/students/'+id+'/delete';
+  openModal('studentMore');
+}
 function openStudentPhoto(id,name,path){document.getElementById('studentPhotoForm').action=`/admin/students/${id}/photo`;document.getElementById('studentPhotoRemoveForm').action=`/admin/students/${id}/photo/remove`;document.getElementById('studentPhotoTitle').textContent=`Profile picture · ${name}`;document.getElementById('studentPhotoRemoveButton').style.display=path?'inline-flex':'none';openModal('studentPhoto')}
 
 document.querySelectorAll('#sidebar nav a').forEach(a=>a.addEventListener('click',()=>{if(window.innerWidth<=820)closeSidebar()}));
@@ -52,19 +64,28 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     '/admin','/admin/my-classes','/admin/students','/admin/challenges','/admin/achievements','/admin/rewards','/admin/announcements',
     '/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/about','/privacy']);
   let controller=null, serial=0, saving=false, pendingPop=null;
-  function loading(on){
+  function loading(on, message='Opening…'){
     let bar=document.querySelector('.nav-loading');
+    let status=document.querySelector('.interaction-status');
     if(on && !bar){bar=document.createElement('div');bar.className='nav-loading';bar.setAttribute('aria-hidden','true');document.body.append(bar)}
-    if(!on) bar?.remove();
+    if(on && !status){status=document.createElement('div');status.className='interaction-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');document.body.append(status)}
+    if(on && status)status.textContent=message;
+    if(!on){bar?.remove();status?.remove()}
     const page=document.getElementById('main-content');
     if(page){if(on)page.setAttribute('aria-busy','true');else page.removeAttribute('aria-busy')}
+  }
+  function highlightNav(path){
+    document.querySelectorAll('#sidebar nav a').forEach(link=>{
+      const target=new URL(link.href,location.href).pathname;
+      link.classList.toggle('active', target===path);
+    });
   }
   function notice(message){
     const page=document.getElementById('main-content'); if(!page) return;
     let box=document.getElementById('navigationNotice');
     const container=document.querySelector('.modal.open .modal-card') || page;
     if(!box){box=document.createElement('div');box.id='navigationNotice';box.className='toast danger';box.setAttribute('role','alert');container.prepend(box)}
-    else if(!container.contains(box))container.prepend(box);
+    else if(box.parentElement!==container)container.prepend(box);
     box.textContent=message;
   }
   function applyPage(html, url, mode){
@@ -89,7 +110,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     if(saving){notice('A change is still being saved. Please wait.');return}
     const sequence=++serial;
     if(controller) controller.abort(); controller=new AbortController();
-    loading(true);
+    highlightNav(new URL(url,location.href).pathname); closeSidebar(); loading(true,'Opening…');
     try{
       const response=await fetch(url,{credentials:'same-origin',headers:{'X-Requested-With':'ASCEND-Navigation'},signal:controller.signal,cache:'no-store'});
       if(sequence!==serial)return;
@@ -97,7 +118,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
       const html=await response.text(); if(sequence!==serial)return;
       const finalUrl=response.url||url;
       if(!applyPage(html,finalUrl,mode)) location.assign(finalUrl);
-    }catch(err){if(err.name!=='AbortError') location.assign(url)}
+    }catch(err){if(err.name!=='AbortError'){if(mode==='none')location.assign(url);else{highlightNav(location.pathname);notice('Could not open this page. Check your connection and try again.')}}}
     finally{if(sequence===serial)loading(false)}
   }
   document.addEventListener('click',event=>{
@@ -124,8 +145,8 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
       navigate(url.href);return;
     }
     // Never automatically retry a POST: it might already have been committed.
-    if(controller)controller.abort(); ++serial; saving=true; loading(true);
-    const buttons=Array.from(form.querySelectorAll('button:not([type]),button[type=submit],input[type=submit]'));
+    if(controller)controller.abort(); ++serial; saving=true; loading(true,'Saving…');
+    const buttons=Array.from(form.elements).filter(el=>el.matches?.('button:not([type]),button[type=submit],input[type=submit]'));
     const disabled=buttons.map(button=>button.disabled);buttons.forEach(button=>button.disabled=true);
     try{
       const response=await fetch(url.href,{method:'POST',body:data,credentials:'same-origin',headers:{'X-Requested-With':'ASCEND-Navigation'},cache:'no-store'});

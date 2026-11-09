@@ -1,4 +1,4 @@
-import os, sqlite3
+import os, sqlite3, hashlib
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,7 +19,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path(os.getenv('PMS_DB_PATH', DATA_DIR / 'pms_rise.db'))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 if DATABASE_URL:
-    from pg_adapter import PostgresConnection, open_postgres
+    from pg_adapter import PostgresConnection, open_postgres, postgres_pool
     import psycopg
     INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
 else:
@@ -239,9 +239,16 @@ def _configure(conn):
 
 @contextmanager
 def connect():
-    conn = open_postgres(DATABASE_URL) if DATABASE_URL else _configure(sqlite3.connect(DB_PATH, timeout=5))
+    if DATABASE_URL:
+        # SET LOCAL is scoped to each transaction, including PgBouncer transaction
+        # pools, so another request cannot inherit the wrong search path.
+        with postgres_pool(DATABASE_URL).connection() as raw:
+            raw.execute('SET LOCAL search_path TO ascend, pg_catalog')
+            yield PostgresConnection(raw)
+        return
+    conn = _configure(sqlite3.connect(DB_PATH, timeout=5))
     try:
-        yield PostgresConnection(conn) if DATABASE_URL else conn
+        yield conn
         conn.commit()
     except Exception:
         conn.rollback()
@@ -279,14 +286,29 @@ def init_db():
     if DATABASE_URL:
         with open_postgres(DATABASE_URL) as raw:
             raw.execute('SELECT pg_advisory_xact_lock(638418625)')
+            # Infrastructure-only ledger: migrations remain atomic, and cold
+            # starts don't repeatedly execute every historical DDL statement.
+            raw.execute('CREATE SCHEMA IF NOT EXISTS ascend')
+            raw.execute('REVOKE ALL ON SCHEMA ascend FROM PUBLIC, anon, authenticated')
+            raw.execute('CREATE TABLE IF NOT EXISTS ascend.app_schema_migrations (name TEXT PRIMARY KEY, checksum TEXT NOT NULL)')
+            raw.execute('REVOKE ALL ON ascend.app_schema_migrations FROM PUBLIC, anon, authenticated')
+            applied={r['name']:r['checksum'] for r in raw.execute('SELECT name,checksum FROM ascend.app_schema_migrations').fetchall()}
             for migration in sorted((BASE_DIR / 'supabase/migrations').glob('*.sql')):
-                raw.execute(migration.read_text(encoding='utf-8'))
+                contents=migration.read_text(encoding='utf-8')
+                digest=hashlib.sha256(contents.encode('utf-8')).hexdigest()
+                if migration.name in applied:
+                    if applied[migration.name]!=digest:
+                        raise RuntimeError(f'Applied migration {migration.name} has changed; add a new migration instead.')
+                    continue
+                raw.execute(contents)
+                raw.execute('INSERT INTO ascend.app_schema_migrations(name,checksum) VALUES (%s,%s)',(migration.name,digest))
     with connect() as conn:
         if not DATABASE_URL:
             conn.executescript(SCHEMA)
             _migrate(conn)
-        for k, v in DEFAULT_SETTINGS.items():
-            conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)', (k,v))
+        default_values=list(DEFAULT_SETTINGS.items())
+        conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES '+','.join('(?,?)' for _ in default_values),
+                     [value for pair in default_values for value in pair])
         migrated=conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)', ('academy_identity_migrated','1'))
         if migrated.rowcount:
             conn.execute("UPDATE settings SET value=? WHERE key='school_name' AND value=?", ('ASCEND Academy', 'Peshawar Model School Boys IV'))

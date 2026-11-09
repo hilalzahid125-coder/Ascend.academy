@@ -6,7 +6,7 @@ def render(request: Request, name: str, context=None, status_code=200):
     context = context or {}
     csrf = request.cookies.get('pms_csrf') or new_token(24)
     user = current_user(request)
-    context.update({'request':request,'settings':settings(),'user':user,
+    context.update({'request':request,'settings':getattr(request.state,'display_settings',None) or settings(),'user':user,
                     'msg':request.query_params.get('msg'),'kind':request.query_params.get('kind','success'),
                     'csrf_token':csrf,
                     'is_super_admin':is_super_admin(user),
@@ -28,7 +28,8 @@ def student_dashboard(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
         profile=academy_profile_from_row(conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(u['id'],)).fetchone())
-        points=total_points(conn,u['id'])
+        scores=sync_achievements(conn,u['id'])
+        points=scores['overall']
         rank=conn.execute('''SELECT 1+COUNT(*) rank FROM (
                                 SELECT u2.id,u2.full_name,COALESCE(SUM(p.amount),0) total
                                 FROM users u2 LEFT JOIN point_transactions p ON p.user_id=u2.id
@@ -46,14 +47,13 @@ def student_dashboard(request: Request):
                                    AND (c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?)
                                    AND (c.eligibility_section IS NULL OR c.eligibility_section='' OR c.eligibility_section=?)
                                    ORDER BY c.status='active' DESC,c.end_date LIMIT 4''',(u['id'],u['class_name'],u['section_name'])).fetchall()
-        sync_achievements(conn,u['id'])
         achievement_rows=conn.execute('''SELECT a.*,sa.unlocked_at FROM achievements a
                                          LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?
                                          WHERE a.status='active' ORDER BY a.points_required,a.name''',(u['id'],)).fetchall()
         achievement_preview=[]
         for row in achievement_rows:
             item=dict(row)
-            item['current_points']=total_points(conn,u['id'],None if row['category']=='overall' else row['category'])
+            item['current_points']=scores.get(row['category'],0)
             item['remaining']=max(0,row['points_required']-item['current_points'])
             achievement_preview.append(item)
         achievement_preview.sort(key=lambda x:(0 if not x['unlocked_at'] else 1,x['remaining'],x['points_required']))
@@ -81,12 +81,11 @@ _v14_remove_route('/admin','GET')
 def admin_dashboard(request: Request):
     a=require_admin(request)
     with connect() as conn:
-        stats={
-          'students':conn.execute('SELECT COUNT(*) c FROM users WHERE role="student"').fetchone()['c'],
-          'active_challenges':conn.execute('SELECT COUNT(*) c FROM challenges WHERE status="active"').fetchone()['c'],
-          'pending':conn.execute('SELECT COUNT(*) c FROM challenge_participations WHERE status="pending"').fetchone()['c'],
-          'points':conn.execute('SELECT COALESCE(SUM(amount),0) c FROM point_transactions').fetchone()['c'],
-        }
+        stats=conn.execute('''SELECT
+          (SELECT COUNT(*) FROM users WHERE role='student') students,
+          (SELECT COUNT(*) FROM challenges WHERE status='active') active_challenges,
+          (SELECT COUNT(*) FROM challenge_participations WHERE status='pending') pending,
+          (SELECT COALESCE(SUM(amount),0) FROM point_transactions) points''').fetchone()
         top=conn.execute('''SELECT u.full_name,u.admission_no,u.profile_picture_path,COALESCE(SUM(p.amount),0) points FROM users u
                             LEFT JOIN point_transactions p ON p.user_id=u.id WHERE u.role='student' AND u.status='active'
                             GROUP BY u.id ORDER BY points DESC,u.full_name ASC LIMIT 5''').fetchall()

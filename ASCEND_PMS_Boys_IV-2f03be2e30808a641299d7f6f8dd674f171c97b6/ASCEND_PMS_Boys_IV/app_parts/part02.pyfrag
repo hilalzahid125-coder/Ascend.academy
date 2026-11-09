@@ -17,17 +17,25 @@ def total_points(conn, user_id, category=None, since=None):
     if since: q+=' AND created_at>=?'; args.append(since)
     return conn.execute(q,args).fetchone()['total']
 
+def point_totals(conn, user_id):
+    rows=conn.execute('SELECT category, COALESCE(SUM(amount),0) total FROM point_transactions WHERE user_id=? GROUP BY category',(user_id,)).fetchall()
+    totals={r['category']:r['total'] for r in rows}
+    totals['overall']=sum(totals.values())
+    return totals
+
 def sync_achievements(conn, user_id):
-    achievements=conn.execute('SELECT * FROM achievements WHERE status="active" ORDER BY points_required').fetchall()
+    # One points aggregation and one achievement lookup, rather than one or
+    # more database round trips per achievement on every dashboard visit.
+    totals=point_totals(conn,user_id)
+    achievements=conn.execute('''SELECT a.*,sa.unlocked_at FROM achievements a
+        LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?
+        WHERE a.status='active' ORDER BY a.points_required''',(user_id,)).fetchall()
     for ach in achievements:
-        category=ach['category']
-        points=total_points(conn,user_id,None if category=='overall' else category)
-        if points >= ach['points_required']:
-            exists=conn.execute('SELECT 1 FROM student_achievements WHERE achievement_id=? AND user_id=?',(ach['id'],user_id)).fetchone()
-            if not exists:
-                created=conn.execute('INSERT OR IGNORE INTO student_achievements(achievement_id,user_id,unlocked_at) VALUES (?,?,?)',(ach['id'],user_id,iso_now()))
-                if created.rowcount:
-                    notify(conn,user_id,'Achievement unlocked',f'You unlocked {ach["name"]}.')
+        if ach['unlocked_at'] is None and totals.get(ach['category'],0)>=ach['points_required']:
+            created=conn.execute('INSERT OR IGNORE INTO student_achievements(achievement_id,user_id,unlocked_at) VALUES (?,?,?)',(ach['id'],user_id,iso_now()))
+            if created.rowcount:
+                notify(conn,user_id,'Achievement unlocked',f'You unlocked {ach["name"]}.')
+    return totals
 
 def audit(conn, admin_id, action, details=''):
     conn.execute('INSERT INTO audit_logs(admin_id,action,details,created_at) VALUES (?,?,?,?)',

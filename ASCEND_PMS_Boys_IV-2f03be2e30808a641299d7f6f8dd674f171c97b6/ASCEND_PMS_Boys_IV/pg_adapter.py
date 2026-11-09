@@ -5,8 +5,10 @@ adapter converts those SQL tokens for PostgreSQL without interpolating values.
 """
 import re
 import os
+import threading
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 
 def _postgres_sql(sql, has_parameters):
@@ -63,3 +65,21 @@ def open_postgres(url):
     conn = psycopg.connect(url, row_factory=dict_row, prepare_threshold=None, **options)
     conn.execute('SET search_path TO ascend, pg_catalog')
     return conn
+
+
+# Reuse a small number of connections within each warm server instance.
+# The liveness check happens before checkout, never as an automatic write retry.
+_pool = None
+_pool_lock = threading.Lock()
+
+def postgres_pool(url):
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                options = {'row_factory': dict_row, 'prepare_threshold': None}
+                if os.getenv('VERCEL') == '1': options['sslmode'] = 'require'
+                _pool = ConnectionPool(conninfo=url, kwargs=options, min_size=0, max_size=2,
+                                       max_idle=60, max_lifetime=300, timeout=15,
+                                       check=ConnectionPool.check_connection, open=True)
+    return _pool

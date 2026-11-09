@@ -6,7 +6,7 @@ schema and optional initial admin at cold start; the initialization is idempoten
 import os
 # The application loads its route fragments dynamically. Explicit imports let
 # Vercel's dependency tracer discover packages referenced in those fragments.
-import fastapi, jinja2, multipart, openpyxl, PIL, psycopg, psycopg_binary  # noqa: F401
+import fastapi, jinja2, multipart, openpyxl, PIL, psycopg, psycopg_binary, psycopg_pool  # noqa: F401
 from app import app
 from db import init_db, ensure_admin, connect
 

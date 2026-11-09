@@ -765,3 +765,81 @@ def test_my_classes_subject_edit_and_student_deletion():
     with connect() as c:
         assert c.execute('SELECT id FROM users WHERE id=?',(student,)).fetchone() is None
         assert c.execute('SELECT id FROM class_schedules WHERE id=?',(override,)).fetchone() is None
+
+
+def test_achievement_sync_avoids_per_achievement_queries():
+    from app import sync_achievements
+    with connect() as c:
+        student=c.execute("SELECT id FROM users WHERE admission_no='T-8402'").fetchone()['id']
+        sync_achievements(c,student)
+        class CountQueries:
+            def __init__(self,conn): self.conn=conn; self.count=0
+            def execute(self,sql,params=()):
+                self.count+=1
+                return self.conn.execute(sql,params)
+        counter=CountQueries(c)
+        scores=sync_achievements(counter,student)
+        assert counter.count==2
+        assert scores['overall']==0
+
+
+def test_attendance_batch_corrections_and_notifications():
+    admin=TestClient(app); csrf(admin); post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    with connect() as c:
+        a=c.execute("SELECT id FROM users WHERE admission_no='ADMIN-0001'").fetchone()['id']
+        ids=[c.execute('SELECT id FROM users WHERE admission_no=?',(n,)).fetchone()['id'] for n in ('T-8402','T-8403')]
+        schedule=c.execute('SELECT id FROM class_schedules WHERE parent_id IS NULL').fetchone()['id']
+        c.execute("""INSERT INTO class_sessions(schedule_id,session_date,subject,grade,start_time,duration_minutes,teacher_id,started_by,status,started_at)
+            VALUES (?,'2026-12-31','Maths','O-Level - Grade 9','09:00',40,?,?,'ended',?)""",(schedule,a,a,iso_now()))
+        session=c.execute("SELECT id FROM class_sessions WHERE schedule_id=? AND session_date='2026-12-31'",(schedule,)).fetchone()['id']
+        for uid in ids: c.execute('INSERT INTO class_attendance(session_id,student_id) VALUES (?,?)',(session,uid))
+    path=f'/admin/my-classes/session/{session}/attendance'
+    data={f'attendance_{ids[0]}':'present',f'attendance_{ids[1]}':'absent'}
+    post(admin,path,data)
+    with connect() as c:
+        rows=c.execute('SELECT student_id,status FROM class_attendance WHERE session_id=? ORDER BY student_id',(session,)).fetchall()
+        assert {r['student_id']:r['status'] for r in rows}=={ids[0]:'present',ids[1]:'absent'}
+        before=c.execute("SELECT COUNT(*) n FROM notifications WHERE title='Attendance updated' AND user_id IN (?,?)",ids).fetchone()['n']
+    post(admin,path,data)
+    with connect() as c:
+        after=c.execute("SELECT COUNT(*) n FROM notifications WHERE title='Attendance updated' AND user_id IN (?,?)",ids).fetchone()['n']
+        assert after==before
+    post(admin,path,{f'attendance_{ids[0]}':'',f'attendance_{ids[1]}':'present'})
+    with connect() as c:
+        rows=c.execute('SELECT student_id,status FROM class_attendance WHERE session_id=?',(session,)).fetchall()
+        assert {r['student_id']:r['status'] for r in rows}=={ids[0]:None,ids[1]:'present'}
+
+
+def test_postgres_pool_rolls_back_and_recovers_closed_connections():
+    import pytest
+    from db import DATABASE_URL, init_db
+    if not DATABASE_URL: pytest.skip('PostgreSQL-specific connection test')
+    init_db()  # Repeated initialization must use the existing migration ledger.
+    with connect() as c:
+        assert c.execute('SELECT COUNT(*) n FROM app_schema_migrations').fetchone()['n']>=3
+    with pytest.raises(RuntimeError):
+        with connect() as c:
+            c.execute("INSERT INTO settings(key,value) VALUES ('pool_rollback_test','not committed')")
+            raise RuntimeError('rollback')
+    with connect() as c:
+        assert c.execute("SELECT value FROM settings WHERE key='pool_rollback_test'").fetchone() is None
+        c.connection.close()  # Simulate an idle connection closed by the server.
+    with connect() as c:
+        assert c.execute('SELECT 1 AS value').fetchone()['value']==1
+
+
+def test_auth_and_display_settings_stay_fresh_between_requests():
+    client=TestClient(app); csrf(client); post(client,'/login',{'admission_no':'T-8402','password':'ClassTest1234'})
+    with connect() as c:
+        previous=c.execute("SELECT value FROM settings WHERE key='school_name'").fetchone()['value']
+        c.execute("UPDATE settings SET value='New Fresh Academy' WHERE key='school_name'")
+    try:
+        assert 'New Fresh Academy' in client.get('/my-classes').text
+        with connect() as c: c.execute("UPDATE users SET status='disabled' WHERE admission_no='T-8402'")
+        assert client.get('/my-classes').status_code==403
+        with connect() as c: c.execute("UPDATE users SET status='active' WHERE admission_no='T-8402'")
+        assert client.get('/my-classes').status_code==200
+    finally:
+        with connect() as c:
+            c.execute("UPDATE settings SET value=? WHERE key='school_name'",(previous,))
+            c.execute("UPDATE users SET status='active' WHERE admission_no='T-8402'")

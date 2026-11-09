@@ -55,7 +55,14 @@ def _class_values(form, conn):
     return (grade,subject,int(teacher),recurrence,weekday,class_date,start,mins)
 
 def _class_notify(conn, students, title, body):
-    for st in students: notify(conn,st['id'],title,body)
+    # Batch notifications so large grade-wide updates don't incur a network
+    # round trip for each student. Keep batches below SQLite parameter limits.
+    students=list(students)
+    for offset in range(0,len(students),100):
+        batch=students[offset:offset+100]; now=iso_now()
+        values=','.join('(?,?,?,?)' for _ in batch)
+        params=[value for st in batch for value in (st['id'],title,body,now)]
+        conn.execute('INSERT INTO notifications(user_id,title,body,created_at) VALUES '+values,params)
 
 @app.get('/my-classes', response_class=HTMLResponse)
 def my_classes(request: Request):
@@ -104,9 +111,15 @@ def admin_my_classes(request: Request):
             rows.append(dict(s, members=members,day_label=_day_label(s),end_time=_end_time(s), due=_due_today(s,today), started=s['id'] in started))
         sessions=[dict(r) for r in conn.execute('''SELECT s.*,u.full_name teacher_name FROM class_sessions s JOIN users u ON u.id=s.teacher_id
             ORDER BY s.id DESC LIMIT 100''').fetchall()]
-        for session in sessions:
-            session['roster']=[dict(r) for r in conn.execute('''SELECT a.student_id,a.status,u.full_name,u.admission_no FROM class_attendance a
-                JOIN users u ON u.id=a.student_id WHERE a.session_id=? ORDER BY u.full_name,u.id''',(session['id'],)).fetchall()]
+        # Load the session rosters together rather than once per session.
+        roster_by_session={session['id']:[] for session in sessions}
+        if sessions:
+            ids=[session['id'] for session in sessions]
+            placeholders=','.join('?' for _ in ids)
+            roster=conn.execute('''SELECT a.session_id,a.student_id,a.status,u.full_name,u.admission_no FROM class_attendance a
+                JOIN users u ON u.id=a.student_id WHERE a.session_id IN ('''+placeholders+''') ORDER BY u.full_name,u.id''',ids).fetchall()
+            for row in roster: roster_by_session[row['session_id']].append(dict(row))
+        for session in sessions: session['roster']=roster_by_session[session['id']]
     return render(request,'my_classes_admin.html',{'rows':rows,'students':students,'teachers':teachers,'subjects':ACADEMY_SUBJECTS,'weekdays':WEEKDAYS,'sessions':sessions,'filters':{'grade':grade,'subject':subject,'teacher':teacher,'time':hour,'q':query},'today':_class_now().date().isoformat()})
 
 @app.post('/admin/my-classes/create')
@@ -190,7 +203,10 @@ def class_start(request: Request, schedule_id: int):
             conn.execute('''INSERT INTO class_sessions(schedule_id,session_date,subject,grade,start_time,duration_minutes,teacher_id,started_by,status,started_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?)''',(schedule_id,today.isoformat(),s['subject'],s['grade'],s['start_time'],s['duration_minutes'],s['teacher_id'],admin['id'],'live',iso_now()))
             session=conn.execute('SELECT id FROM class_sessions WHERE schedule_id=? AND session_date=?',(schedule_id,today.isoformat())).fetchone()
-            for st in members: conn.execute('INSERT INTO class_attendance(session_id,student_id) VALUES (?,?)',(session['id'],st['id']))
+            for offset in range(0,len(members),100):
+                batch=members[offset:offset+100]
+                conn.execute('INSERT INTO class_attendance(session_id,student_id) VALUES '+','.join('(?,?)' for _ in batch),
+                             [v for st in batch for v in (session['id'],st['id'])])
             _class_notify(conn,members,'Class session started',f"Your {s['subject']} session has started. The online joining method is coming later.")
             audit(conn,admin['id'],'Class session started',f"Session {session['id']}")
     except (ValueError, *INTEGRITY_ERRORS) as e: return flash_redirect('/admin/my-classes',str(e) if isinstance(e,ValueError) else 'This session was already started.','error')
@@ -214,11 +230,17 @@ async def class_mark(request: Request, session_id: int):
         roster=conn.execute('SELECT student_id,status FROM class_attendance WHERE session_id=?',(session_id,)).fetchall()
         values=[(r,str(form.get(f"attendance_{r['student_id']}",'')).strip()) for r in roster]
         if any(v not in ('','present','absent') for _,v in values): return flash_redirect('/admin/my-classes','Invalid attendance selection.','error')
-        for row,value in values:
-            value=value or None
-            if value!=row['status']:
-                conn.execute('UPDATE class_attendance SET status=?,marked_by=?,marked_at=? WHERE session_id=? AND student_id=?',(value,admin['id'],iso_now(),session_id,row['student_id']))
-                if value: notify(conn,row['student_id'],'Attendance updated',f"Your {session['subject']} attendance for {session['session_date']} was marked {value}.")
+        changes=[(row['student_id'],value or None) for row,value in values if (value or None)!=row['status']]
+        for offset in range(0,len(changes),100):
+            batch=changes[offset:offset+100]
+            cases=' '.join('WHEN ? THEN ?' for _ in batch)
+            ids=','.join('?' for _ in batch)
+            params=[v for student_id,value in batch for v in (student_id,value)]
+            params.extend([admin['id'],iso_now(),session_id]+[student_id for student_id,_ in batch])
+            conn.execute('UPDATE class_attendance SET status=CASE student_id '+cases+' END,marked_by=?,marked_at=? WHERE session_id=? AND student_id IN ('+ids+')',params)
+        for status in ('present','absent'):
+            recipients=[{'id':student_id} for student_id,value in changes if value==status]
+            _class_notify(conn,recipients,'Attendance updated',f"Your {session['subject']} attendance for {session['session_date']} was marked {status}.")
         audit(conn,admin['id'],'Class attendance saved',f'Session {session_id}')
     return flash_redirect('/admin/my-classes','Attendance saved. Unmarked students remain pending.')
 

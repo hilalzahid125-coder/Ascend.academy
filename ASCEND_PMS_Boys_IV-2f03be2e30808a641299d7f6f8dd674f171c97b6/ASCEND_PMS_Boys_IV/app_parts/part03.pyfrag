@@ -99,13 +99,13 @@ def notifications_read_all(request: Request):
 def achievements(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
-        sync_achievements(conn,u['id'])
+        scores=sync_achievements(conn,u['id'])
         rows=conn.execute('''SELECT a.*,sa.unlocked_at FROM achievements a
                              LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?
                              WHERE a.status='active' ORDER BY a.points_required,a.name''',(u['id'],)).fetchall()
         enriched=[]
         for r in rows:
-            d=dict(r); d['current_points']=total_points(conn,u['id'],None if r['category']=='overall' else r['category']); enriched.append(d)
+            d=dict(r); d['current_points']=scores.get(r['category'],0); enriched.append(d)
     return render(request,'achievements.html',{'achievements':enriched})
 
 @app.get('/rewards', response_class=HTMLResponse)
