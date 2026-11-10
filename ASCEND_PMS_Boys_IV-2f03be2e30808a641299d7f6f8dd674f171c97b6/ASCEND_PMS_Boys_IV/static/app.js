@@ -63,7 +63,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
   const pages=new Set(['/student','/my-classes','/challenges','/leaderboards','/achievements','/rewards','/notifications','/profile',
     '/admin','/admin/my-classes','/admin/students','/admin/challenges','/admin/achievements','/admin/rewards','/admin/announcements',
     '/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/about','/privacy']);
-  let controller=null, serial=0, saving=false, pendingPop=null;
+  let controller=null, serial=0, saving=false, pendingPop=null, shownUrl=location.href;
   function loading(on, message='Opening…'){
     let bar=document.querySelector('.nav-loading');
     let status=document.querySelector('.interaction-status');
@@ -100,6 +100,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     const newBrand=doc.querySelector('.school-chip'), brand=document.querySelector('.school-chip');
     if(brand && newBrand) brand.replaceWith(newBrand);
     document.title=doc.title;
+    shownUrl=url;
     if(mode==='push') history.pushState({ascendNavigation:true},'',url);
     else if(mode==='replace') history.replaceState({ascendNavigation:true},'',url);
     closeSidebar(); window.scrollTo(0,0);
@@ -126,7 +127,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     if(!link || event.defaultPrevented || event.button!==0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || link.hasAttribute('download') || link.target) return;
     const url=new URL(link.href,location.href);
     if(url.origin!==location.origin || url.hash || !pages.has(url.pathname)) return;
-    event.preventDefault(); navigate(url.href);
+    event.preventDefault(); if(window.LiveClass && !window.LiveClass.confirmLeave())return; navigate(url.href);
   });
   document.addEventListener('submit',async event=>{
     const form=event.target;
@@ -138,6 +139,8 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     if(method==='get' && !pages.has(url.pathname))return;
     event.preventDefault();
     if(saving){notice('A change is still being saved. Please wait.');return}
+    if(window.LiveClass && form.hasAttribute('data-live-end'))window.LiveClass.close();
+    else if(window.LiveClass && !window.LiveClass.confirmLeave())return;
     const data=new FormData(form);
     if(submitter && submitter.name) data.append(submitter.name,submitter.value);
     if(method==='get'){
@@ -160,11 +163,19 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
       const destination=response.redirected ? finalUrl.href : location.href;
       const mode=response.redirected && finalUrl.pathname!==location.pathname ? 'push' : 'replace';
       if(!applyPage(html,destination,mode))notice('The change may have been saved, but the page could not update. Refresh to check.');
+      else if(form.hasAttribute('data-live-start') && finalUrl.searchParams.has('open_session')){
+        const id=finalUrl.searchParams.get('open_session');
+        finalUrl.searchParams.delete('open_session');history.replaceState({ascendNavigation:true},'',finalUrl.href);shownUrl=finalUrl.href;
+        window.LiveClass?.open(id);
+      }
     }catch(err){notice('The connection was interrupted. The change may or may not have saved; check before trying again.')}
     finally{
       buttons.forEach((button,i)=>button.disabled=disabled[i]);saving=false;loading(false);
       if(pendingPop){const url=pendingPop;pendingPop=null;navigate(url,'none')}
     }
   });
-  window.addEventListener('popstate',()=>{if(saving) pendingPop=location.href;else navigate(location.href,'none')});
+  window.addEventListener('popstate',()=>{
+    if(window.LiveClass && !window.LiveClass.confirmLeave()){history.pushState({ascendNavigation:true},'',shownUrl);return}
+    if(saving) pendingPop=location.href;else navigate(location.href,'none')
+  });
 })();

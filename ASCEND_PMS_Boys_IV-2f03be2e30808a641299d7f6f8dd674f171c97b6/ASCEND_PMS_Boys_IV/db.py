@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS class_attendance (
  PRIMARY KEY(session_id,student_id)
 );
 CREATE INDEX IF NOT EXISTS idx_class_attendance_student ON class_attendance(student_id);
+CREATE TABLE IF NOT EXISTS class_live_rooms (
+  session_id INTEGER PRIMARY KEY REFERENCES class_sessions(id) ON DELETE CASCADE,
+  room_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,

@@ -46,8 +46,12 @@ def restore_backup(archive):
             present=set(class_tables) & tables
             if present and present != set(class_tables):
                 raise ValueError('Backup has an incomplete class data set.')
+            live_tables=['class_live_rooms']
+            live_present=set(live_tables) & tables
+            if live_present and not present:
+                raise ValueError('Backup has live rooms but no class data.')
             snapshot=[]
-            for table in expected + (class_tables if present else []):
+            for table in expected + (class_tables if present else []) + (live_tables if live_present else []):
                 columns=[r['name'] for r in sqlite.execute(f'PRAGMA table_info({table})')]
                 rows=[tuple(r[c] for c in columns) for r in sqlite.execute(f'SELECT * FROM {table}')]
                 snapshot.append((table,columns,rows))
@@ -58,6 +62,8 @@ def restore_backup(archive):
             conn.execute('BEGIN IMMEDIATE')
             # Older backups predate My Classes; clearing the newer tables prevents
             # stale data and foreign keys from surviving a full restore.
+            if not live_present:
+                for table in reversed(live_tables): conn.execute(f'DELETE FROM {table}')
             if not present:
                 for table in reversed(class_tables): conn.execute(f'DELETE FROM {table}')
             for table, _, _ in reversed(snapshot): conn.execute(f'DELETE FROM {table}')

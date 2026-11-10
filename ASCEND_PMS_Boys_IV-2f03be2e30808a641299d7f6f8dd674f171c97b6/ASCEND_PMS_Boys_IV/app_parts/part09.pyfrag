@@ -203,19 +203,22 @@ def class_start(request: Request, schedule_id: int):
             conn.execute('''INSERT INTO class_sessions(schedule_id,session_date,subject,grade,start_time,duration_minutes,teacher_id,started_by,status,started_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?)''',(schedule_id,today.isoformat(),s['subject'],s['grade'],s['start_time'],s['duration_minutes'],s['teacher_id'],admin['id'],'live',iso_now()))
             session=conn.execute('SELECT id FROM class_sessions WHERE schedule_id=? AND session_date=?',(schedule_id,today.isoformat())).fetchone()
+            _ensure_live_room(conn,session['id'])
             for offset in range(0,len(members),100):
                 batch=members[offset:offset+100]
                 conn.execute('INSERT INTO class_attendance(session_id,student_id) VALUES '+','.join('(?,?)' for _ in batch),
                              [v for st in batch for v in (session['id'],st['id'])])
-            _class_notify(conn,members,'Class session started',f"Your {s['subject']} session has started. The online joining method is coming later.")
+            _class_notify(conn,members,'Class session started',f"Your {s['subject']} session has started. Open My Classes to join.")
             audit(conn,admin['id'],'Class session started',f"Session {session['id']}")
     except (ValueError, *INTEGRITY_ERRORS) as e: return flash_redirect('/admin/my-classes',str(e) if isinstance(e,ValueError) else 'This session was already started.','error')
-    return flash_redirect('/admin/my-classes','Session started. Students have been notified; online joining is not connected yet.')
+    from urllib.parse import quote
+    return RedirectResponse(f"/admin/my-classes?open_session={session['id']}&msg={quote('Session started. Students have been notified.')}&kind=success",303)
 
 @app.post('/admin/my-classes/session/{session_id}/end')
 def class_end(request: Request, session_id: int):
     admin=require_admin(request)
     with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         changed=conn.execute("UPDATE class_sessions SET status='ended',ended_at=? WHERE id=? AND status='live'",(iso_now(),session_id))
         if not changed.rowcount: return flash_redirect('/admin/my-classes','Session is not live.','error')
         audit(conn,admin['id'],'Class session ended',f'Session {session_id}')
@@ -264,3 +267,39 @@ def class_remove(request: Request, schedule_id: int):
         _class_notify(conn,recipients.values(),'Timetable updated','A class schedule has been removed or restored. Open My Classes to view your timetable.')
         audit(conn,admin['id'],'Class schedule removed',f'Schedule {schedule_id}')
     return flash_redirect('/admin/my-classes','Schedule removed. Session history is preserved.')
+
+
+def _ensure_live_room(conn, session_id):
+    # A new unpredictable secret for every session, including legacy sessions
+    # that were live before the video feature was introduced. Never derived
+    # from the public schedule or student identifiers.
+    room='DeltaAcademy'+secrets.token_hex(24)
+    conn.execute('''INSERT INTO class_live_rooms(session_id,room_name,created_at) VALUES (?,?,?)
+        ON CONFLICT(session_id) DO NOTHING''',(session_id,room,iso_now()))
+    return conn.execute('SELECT room_name FROM class_live_rooms WHERE session_id=?',(session_id,)).fetchone()['room_name']
+
+def _authorized_live_session(conn, user, session_id):
+    if user['role']=='admin':
+        return conn.execute("SELECT id,subject FROM class_sessions WHERE id=? AND status='live'",(session_id,)).fetchone()
+    return conn.execute('''SELECT s.id,s.subject FROM class_sessions s
+        JOIN class_attendance a ON a.session_id=s.id AND a.student_id=?
+        WHERE s.id=? AND s.status='live'
+        ''',(user['id'],session_id)).fetchone()
+
+@app.post('/my-classes/live/{session_id}/room')
+def live_class_room(request: Request, session_id: int):
+    user=require_user(request)
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        session=_authorized_live_session(conn,user,session_id)
+        if not session: raise HTTPException(404,detail='Live class not available.')
+        room=_ensure_live_room(conn,session_id)
+    return JSONResponse({'room':room,'subject':session['subject'],'student':user['role']=='student'},headers={'Cache-Control':'no-store'})
+
+@app.get('/my-classes/live/{session_id}/status')
+def live_class_status(request: Request, session_id: int):
+    user=require_user(request)
+    with connect() as conn:
+        session=_authorized_live_session(conn,user,session_id)
+    if not session: raise HTTPException(404,detail='Live class not available.')
+    return JSONResponse({'live':True},headers={'Cache-Control':'no-store'})

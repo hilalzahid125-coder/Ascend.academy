@@ -722,8 +722,8 @@ def test_my_classes_schedule_roster_attendance_and_isolation(monkeypatch):
         roster=c.execute('SELECT student_id,status FROM class_attendance WHERE session_id=?',(session,)).fetchall()
         assert [r['student_id'] for r in roster]==[ids['T-8402']]
         assert c.execute('SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title=?',(ids['T-8402'],'Class session started')).fetchone()['n']==1
-    assert 'Coming soon' in second.get('/my-classes').text
-    assert 'Coming soon' not in student.get('/my-classes').text
+    assert 'Join live class' in second.get('/my-classes').text
+    assert 'Join live class' not in student.get('/my-classes').text
     assert post(student,f'/admin/my-classes/session/{session}/end').status_code==403
     assert 'already%20been%20started' in post(admin,f'/admin/my-classes/{schedule}/start').headers['location']
     post(admin,f'/admin/my-classes/session/{session}/end')
@@ -843,3 +843,50 @@ def test_auth_and_display_settings_stay_fresh_between_requests():
         with connect() as c:
             c.execute("UPDATE settings SET value=? WHERE key='school_name'",(previous,))
             c.execute("UPDATE users SET status='active' WHERE admission_no='T-8402'")
+
+
+def test_live_class_room_authorization_lifecycle_and_randomness(monkeypatch):
+    import re
+    import app as app_module
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(app_module,'_class_now',lambda: datetime(2026,12,31,10,tzinfo=ZoneInfo('Asia/Karachi')))
+    with connect() as c:
+        teacher=c.execute("SELECT id FROM users WHERE admission_no='ADMIN-0001'").fetchone()['id']
+        student=c.execute("SELECT id FROM users WHERE admission_no='T-8402'").fetchone()['id']
+        for index in range(2):
+            c.execute("""INSERT INTO class_schedules(grade,subject,teacher_id,recurrence,class_date,start_time,duration_minutes,created_at)
+                VALUES ('O-Level - Grade 9','Maths',?,'once','2026-12-31',?,40,?)""",(teacher,f'{index+10}:00',iso_now()))
+        schedules=[r['id'] for r in c.execute("SELECT id FROM class_schedules WHERE class_date='2026-12-31' ORDER BY id").fetchall()][-2:]
+    admin=TestClient(app);csrf(admin);post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    pupil=TestClient(app);csrf(pupil);post(pupil,'/login',{'admission_no':'T-8402','password':'ClassTest1234'})
+    outsider=TestClient(app);csrf(outsider);post(outsider,'/login',{'admission_no':'T-8403','password':'ClassTest1234'})
+    rooms=[]
+    for sched in schedules:
+        response=post(admin,f'/admin/my-classes/{sched}/start')
+        assert 'open_session=' in response.headers['location']
+        with connect() as c:
+            session=c.execute("SELECT id FROM class_sessions WHERE schedule_id=?",(sched,)).fetchone()['id']
+            room=c.execute('SELECT room_name FROM class_live_rooms WHERE session_id=?',(session,)).fetchone()['room_name']
+        rooms.append(room)
+        assert re.fullmatch(r'DeltaAcademy[a-f0-9]{48}',room)
+        page=pupil.get('/my-classes')
+        assert room not in page.text and 'meet.jit.si/' not in page.text
+        assert 'frame-src \'self\' https://meet.jit.si' in page.headers['content-security-policy']
+        assert 'camera=(self "https://meet.jit.si")' in page.headers['permissions-policy']
+        assert post(outsider,f'/my-classes/live/{session}/room').status_code==404
+        assert outsider.get(f'/my-classes/live/{session}/status').status_code==404
+        assert pupil.post(f'/my-classes/live/{session}/room').status_code==403
+        for who in (pupil,admin):
+            response=post(who,f'/my-classes/live/{session}/room')
+            assert response.status_code==200 and response.json()['room']==room
+            assert response.headers['cache-control']=='no-store'
+            assert who.get(f'/my-classes/live/{session}/status').status_code==200
+        # A live session created before this feature gets an idempotent room on first open.
+        with connect() as c: c.execute('DELETE FROM class_live_rooms WHERE session_id=?',(session,))
+        replacement=post(pupil,f'/my-classes/live/{session}/room').json()['room']
+        assert replacement!=room and replacement==post(admin,f'/my-classes/live/{session}/room').json()['room']
+        post(admin,f'/admin/my-classes/session/{session}/end')
+        assert post(pupil,f'/my-classes/live/{session}/room').status_code==404
+        assert admin.get(f'/my-classes/live/{session}/status').status_code==404
+    assert rooms[0]!=rooms[1]
