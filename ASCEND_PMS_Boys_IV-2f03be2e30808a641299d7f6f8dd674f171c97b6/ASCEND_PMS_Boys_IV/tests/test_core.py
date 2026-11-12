@@ -378,8 +378,8 @@ def test_branding_defaults_migrate_without_overwriting_custom_credit():
             assert migrated['primary_color'] == '#c20a0a'
         with TestClient(app) as client:
             assert 'Made by Hilal Zahid' in client.get('/').text
-            assert '#c20a0a' in client.get('/static/style.css').text
-            assert '#c20a0a' in client.get('/static/app-logo.svg').text
+            assert '#087f63' in client.get('/static/design-system.css').text.lower()
+            assert '#064e3b' in client.get('/static/app-logo.svg').text.lower()
         with connect() as c:
             c.execute("UPDATE settings SET value='Custom credit' WHERE key='creator_credit'")
         init_db()

@@ -3,9 +3,12 @@ function setSidebar(open){
   const overlay=document.getElementById('sidebarOverlay');
   const trigger=document.querySelector('.menu-btn');
   if(!sidebar)return;
+  const mobile=window.innerWidth<=820;
   sidebar.classList.toggle('open',!!open);
+  sidebar.inert=mobile && !open;
+  sidebar.setAttribute('aria-hidden',String(mobile && !open));
   overlay?.classList.toggle('open',!!open);
-  document.body.classList.toggle('nav-open',!!open && window.innerWidth<=820);
+  document.body.classList.toggle('nav-open',!!open && mobile);
   trigger?.setAttribute('aria-expanded',open?'true':'false');
   overlay?.setAttribute('aria-hidden',open?'false':'true');
 }
@@ -35,7 +38,8 @@ function openStudentPhoto(id,name,path){document.getElementById('studentPhotoFor
 
 document.querySelectorAll('#sidebar nav a').forEach(a=>a.addEventListener('click',()=>{if(window.innerWidth<=820)closeSidebar()}));
 document.getElementById('sidebarOverlay')?.addEventListener('click',closeSidebar);
-window.addEventListener('resize',()=>{if(window.innerWidth>820)closeSidebar()});
+window.addEventListener('resize',()=>{if(window.innerWidth>820)closeSidebar();else if(!document.getElementById('sidebar')?.classList.contains('open'))setSidebar(false)});
+setSidebar(false);
 
 // Mobile gesture: swipe left on the open drawer to close it. An edge swipe right opens it.
 let navTouchStartX=null,navTouchStartY=null,navTouchSource='';
@@ -75,11 +79,15 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     if(page){if(on)page.setAttribute('aria-busy','true');else page.removeAttribute('aria-busy')}
   }
   function highlightNav(path){
-    document.querySelectorAll('#sidebar nav a').forEach(link=>{
+    document.querySelectorAll('#sidebar nav a, .mobile-bottom-nav a').forEach(link=>{
       const target=new URL(link.href,location.href).pathname;
-      link.classList.toggle('active', target===path);
+      const active=target===path; link.classList.toggle('active',active);
+      if(active)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');
     });
+    const label=document.querySelector('#sidebar nav a.active span');
+    const context=document.getElementById('topbarPage'); if(context && label)context.textContent=label.textContent;
   }
+  highlightNav(location.pathname);
   function notice(message){
     const page=document.getElementById('main-content'); if(!page) return;
     let box=document.getElementById('navigationNotice');

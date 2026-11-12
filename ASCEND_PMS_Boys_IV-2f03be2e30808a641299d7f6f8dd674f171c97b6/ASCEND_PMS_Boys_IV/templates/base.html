@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="ASCEND — the academy student challenge, recognition and leaderboard platform.">
-  <meta name="theme-color" content="#c20a0a"><meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#087F63"><meta name="color-scheme" content="light">
   <title>{% block title %}{{ settings.app_name }}{% endblock %}</title>
-  <link rel="icon" href="/static/app-logo.svg?v=red-1" type="image/svg+xml">
+  <link rel="icon" href="/static/app-logo.svg?v=green-1" type="image/svg+xml">
   <link rel="stylesheet" href="/static/style.css?v=red-1">
   <link rel="stylesheet" href="/static/v12.css?v=red-1">
   <link rel="stylesheet" href="/static/v13.css?v=red-1">
@@ -13,41 +13,43 @@
   <link rel="stylesheet" href="/static/my-classes.css?v=1">
   <link rel="stylesheet" href="/static/student-directory.css?v=1">
   <link rel="stylesheet" href="/static/live-classes.css?v=1">
+  <link rel="stylesheet" href="/static/design-system.css?v=1">
 </head>
-<body>
+<body class="{{ 'role-admin' if user and user.role == 'admin' else 'role-student' if user else 'role-guest' }}">
 <a class="skip-link" href="#main-content">Skip to main content</a>
 {% if user %}
 <div class="app-shell">
   <aside class="sidebar" id="sidebar">
-    <button class="sidebar-close" type="button" onclick="closeSidebar()" aria-label="Close navigation">×</button>
+    <button class="sidebar-close" type="button" onclick="closeSidebar()" aria-label="Close navigation"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#x"></use></svg></button>
     <a href="/" class="brand">
-      <img src="/static/app-logo.svg?v=red-1" alt="{{ settings.app_name }}">
+      <img src="/static/app-logo.svg?v=green-1" alt="{{ settings.app_name }}">
       <span><strong>{{ settings.app_name }}</strong><small>{{ settings.tagline }}</small></span>
     </a>
     <div class="school-chip"><img src="{{ settings.school_logo_path }}" alt="Academy logo"><span>{{ settings.school_name }}</span></div>
-    <nav>
+    <nav aria-label="Main navigation">
+      <div class="nav-section-label">WORKSPACE</div>
       {% if user.role == 'admin' %}
-      <a href="/admin" class="{{ 'active' if request.url.path=='/admin' else '' }}">Overview</a>
-      <a href="/admin/my-classes" class="{{ 'active' if request.url.path.startswith('/admin/my-classes') else '' }}">My Classes</a>
-      {% if is_super_admin or 'students' in admin_permissions %}<a href="/admin/students" class="{{ 'active' if request.url.path.startswith('/admin/students') else '' }}">Students & points</a>{% endif %}
-      {% if is_super_admin or 'challenges' in admin_permissions %}<a href="/admin/challenges" class="{{ 'active' if request.url.path.startswith('/admin/challenges') else '' }}">Challenges</a>{% endif %}
-      {% if is_super_admin or 'achievements' in admin_permissions %}<a href="/admin/achievements" class="{{ 'active' if request.url.path.startswith('/admin/achievements') else '' }}">Achievements</a>{% endif %}
-      {% if is_super_admin or 'rewards' in admin_permissions %}<a href="/admin/rewards" class="{{ 'active' if request.url.path.startswith('/admin/rewards') else '' }}">Rewards</a>{% endif %}
-      {% if is_super_admin or 'announcements' in admin_permissions %}<a href="/admin/announcements" class="{{ 'active' if request.url.path.startswith('/admin/announcements') else '' }}">Announcements</a>{% endif %}
-      <a href="/leaderboards" class="{{ 'active' if request.url.path=='/leaderboards' else '' }}">Leaderboards</a>
-      {% if is_super_admin or 'activity' in admin_permissions %}<a href="/admin/activity" class="{{ 'active' if request.url.path.startswith('/admin/activity') else '' }}">Activity log</a>{% endif %}
-      {% if is_super_admin or 'students' in admin_permissions or 'challenges' in admin_permissions %}<a href="/admin/reports" class="{{ 'active' if request.url.path.startswith('/admin/reports') else '' }}">Reports</a>{% endif %}
-      {% if is_super_admin %}<div class="nav-divider"><span>SUPER ADMIN</span></div><a href="/admin/admins" class="{{ 'active' if request.url.path.startswith('/admin/admins') else '' }}">Admin team</a><a href="/admin/settings" class="{{ 'active' if request.url.path.startswith('/admin/settings') else '' }}">Brand & settings</a><a href="/admin/launch" class="{{ 'active' if request.url.path.startswith('/admin/launch') or request.url.path.startswith('/admin/backups') else '' }}">Launch & backups</a>{% endif %}
-      <a href="/admin/account" class="{{ 'active' if request.url.path.startswith('/admin/account') else '' }}">My admin account</a>
+      <a href="/admin" class="{{ 'active' if request.url.path=='/admin' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#house"></use></svg><span>Overview</span></a>
+      <a href="/admin/my-classes" class="{{ 'active' if request.url.path.startswith('/admin/my-classes') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#book-open"></use></svg><span>My Classes</span></a>
+      {% if is_super_admin or 'students' in admin_permissions %}<a href="/admin/students" class="{{ 'active' if request.url.path.startswith('/admin/students') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#users-round"></use></svg><span>Students & points</span></a>{% endif %}
+      {% if is_super_admin or 'challenges' in admin_permissions %}<a href="/admin/challenges" class="{{ 'active' if request.url.path.startswith('/admin/challenges') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#swords"></use></svg><span>Challenges</span></a>{% endif %}
+      {% if is_super_admin or 'achievements' in admin_permissions %}<a href="/admin/achievements" class="{{ 'active' if request.url.path.startswith('/admin/achievements') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#award"></use></svg><span>Achievements</span></a>{% endif %}
+      {% if is_super_admin or 'rewards' in admin_permissions %}<a href="/admin/rewards" class="{{ 'active' if request.url.path.startswith('/admin/rewards') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#gift"></use></svg><span>Rewards</span></a>{% endif %}
+      {% if is_super_admin or 'announcements' in admin_permissions %}<a href="/admin/announcements" class="{{ 'active' if request.url.path.startswith('/admin/announcements') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#megaphone"></use></svg><span>Announcements</span></a>{% endif %}
+      <a href="/leaderboards" class="{{ 'active' if request.url.path=='/leaderboards' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#chart-no-axes-column-increasing"></use></svg><span>Leaderboards</span></a>
+      {% if is_super_admin or 'activity' in admin_permissions %}<a href="/admin/activity" class="{{ 'active' if request.url.path.startswith('/admin/activity') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#history"></use></svg><span>Activity log</span></a>{% endif %}
+      {% if is_super_admin or 'students' in admin_permissions or 'challenges' in admin_permissions %}<a href="/admin/reports" class="{{ 'active' if request.url.path.startswith('/admin/reports') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#chart-column"></use></svg><span>Reports</span></a>{% endif %}
+      {% if is_super_admin %}<div class="nav-divider"><span>SUPER ADMIN</span></div><a href="/admin/admins" class="{{ 'active' if request.url.path.startswith('/admin/admins') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#shield-check"></use></svg><span>Admin team</span></a><a href="/admin/settings" class="{{ 'active' if request.url.path.startswith('/admin/settings') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#settings"></use></svg><span>Brand & settings</span></a><a href="/admin/launch" class="{{ 'active' if request.url.path.startswith('/admin/launch') or request.url.path.startswith('/admin/backups') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#database-backup"></use></svg><span>Launch & backups</span></a>{% endif %}
+      <a href="/admin/account" class="{{ 'active' if request.url.path.startswith('/admin/account') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#user-round"></use></svg><span>My admin account</span></a>
       {% else %}
-      <a href="/student" class="{{ 'active' if request.url.path=='/student' else '' }}">Overview</a>
-      <a href="/my-classes" class="{{ 'active' if request.url.path=='/my-classes' else '' }}">My Classes</a>
-      <a href="/challenges" class="{{ 'active' if request.url.path.startswith('/challenges') else '' }}">Challenges</a>
-      <a href="/leaderboards" class="{{ 'active' if request.url.path=='/leaderboards' else '' }}">Leaderboards</a>
-      <a href="/achievements" class="{{ 'active' if request.url.path=='/achievements' else '' }}">Achievements</a>
-      <a href="/rewards" class="{{ 'active' if request.url.path=='/rewards' else '' }}">Rewards</a>
-      <a href="/notifications" class="{{ 'active' if request.url.path=='/notifications' else '' }}">Notifications</a>
-      <a href="/profile" class="{{ 'active' if request.url.path=='/profile' else '' }}">My profile</a>
+      <a href="/student" class="{{ 'active' if request.url.path=='/student' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#house"></use></svg><span>Overview</span></a>
+      <a href="/my-classes" class="{{ 'active' if request.url.path=='/my-classes' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#book-open"></use></svg><span>My Classes</span></a>
+      <a href="/challenges" class="{{ 'active' if request.url.path.startswith('/challenges') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#swords"></use></svg><span>Challenges</span></a>
+      <a href="/leaderboards" class="{{ 'active' if request.url.path=='/leaderboards' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#chart-no-axes-column-increasing"></use></svg><span>Leaderboards</span></a>
+      <a href="/achievements" class="{{ 'active' if request.url.path=='/achievements' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#award"></use></svg><span>Achievements</span></a>
+      <a href="/rewards" class="{{ 'active' if request.url.path=='/rewards' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#gift"></use></svg><span>Rewards</span></a>
+      <a href="/notifications" class="{{ 'active' if request.url.path=='/notifications' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#bell"></use></svg><span>Notifications</span></a>
+      <a href="/profile" class="{{ 'active' if request.url.path=='/profile' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#user-round"></use></svg><span>My profile</span></a>
       {% endif %}
     </nav>
     <div class="sidebar-footer"><small>{{ settings.creator_credit }}</small><span>ASCEND v{{ app_version }}</span><div><a href="/about">About</a><a href="/privacy">Privacy</a></div></div>
@@ -55,7 +57,11 @@
   <div class="sidebar-overlay" id="sidebarOverlay" aria-hidden="true"></div>
   <main class="main">
     <header class="topbar">
-      <button class="icon-btn menu-btn" onclick="toggleSidebar()" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+      <button class="icon-btn menu-btn" onclick="toggleSidebar()" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#menu"></use></svg></button>
+      <div class="topbar-mobile-brand"><img src="{{ settings.school_logo_path }}" alt=""><span>{{ settings.school_name }}</span></div>
+      <div class="topbar-context"><span>{{ settings.school_name }}</span><span class="context-separator">/</span><strong id="topbarPage">{{ 'Admin workspace' if user.role=='admin' else 'Student workspace' }}</strong></div>
+      <div class="topbar-spacer"></div>
+      {% if user.role != 'admin' %}<a href="/notifications" class="topbar-notifications" aria-label="Notifications"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#bell"></use></svg></a>{% endif %}
       <div class="topbar-identity">
         {% if user.profile_picture_path %}<img class="topbar-avatar" src="{{ user.profile_picture_path }}" alt="{{ user.full_name }} profile picture">{% else %}<span class="topbar-avatar avatar-fallback">{{ user.full_name[:1]|upper }}</span>{% endif %}
         <div><span class="eyebrow">{% if user.role=='admin' %}{{ 'SUPER ADMIN' if is_super_admin else 'STAFF ADMIN' }}{% else %}STUDENT PORTAL{% endif %}</span><strong>{{ user.full_name }}</strong></div>
@@ -66,9 +72,15 @@
       {% if msg %}<div class="toast {{ 'danger' if kind=='error' else '' }}">{{ msg }}</div>{% endif %}
       {% block content %}{% endblock %}
     </div>
+    {% if user.role != 'admin' %}<nav class="mobile-bottom-nav" aria-label="Quick navigation">
+      <a href="/student" class="{{ 'active' if request.url.path=='/student' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#house"></use></svg><span>Home</span></a>
+      <a href="/my-classes" class="{{ 'active' if request.url.path=='/my-classes' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#book-open"></use></svg><span>Classes</span></a>
+      <a href="/rewards" class="{{ 'active' if request.url.path=='/rewards' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#gift"></use></svg><span>Rewards</span></a>
+      <a href="/profile" class="{{ 'active' if request.url.path=='/profile' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#user-round"></use></svg><span>Profile</span></a>
+    </nav>{% endif %}
   </main>
 </div>
 {% else %}{% block auth_content %}{% endblock %}{% endif %}
 <script src="/static/live-classes.js?v=1" defer></script>
-<script src="/static/app.js?v=academy-6" defer></script>
+<script src="/static/app.js?v=academy-7" defer></script>
 </body></html>

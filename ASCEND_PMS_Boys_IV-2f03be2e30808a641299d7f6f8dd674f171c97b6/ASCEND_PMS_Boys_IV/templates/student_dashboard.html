@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="student-dashboard-layout">
 <section class="student-home-hero">
   <div class="student-home-copy">
     <span class="eyebrow">YOUR ASCEND</span>
-    <h1>{{ user.full_name }}</h1>
+    <h1>Welcome back, {{ user.full_name.split()[0] }}.</h1>
     <p>Keep building your score, completing challenges, and moving up the academy leaderboard.</p>
     <div class="student-home-scoreline">
       <div><span>Total points</span><strong>{{ points }}</strong></div>
@@ -42,7 +43,7 @@
   <a class="btn primary home-section-button" href="/leaderboards">Open full leaderboard</a>
 </section>
 
-<section class="home-section">
+<section class="home-section home-challenges-section">
   <div class="home-section-head"><div><span class="eyebrow">ACTIVE & UPCOMING</span><h2>Challenges</h2><p>Your current opportunities to earn points and take part.</p></div></div>
   <div class="home-challenge-grid">
     {% for c in challenges %}<article class="home-challenge category-{{ c.category }}"><div class="home-challenge-top"><span class="challenge-icon">{{ c.category[:1]|upper }}</span><span class="badge {{ c.status }}">{{ c.status }}</span></div><h3>{{ c.title }}</h3><p>{{ c.description }}</p><div class="meta"><span>{{ c.category|title }}</span><span>+{{ c.points }} pts</span>{% if c.end_date %}<span>Due {{ c.end_date }}</span>{% endif %}</div>{% if c.participation_status %}<small class="home-participation">Your status: {{ c.participation_status|title }}</small>{% endif %}</article>{% else %}<div class="empty full">No open challenges right now.</div>{% endfor %}
@@ -50,18 +51,18 @@
   <a class="btn primary home-section-button" href="/challenges">View all challenges</a>
 </section>
 
-<section class="home-section">
+<section class="home-section home-achievements-section">
   <div class="home-section-head"><div><span class="eyebrow">PROGRESS</span><h2>Achievements</h2><p>Milestones that turn your progress into recognition.</p></div></div>
   <div class="home-progress-grid">
-    {% for a in achievements_preview %}<article class="home-progress-card"><div class="home-progress-symbol">✦</div><div class="grow"><span class="eyebrow">{{ a.category|title }} · {{ a.points_required }} pts</span><h3>{{ a.name }}</h3><p>{{ a.description }}</p>{% set pct=(a.current_points*100/a.points_required)|int if a.points_required else 100 %}<div class="progress"><span style="width:{{ [100,pct]|min }}%"></span></div>{% if a.unlocked_at %}<small class="home-unlocked">Unlocked</small>{% else %}<small>{{ a.current_points }} / {{ a.points_required }} points</small>{% endif %}</div></article>{% else %}<div class="empty full">No achievements are published yet.</div>{% endfor %}
+    {% for a in achievements_preview %}<article class="home-progress-card"><div class="home-progress-symbol"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#award"></use></svg></div><div class="grow"><span class="eyebrow">{{ a.category|title }} · {{ a.points_required }} pts</span><h3>{{ a.name }}</h3><p>{{ a.description }}</p>{% set pct=(a.current_points*100/a.points_required)|int if a.points_required else 100 %}<div class="progress"><span style="width:{{ [100,pct]|min }}%"></span></div>{% if a.unlocked_at %}<small class="home-unlocked">Unlocked</small>{% else %}<small>{{ a.current_points }} / {{ a.points_required }} points</small>{% endif %}</div></article>{% else %}<div class="empty full">No achievements are published yet.</div>{% endfor %}
   </div>
   <a class="btn ghost home-section-button" href="/achievements">See all achievements</a>
 </section>
 
-<section class="home-section">
+<section class="home-section home-rewards-section">
   <div class="home-section-head"><div><span class="eyebrow">RECOGNITION</span><h2>Rewards</h2><p>See what your points can unlock next.</p></div></div>
   <div class="home-reward-grid">
-    {% for r in rewards_preview %}<article class="home-reward-card"><span class="home-reward-star">★</span><div><span class="eyebrow">{{ r.points_required }} POINTS</span><h3>{{ r.name }}</h3><p>{{ r.description }}</p><div class="progress"><span style="width:{{ [100,(points*100/r.points_required)|int]|min if r.points_required else 100 }}%"></span></div><small>{% if r.claim_status %}Claim: {{ r.claim_status|title }}{% elif points >= r.points_required %}Ready to claim{% else %}{{ points }} / {{ r.points_required }} points{% endif %}</small></div></article>{% else %}<div class="empty full">No rewards are currently available.</div>{% endfor %}
+    {% for r in rewards_preview %}<article class="home-reward-card"><span class="home-reward-star"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#gift"></use></svg></span><div><span class="eyebrow">{{ r.points_required }} POINTS</span><h3>{{ r.name }}</h3><p>{{ r.description }}</p><div class="progress"><span style="width:{{ [100,(points*100/r.points_required)|int]|min if r.points_required else 100 }}%"></span></div><small>{% if r.claim_status %}Claim: {{ r.claim_status|title }}{% elif points >= r.points_required %}Ready to claim{% else %}{{ points }} / {{ r.points_required }} points{% endif %}</small></div></article>{% else %}<div class="empty full">No rewards are currently available.</div>{% endfor %}
   </div>
   <a class="btn ghost home-section-button" href="/rewards">Open rewards</a>
 </section>
@@ -69,5 +70,6 @@
 <div class="content-grid main-side home-bottom-grid">
   <section class="panel"><div class="panel-head"><div><span class="eyebrow">RECENT</span><h2>Points activity</h2></div><a href="/profile">Full history</a></div>{% for t in transactions %}<div class="activity-row"><span class="delta {{ 'plus' if t.amount>0 else 'minus' }}">{{ '%+d'|format(t.amount) }}</span><div><strong>{{ t.reason }}</strong><small>{{ t.category|title }}</small></div></div>{% else %}<div class="empty compact">No point activity yet.</div>{% endfor %}</section>
   <section class="panel"><div class="panel-head"><div><span class="eyebrow">SCHOOL</span><h2>Announcements</h2></div></div>{% for a in announcements %}<article class="notice"><strong>{{ a.title }}</strong><p>{{ a.body }}</p></article>{% else %}<div class="empty compact">No announcements right now.</div>{% endfor %}</section>
+</div>
 </div>
 {% endblock %}

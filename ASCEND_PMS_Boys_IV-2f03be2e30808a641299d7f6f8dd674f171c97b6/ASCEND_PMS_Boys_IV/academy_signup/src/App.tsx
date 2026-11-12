@@ -448,7 +448,7 @@ export default function App() {
         )
       },
     })
-    chirp(next === 5 ? "Application sent! 🎉" : next === 2 ? "Nice! Next stop, guardian details ✨" : next === 3 ? "Almost there — pick your path! 📚" : "Last step, let's lock it in 🔐")
+    chirp(next === 5 ? "Application sent!" : next === 2 ? "Nice! Next stop, guardian details" : next === 3 ? "Almost there — pick your path!" : "Last step, let's lock it in")
   }
 
   const validateStep = (s: number): boolean => {
@@ -581,14 +581,14 @@ export default function App() {
     }
     if (checks[k] && !lastValidFields.has(k)) {
       setLastValidFields(s => new Set([...s, k]))
-      chirp("Nice! Field complete ✨")
+      chirp("Nice! Field complete")
     }
   }
 
   const selectProgram = (p: string) => {
     /* single atomic update — changing program clears the grade */
     setFormData(prev => ({ ...prev, program: p, grade: "" }))
-    chirp(`${p} it is! 🎓`)
+    chirp(`${p} it is!`)
   }
 
   const toggleSubject = (s: string) => {
@@ -597,7 +597,7 @@ export default function App() {
       ...p,
       subjects: p.subjects.includes(s) ? p.subjects.filter(x => x !== s) : [...p.subjects, s],
     }))
-    if (adding) chirp(`Yay! ${s} added ✨`)
+    if (adding) chirp(`Yay! ${s} added`)
   }
 
   const onFieldFocus = (name: string, el: HTMLElement) => {
@@ -620,12 +620,12 @@ export default function App() {
   const availableGrades = formData.program ? gradeOptionsByProgram[formData.program] || [] : [...gradeOptionsByProgram["O-Level"], ...gradeOptionsByProgram["A-Level"]]
 
   return (
-    <div className="min-h-screen bg-white text-[#1A1A1A] selection:bg-[#C20A0A] selection:text-white overflow-x-hidden" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
+    <div className="min-h-screen bg-white text-[#1A1A1A] selection:bg-[#087F63] selection:text-white overflow-x-hidden" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
       {/* Ambient page light (pure white base + soft premium tint) */}
       <div className="pointer-events-none fixed inset-0 z-0">
-        <div className="absolute -top-40 -left-32 w-[520px] h-[520px] rounded-full bg-[#C20A0A]/[0.055] blur-[110px]" />
-        <div className="absolute top-[30%] -right-40 w-[480px] h-[480px] rounded-full bg-[#C20A0A]/[0.06] blur-[120px]" />
-        <div className="absolute bottom-0 left-1/3 w-[420px] h-[420px] rounded-full bg-[#C20A0A]/[0.04] blur-[120px]" />
+        <div className="absolute -top-40 -left-32 w-[520px] h-[520px] rounded-full bg-[#087F63]/[0.055] blur-[110px]" />
+        <div className="absolute top-[30%] -right-40 w-[480px] h-[480px] rounded-full bg-[#087F63]/[0.06] blur-[120px]" />
+        <div className="absolute bottom-0 left-1/3 w-[420px] h-[420px] rounded-full bg-[#087F63]/[0.04] blur-[120px]" />
       </div>
 
       {/* ══════ FREE-FLYING MASCOT — portalled straight into <body> so it
@@ -634,12 +634,12 @@ export default function App() {
         <div
           ref={birdFlyRef}
           aria-hidden="true"
-          className="fixed left-0 top-0 pointer-events-none"
+          className="signup-mascot fixed left-0 top-0 pointer-events-none"
           style={{ width: 0, height: 0, zIndex: 2147483000 }}
         >
           {/* speed comet trail — outside the chirp loop so it never spins */}
           <div ref={trailRef} className="absolute" style={{ left: 0, top: 0 }} aria-hidden="true">
-            {["#FF6A4D", "#FFC94E", "#FF8A62", "#FFC94E", "#FF6A4D", "#FFD9A0", "#FF8A62"].map((c, i) => (
+            {["#74C7A6", "#B9E5D1", "#4BAF8B", "#B9E5D1", "#74C7A6", "#D1EEE5", "#4BAF8B"].map((c, i) => (
               <span
                 key={i}
                 className="absolute block rounded-full"
@@ -682,7 +682,7 @@ export default function App() {
 
             {/* celebratory sparkle burst */}
             <div ref={sparksRef} className="absolute" style={{ left: 0, top: 0 }} aria-hidden="true">
-              {["#FFC94E", "#FF6A4D", "#7ED957", "#FFFFFF", "#FFC94E", "#FF6A4D", "#7ED957", "#FFFFFF"].map((c, i) => (
+              {["#B9E5D1", "#74C7A6", "#93D1B5", "#FFFFFF", "#B9E5D1", "#74C7A6", "#93D1B5", "#FFFFFF"].map((c, i) => (
                 <span
                   key={i}
                   className="absolute block rounded-full"
@@ -703,7 +703,7 @@ export default function App() {
               <div className="absolute" style={{ left: BIRD / 2, top: (BIRD / 2) * (1 - birdScale) + 2 }}>
                 <div className="relative -translate-x-1/2 -translate-y-full max-sm:-translate-x-[58%]">
                   <div className="bg-[#1A1A1A] text-white text-[11px] sm:text-[12px] font-black px-3.5 py-2 rounded-2xl shadow-2xl flex items-center gap-2 max-w-[220px] sm:max-w-none sm:whitespace-nowrap">
-                    <span className="w-2 h-2 shrink-0 bg-[#FF6A4D] rounded-full animate-pulse" />
+                    <span className="w-2 h-2 shrink-0 bg-[#74C7A6] rounded-full animate-pulse" />
                     {chirpText}
                   </div>
                   <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-[#1A1A1A] rotate-45 rounded-[2px]" />
@@ -720,8 +720,8 @@ export default function App() {
         <div className="mx-auto max-w-[1280px] px-4 sm:px-6 lg:px-8 h-[64px] flex items-center justify-between">
           <div className="flex items-center gap-8">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-[#C20A0A] flex items-center justify-center text-white font-black text-[16px] tracking-tighter shadow-[0_6px_16px_rgba(194,10,10,0.28)]">A</div>
-              <span className="font-extrabold text-[18px] tracking-tight" style={{ fontFamily: "Plus Jakarta Sans, sans-serif" }}>ASCEND</span>
+              <div className="w-9 h-9 rounded-xl bg-[#087F63] flex items-center justify-center text-white font-black text-[16px] tracking-tighter shadow-[0_6px_16px_rgba(8,127,99,0.28)]">A</div>
+              <span className="font-extrabold text-[18px] tracking-tight" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>ASCEND</span>
               <span className="hidden sm:inline text-[11px] font-bold tracking-widest text-black/40 ml-1">ACADEMY</span>
             </div>
             <nav className="hidden lg:flex items-center gap-6 text-[13px] font-semibold text-black/60">
@@ -740,7 +740,7 @@ export default function App() {
           </div>
         </div>
         <div className="h-[3px] bg-black/[0.06] w-full">
-          <div ref={progressRef} className="h-full bg-[#C20A0A] w-[25%]" />
+          <div ref={progressRef} className="h-full bg-[#087F63] w-[25%]" />
         </div>
       </header>
 
@@ -749,7 +749,7 @@ export default function App() {
           <div className="bg-white rounded-3xl border border-black/10 shadow-xl p-8 text-center">
             <h1 className="text-2xl font-extrabold">Student registration is currently closed</h1>
             <p className="mt-3 text-black/60">Please contact the academy office for help activating your account.</p>
-            <a href="/login" className="inline-block mt-6 text-[#C20A0A] font-bold">Return to sign in</a>
+            <a href="/login" className="inline-block mt-6 text-[#087F63] font-bold">Return to sign in</a>
           </div>
         ) : (
           <div>
@@ -758,12 +758,12 @@ export default function App() {
               <div className="px-6 sm:px-8 pt-6 sm:pt-8 pb-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="px-2.5 py-1 rounded-full bg-[#FFF0F0] border border-[#C20A0A]/20 text-[#C20A0A] text-[11px] font-extrabold tracking-widest">STEP {step} OF 4</span>
+                    <span className="px-2.5 py-1 rounded-full bg-[#E8F5F0] border border-[#087F63]/20 text-[#087F63] text-[11px] font-extrabold tracking-widest">STEP {step} OF 4</span>
                     <span className="hidden sm:inline text-[12px] font-semibold text-black/40">• {step === 3 ? "O/A Levels only" : "Registration"}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     {[1, 2, 3, 4].map(i => (
-                      <div key={i} className={`h-1.5 rounded-full transition-all duration-500 ${i === step ? "w-8 bg-[#C20A0A]" : i < step ? "w-6 bg-[#C20A0A]/60" : "w-6 bg-black/10"}`} />
+                      <div key={i} className={`h-1.5 rounded-full transition-all duration-500 ${i === step ? "w-8 bg-[#087F63]" : i < step ? "w-6 bg-[#087F63]/60" : "w-6 bg-black/10"}`} />
                     ))}
                   </div>
                 </div>
@@ -772,15 +772,15 @@ export default function App() {
               <div ref={formContainerRef} className="px-6 sm:px-8 pb-8">
                 {step === 1 && (
                   <div className="pt-4">
-                    <h1 className="text-[28px] sm:text-[32px] font-extrabold tracking-tight leading-none" style={{ fontFamily: "Plus Jakarta Sans, sans-serif" }}>
-                      Create your <span className="text-[#C20A0A]">profile</span>
+                    <h1 className="text-[28px] sm:text-[32px] font-extrabold tracking-tight leading-none" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
+                      Create your <span className="text-[#087F63]">profile</span>
                     </h1>
-                    <p className="text-[13.5px] text-black/60 font-medium mt-2">Tell us about yourself — our bird will peek when you type! 🐦</p>
+                    <p className="text-[13.5px] text-black/60 font-medium mt-2">Tell us a little about yourself.</p>
 
                     <div className="mt-7 space-y-4">
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">FULL NAME *</label>
-                        <div className={`mt-1.5 relative flex items-center border-2 rounded-xl px-3 py-2.5 bg-white transition-all ${focusedField === "fullName" ? "border-[#C20A0A] shadow-[0_0_0_4px_rgba(194,10,10,0.08)]" : errors.fullName ? "border-red-400" : "border-black/10"}`}>
+                        <div className={`mt-1.5 relative flex items-center border-2 rounded-xl px-3 py-2.5 bg-white transition-all ${focusedField === "fullName" ? "border-[#087F63] shadow-[0_0_0_4px_rgba(8,127,99,0.08)]" : errors.fullName ? "border-red-400" : "border-black/10"}`}>
                           <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3 text-black/60">◉</span>
                           <input onFocus={e => onFieldFocus("fullName", e.currentTarget)} onBlur={onFieldBlur} value={formData.fullName} onChange={e => updateField("fullName", e.target.value)} placeholder="Alex Morgan" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                         </div>
@@ -789,7 +789,7 @@ export default function App() {
 
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">EMAIL ADDRESS *</label>
-                        <div className={`mt-1.5 relative flex items-center border-2 rounded-xl px-3 py-2.5 bg-white transition-all ${focusedField === "email" ? "border-[#C20A0A] shadow-[0_0_0_4px_rgba(194,10,10,0.08)]" : errors.email ? "border-red-400" : "border-black/10"}`}>
+                        <div className={`mt-1.5 relative flex items-center border-2 rounded-xl px-3 py-2.5 bg-white transition-all ${focusedField === "email" ? "border-[#087F63] shadow-[0_0_0_4px_rgba(8,127,99,0.08)]" : errors.email ? "border-red-400" : "border-black/10"}`}>
                           <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3 text-black/60">✉</span>
                           <input onFocus={e => onFieldFocus("email", e.currentTarget)} onBlur={onFieldBlur} value={formData.email} onChange={e => updateField("email", e.target.value)} placeholder="alex@email.com" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" type="email" />
                         </div>
@@ -798,7 +798,7 @@ export default function App() {
 
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">PHONE NUMBER *</label>
-                        <div className={`mt-1.5 flex items-center border-2 rounded-xl bg-white overflow-hidden transition-all ${focusedField === "phone" ? "border-[#C20A0A] shadow-[0_0_0_4px_rgba(194,10,10,0.08)]" : "border-black/10"}`}>
+                        <div className={`mt-1.5 flex items-center border-2 rounded-xl bg-white overflow-hidden transition-all ${focusedField === "phone" ? "border-[#087F63] shadow-[0_0_0_4px_rgba(8,127,99,0.08)]" : "border-black/10"}`}>
                           <select value={formData.countryCode} onChange={e => updateField("countryCode", e.target.value)} className="px-3 py-2.5 bg-black/[0.04] border-r border-black/10 text-[13px] font-bold outline-none">
                             <option>+92</option><option>+1</option><option>+44</option><option>+91</option><option>+61</option><option>+971</option>
                           </select>
@@ -810,7 +810,7 @@ export default function App() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                           <label className="text-[11px] font-extrabold tracking-widest text-black/60">GENDER *</label>
-                          <div className={`mt-1.5 relative border-2 rounded-xl px-3 py-2.5 flex items-center justify-between bg-white ${focusedField === "gender" ? "border-[#C20A0A]" : errors.gender ? "border-red-400" : "border-black/10"}`}>
+                          <div className={`mt-1.5 relative border-2 rounded-xl px-3 py-2.5 flex items-center justify-between bg-white ${focusedField === "gender" ? "border-[#087F63]" : errors.gender ? "border-red-400" : "border-black/10"}`}>
                             <select onFocus={e => onFieldFocus("gender", e.currentTarget)} onBlur={onFieldBlur} value={formData.gender} onChange={e => updateField("gender", e.target.value)} className="flex-1 bg-transparent outline-none text-[14px] font-semibold text-black/80">
                               <option value="">Select gender</option>
                               <option>Female</option><option>Male</option><option>Non-binary</option><option>Prefer not to say</option>
@@ -820,36 +820,36 @@ export default function App() {
                         </div>
                         <div>
                           <label className="text-[11px] font-extrabold tracking-widest text-black/60">DATE OF BIRTH *</label>
-                          <div className={`mt-1.5 border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "dob" ? "border-[#C20A0A]" : errors.dob ? "border-red-400" : "border-black/10"}`}>
+                          <div className={`mt-1.5 border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "dob" ? "border-[#087F63]" : errors.dob ? "border-red-400" : "border-black/10"}`}>
                             <input onFocus={e => onFieldFocus("dob", e.currentTarget)} onBlur={onFieldBlur} value={formData.dob} onChange={e => updateField("dob", e.target.value)} type="date" className="w-full bg-transparent outline-none text-[14px] font-semibold" />
                           </div>
                           {errors.dob && <p className="text-[11px] text-red-500 font-bold mt-1">{errors.dob}</p>}
                         </div>
                       </div>
 
-                      <button onClick={handleContinue} className="w-full mt-2 h-[52px] rounded-xl bg-[#C20A0A] text-white font-extrabold text-[14px] tracking-wide shadow-[0_10px_24px_rgba(194,10,10,0.3)] hover:bg-[#A80808] active:scale-[0.99] transition-all">
+                      <button onClick={handleContinue} className="w-full mt-2 h-[52px] rounded-xl bg-[#087F63] text-white font-extrabold text-[14px] tracking-wide shadow-[0_10px_24px_rgba(8,127,99,0.3)] hover:bg-[#066B53] active:scale-[0.99] transition-all">
                         Continue →
                       </button>
-                      <p className="text-center text-[11px] font-semibold text-black/40">Fly with us — O & A Levels only 🐦</p>
+                      <p className="text-center text-[11px] font-semibold text-black/40">O & A Level registration</p>
                     </div>
                   </div>
                 )}
 
                 {step === 2 && (
                   <div className="pt-4">
-                    <h2 className="text-[26px] font-extrabold tracking-tight" style={{ fontFamily: "Plus Jakarta Sans, sans-serif" }}>Guardian & Location</h2>
-                    <p className="text-[13px] text-black/60 font-medium mt-1">Guardian details + location. State list adapts to your country ✨</p>
+                    <h2 className="text-[26px] font-extrabold tracking-tight" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>Guardian & Location</h2>
+                    <p className="text-[13px] text-black/60 font-medium mt-1">Guardian details and location. The region list adapts to your country.</p>
 
                     <div className="mt-6 space-y-5">
-                      <div className="rounded-2xl bg-[#FFF6F6] border border-[#C20A0A]/10 p-4">
+                      <div className="rounded-2xl bg-[#F2F9F6] border border-[#087F63]/10 p-4">
                         <div className="flex items-center gap-2">
-                          <span className="w-7 h-7 rounded-full bg-[#C20A0A] text-white flex items-center justify-center text-[12px] font-black">1</span>
+                          <span className="w-7 h-7 rounded-full bg-[#087F63] text-white flex items-center justify-center text-[12px] font-black">1</span>
                           <h3 className="text-[13px] font-extrabold tracking-wide">Guardian / Parent Details</h3>
                         </div>
                         <div className="mt-4 space-y-3">
                           <div>
                             <label className="text-[11px] font-extrabold tracking-widest text-black/60">FATHER'S / GUARDIAN'S NAME *</label>
-                            <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "guardianName" ? "border-[#C20A0A]" : errors.guardianName ? "border-red-400" : "border-black/10"}`}>
+                            <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "guardianName" ? "border-[#087F63]" : errors.guardianName ? "border-red-400" : "border-black/10"}`}>
                               <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3">👤</span>
                               <input onFocus={e => onFieldFocus("guardianName", e.currentTarget)} onBlur={onFieldBlur} value={formData.guardianName} onChange={e => updateField("guardianName", e.target.value)} placeholder="Sarah Johnson" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                             </div>
@@ -857,7 +857,7 @@ export default function App() {
                           </div>
                           <div>
                             <label className="text-[11px] font-extrabold tracking-widest text-black/60">GUARDIAN CONTACT NUMBER *</label>
-                            <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "guardianPhone" ? "border-[#C20A0A]" : errors.guardianPhone ? "border-red-400" : "border-black/10"}`}>
+                            <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "guardianPhone" ? "border-[#087F63]" : errors.guardianPhone ? "border-red-400" : "border-black/10"}`}>
                               <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3">📞</span>
                               <input onFocus={e => onFieldFocus("guardianPhone", e.currentTarget)} onBlur={onFieldBlur} value={formData.guardianPhone} onChange={e => updateField("guardianPhone", e.target.value)} placeholder="+1 (555) 123-4567" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                             </div>
@@ -870,7 +870,7 @@ export default function App() {
                         <div className="flex items-center gap-2">
                           <span className="w-7 h-7 rounded-full bg-black text-white flex items-center justify-center text-[12px] font-black">2</span>
                           <h3 className="text-[13px] font-extrabold tracking-wide">Where you're from</h3>
-                          <span className="ml-auto text-[10px] font-black tracking-widest bg-[#FFF0F0] text-[#C20A0A] px-2 py-1 rounded-full">{formData.country ? `${availableStates.length} states` : "Pick country first"}</span>
+                          <span className="ml-auto text-[10px] font-black tracking-widest bg-[#E8F5F0] text-[#087F63] px-2 py-1 rounded-full">{formData.country ? `${availableStates.length} states` : "Pick country first"}</span>
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
                           <div>
@@ -895,7 +895,7 @@ export default function App() {
 
                       <div className="flex gap-3 pt-2">
                         <button onClick={() => animateStepChange(1)} className="px-6 h-[48px] rounded-xl border border-black/10 bg-white font-bold text-[13px]">Previous</button>
-                        <button onClick={handleContinue} className="flex-1 h-[48px] rounded-xl bg-[#C20A0A] text-white font-extrabold text-[14px] shadow-[0_10px_24px_rgba(194,10,10,0.25)] hover:bg-[#A80808] transition">Continue →</button>
+                        <button onClick={handleContinue} className="flex-1 h-[48px] rounded-xl bg-[#087F63] text-white font-extrabold text-[14px] shadow-[0_10px_24px_rgba(8,127,99,0.25)] hover:bg-[#066B53] transition">Continue →</button>
                       </div>
                     </div>
                   </div>
@@ -903,14 +903,14 @@ export default function App() {
 
                 {step === 3 && (
                   <div className="pt-4">
-                    <h2 className="text-[22px] sm:text-[26px] font-extrabold tracking-tight leading-tight" style={{ fontFamily: "Plus Jakarta Sans, sans-serif" }}>Program, School & Subjects</h2>
-                    <p className="text-[12.5px] text-black/55 font-medium mt-2 leading-relaxed">Step 3 of 4 — <span className="text-[#C20A0A] font-bold">Only O-Level & A-Level</span>. Subjects limited to <span className="font-bold">Maths & Computer Science</span>.</p>
+                    <h2 className="text-[22px] sm:text-[26px] font-extrabold tracking-tight leading-tight" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>Program, School & Subjects</h2>
+                    <p className="text-[12.5px] text-black/55 font-medium mt-2 leading-relaxed">Step 3 of 4 — <span className="text-[#087F63] font-bold">Only O-Level & A-Level</span>. Subjects limited to <span className="font-bold">Maths & Computer Science</span>.</p>
 
                     <div className="mt-5">
                       <label className="text-[11px] font-extrabold tracking-widest text-black/60">PROGRAM * — Choose one</label>
                       <div className="mt-2 grid grid-cols-2 gap-3">
                         {programOptions.map(p => (
-                          <button key={p} onClick={() => selectProgram(p)} type="button" className={`rounded-xl border-2 px-4 py-3 text-left transition ${formData.program === p ? "border-[#C20A0A] bg-[#FFF0F0] shadow-[0_4px_12px_rgba(194,10,10,0.12)]" : "border-black/10 bg-white hover:border-black/20"}`}>
+                          <button key={p} onClick={() => selectProgram(p)} type="button" className={`rounded-xl border-2 px-4 py-3 text-left transition ${formData.program === p ? "border-[#087F63] bg-[#E8F5F0] shadow-[0_4px_12px_rgba(8,127,99,0.12)]" : "border-black/10 bg-white hover:border-black/20"}`}>
                             <p className="text-[11px] font-black tracking-widest text-black/50">{p === "O-Level" ? "CAMBRIDGE O-LEVEL" : "CAMBRIDGE A-LEVEL"}</p>
                             <p className="text-[14px] font-extrabold mt-1">{p}</p>
                             <p className="text-[11px] font-semibold text-black/50 mt-0.5">{p === "O-Level" ? "Grades 9-11" : "AS & A2"}</p>
@@ -921,12 +921,12 @@ export default function App() {
                     </div>
 
                     <div className="mt-4">
-                      <label className="text-[11px] font-extrabold tracking-widest text-black/60">SUBJECTS — Only these two ✨</label>
+                      <label className="text-[11px] font-extrabold tracking-widest text-black/60">SUBJECTS — Choose from these two</label>
                       <div className="mt-2 flex gap-2">
                         {subjectOptions.map(sub => {
                           const active = formData.subjects.includes(sub)
                           return (
-                            <button key={sub} onClick={() => toggleSubject(sub)} className={`flex-1 py-2.5 rounded-full text-[13.5px] font-extrabold border-2 transition flex items-center justify-center gap-2 ${active ? "bg-[#C20A0A] text-white border-[#C20A0A] shadow-[0_6px_16px_rgba(194,10,10,0.25)]" : "bg-white text-black/50 border-black/10"}`}>
+                            <button key={sub} onClick={() => toggleSubject(sub)} className={`flex-1 py-2.5 rounded-full text-[13.5px] font-extrabold border-2 transition flex items-center justify-center gap-2 ${active ? "bg-[#087F63] text-white border-[#087F63] shadow-[0_6px_16px_rgba(8,127,99,0.25)]" : "bg-white text-black/50 border-black/10"}`}>
                               {active ? "✓ " : "+ "}{sub}
                             </button>
                           )
@@ -936,7 +936,7 @@ export default function App() {
                       {errors.subjects && <p className="text-[11px] text-red-500 font-bold mt-1">{errors.subjects}</p>}
                     </div>
 
-                    <div className="mt-5 p-4 rounded-2xl border border-black/10 bg-[#FFFBFB]">
+                    <div className="mt-5 p-4 rounded-2xl border border-black/10 bg-[#F8FBF9]">
                       <h4 className="text-[12px] font-extrabold tracking-widest text-black/70">WHERE YOU STUDY</h4>
                       <div className="mt-3">
                         <label className="text-[11px] font-bold text-black/60">School name *</label>
@@ -946,7 +946,7 @@ export default function App() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
                         <div>
                           <label className="text-[11px] font-bold text-black/60">School state / region *</label>
-                          <input value={formData.schoolRegion} onChange={e => updateField("schoolRegion", e.target.value)} onFocus={e => onFieldFocus("schoolRegion", e.currentTarget)} onBlur={onFieldBlur} placeholder="e.g. California" className={`mt-1.5 w-full border-2 rounded-xl px-3 py-2.5 text-[13px] font-semibold outline-none bg-white ${focusedField === "schoolRegion" ? "border-[#C20A0A]" : errors.schoolRegion ? "border-red-400" : "border-black/10"}`} />
+                          <input value={formData.schoolRegion} onChange={e => updateField("schoolRegion", e.target.value)} onFocus={e => onFieldFocus("schoolRegion", e.currentTarget)} onBlur={onFieldBlur} placeholder="e.g. California" className={`mt-1.5 w-full border-2 rounded-xl px-3 py-2.5 text-[13px] font-semibold outline-none bg-white ${focusedField === "schoolRegion" ? "border-[#087F63]" : errors.schoolRegion ? "border-red-400" : "border-black/10"}`} />
                           {errors.schoolRegion && <p className="text-[11px] text-red-500 font-bold mt-1">{errors.schoolRegion}</p>}
                         </div>
                         <div>
@@ -977,15 +977,15 @@ export default function App() {
 
                     <div className="flex gap-3 mt-6">
                       <button onClick={() => animateStepChange(2)} className="px-6 h-[48px] rounded-xl border border-black/10 bg-white font-bold text-[13px]">← Previous</button>
-                      <button onClick={handleContinue} className="flex-1 h-[48px] rounded-xl bg-[#C20A0A] text-white font-extrabold text-[14px] shadow-[0_10px_24px_rgba(194,10,10,0.25)]">Continue →</button>
+                      <button onClick={handleContinue} className="flex-1 h-[48px] rounded-xl bg-[#087F63] text-white font-extrabold text-[14px] shadow-[0_10px_24px_rgba(8,127,99,0.25)]">Continue →</button>
                     </div>
                   </div>
                 )}
 
                 {step === 4 && (
                   <div className="pt-4">
-                    <h2 className="text-[26px] font-extrabold tracking-tight" style={{ fontFamily: "Plus Jakarta Sans, sans-serif" }}>Password & Finish</h2>
-                    <p className="text-[13px] text-black/60 font-medium mt-1">Step 4 of 4 — Lock it in! The bird is on guard 🔐</p>
+                    <h2 className="text-[26px] font-extrabold tracking-tight" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>Password & Finish</h2>
+                    <p className="text-[13px] text-black/60 font-medium mt-1">Step 4 of 4 — Review your details and finish your registration.</p>
 
                     <div className="mt-6 space-y-4">
                       <p className="text-[13px] text-black/60">Use the admission number and activation code provided by your academy to connect your account to your student dashboard.</p>
@@ -1001,8 +1001,8 @@ export default function App() {
                       </div>
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">PASSWORD *</label>
-                        <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "password" ? "border-[#C20A0A]" : errors.password ? "border-red-400" : "border-black/10"}`}>
-                          <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3">🔒</span>
+                        <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "password" ? "border-[#087F63]" : errors.password ? "border-red-400" : "border-black/10"}`}>
+                          <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3"><svg width="18" height="18" aria-hidden="true"><use href="/static/icons.svg#lock-keyhole" /></svg></span>
                           <input type="password" onFocus={e => onFieldFocus("password", e.currentTarget)} onBlur={onFieldBlur} value={formData.password} onChange={e => updateField("password", e.target.value)} placeholder="Create a strong password" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                         </div>
                         <p className="text-[11px] font-semibold text-black/40 mt-1">8–128 characters, including letters and numbers</p>
@@ -1011,40 +1011,40 @@ export default function App() {
 
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">CONFIRM PASSWORD *</label>
-                        <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "confirmPassword" ? "border-[#C20A0A]" : errors.confirmPassword ? "border-red-400" : "border-black/10"}`}>
-                          <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3">🔒</span>
+                        <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "confirmPassword" ? "border-[#087F63]" : errors.confirmPassword ? "border-red-400" : "border-black/10"}`}>
+                          <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3"><svg width="18" height="18" aria-hidden="true"><use href="/static/icons.svg#lock-keyhole" /></svg></span>
                           <input type="password" onFocus={e => onFieldFocus("confirmPassword", e.currentTarget)} onBlur={onFieldBlur} value={formData.confirmPassword} onChange={e => updateField("confirmPassword", e.target.value)} placeholder="Repeat password" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                         </div>
                         <p className="text-[11px] font-semibold text-black/40 mt-1">8–128 characters, including letters and numbers</p>
                         {errors.confirmPassword && <p className="text-[11px] text-red-500 font-bold">{errors.confirmPassword}</p>}
                       </div>
 
-                      <label className="flex items-start gap-3 p-3 rounded-xl border border-black/10 bg-[#FFFBFB] cursor-pointer">
-                        <input type="checkbox" checked={formData.terms} onChange={e => updateField("terms", e.target.checked)} className="mt-1 w-4 h-4 accent-[#C20A0A]" />
-                        <span className="text-[12.5px] font-semibold leading-relaxed">I have read and accept the <a href="/privacy" target="_blank" rel="noreferrer" className="text-[#C20A0A] underline font-bold">privacy policy</a>. *</span>
+                      <label className="flex items-start gap-3 p-3 rounded-xl border border-black/10 bg-[#F8FBF9] cursor-pointer">
+                        <input type="checkbox" checked={formData.terms} onChange={e => updateField("terms", e.target.checked)} className="mt-1 w-4 h-4 accent-[#087F63]" />
+                        <span className="text-[12.5px] font-semibold leading-relaxed">I have read and accept the <a href="/privacy" target="_blank" rel="noreferrer" className="text-[#087F63] underline font-bold">privacy policy</a>. *</span>
                       </label>
                       {errors.terms && <p className="text-[11px] text-red-500 font-bold -mt-2">{errors.terms}</p>}
 
                       <div className="rounded-xl border-2 border-black/10 bg-white p-4 flex items-center justify-between gap-4">
                         <div>
                           <p className="text-[11px] font-extrabold tracking-widest text-black/60">SECURITY CHECK *</p>
-                          <p className="text-[16px] font-black mt-1">{captchaA} + {captchaB} = <span className="text-[#C20A0A]">?</span></p>
+                          <p className="text-[16px] font-black mt-1">{captchaA} + {captchaB} = <span className="text-[#087F63]">?</span></p>
                         </div>
-                        <input value={formData.captcha} onChange={e => updateField("captcha", e.target.value)} placeholder="Answer" onFocus={e => onFieldFocus("captcha", e.currentTarget)} onBlur={onFieldBlur} className={`w-24 h-12 rounded-xl border-2 text-center text-[16px] font-black outline-none bg-[#FFF6F6] ${errors.captcha ? "border-red-400" : focusedField === "captcha" ? "border-[#C20A0A]" : "border-black/10"}`} />
+                        <input value={formData.captcha} onChange={e => updateField("captcha", e.target.value)} placeholder="Answer" onFocus={e => onFieldFocus("captcha", e.currentTarget)} onBlur={onFieldBlur} className={`w-24 h-12 rounded-xl border-2 text-center text-[16px] font-black outline-none bg-[#F2F9F6] ${errors.captcha ? "border-red-400" : focusedField === "captcha" ? "border-[#087F63]" : "border-black/10"}`} />
                       </div>
                       {errors.captcha && <p className="text-[11px] text-red-500 font-bold">{errors.captcha}</p>}
 
                       {serverError && <div role="alert" className="text-sm text-red-700 font-bold"><p>{serverError}</p><a href="/register" target="_blank" rel="noreferrer" className="underline">Open registration in a new tab</a></div>}
                       <div className="flex gap-3 pt-2">
                         <button onClick={() => animateStepChange(3)} className="px-6 h-[48px] rounded-xl border border-black/10 bg-white font-bold text-[13px]">← Previous</button>
-                        <button onClick={handleContinue} disabled={submitting} className="disabled:opacity-50 flex-1 h-[56px] rounded-xl bg-[#C20A0A] text-white font-black text-[15px] tracking-wide shadow-[0_12px_28px_rgba(194,10,10,0.3)] hover:bg-[#A80808] transition">{submitting ? "Activating…" : "Activate & open dashboard ✨"}</button>
+                        <button onClick={handleContinue} disabled={submitting} className="disabled:opacity-50 flex-1 h-[56px] rounded-xl bg-[#087F63] text-white font-black text-[15px] tracking-wide shadow-[0_12px_28px_rgba(8,127,99,0.3)] hover:bg-[#066B53] transition">{submitting ? "Activating…" : "Activate & open dashboard"}</button>
                       </div>
                     </div>
                   </div>
                 )}
               </div>
             </div>
-            <p className="text-center text-[11px] font-semibold text-black/30 mt-4">🔒 Secure student account activation</p>
+            <p className="text-center text-[11px] font-semibold text-black/30 mt-4">Secure student account activation</p>
           </div>
         )}
       </main>
