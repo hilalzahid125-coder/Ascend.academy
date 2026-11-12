@@ -14,9 +14,11 @@
     </div>
   </div>
   <div class="student-home-identity">
+    <div class="student-identity-card">
     {% if user.profile_picture_path %}<img src="{{ user.profile_picture_path }}" alt="{{ user.full_name }} profile picture">{% else %}<div class="student-home-avatar-fallback">{{ user.full_name[:1]|upper }}</div>{% endif %}
     <span>{{ user.admission_no }}</span>
     <a href="/profile">View profile</a>
+    </div>
   </div>
 </section>
 
