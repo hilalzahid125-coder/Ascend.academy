@@ -1,4 +1,12 @@
 (() => {
+  document.querySelectorAll('[data-currency-picker]').forEach(picker => {
+    const select = picker.querySelector('[data-currency-select]');
+    const other = picker.querySelector('[data-currency-other]');
+    const input = other.querySelector('input');
+    const update = () => { const active = select.value === 'OTHER'; other.hidden = !active; input.required = active; };
+    select.addEventListener('change', update);
+    update();
+  });
   document.querySelectorAll('.fee-copy').forEach(button => button.addEventListener('click', async () => {
     const feedback = document.querySelector('.fee-copy-feedback');
     try { await navigator.clipboard.writeText(button.dataset.copy); feedback.textContent = 'Payment detail copied.'; }

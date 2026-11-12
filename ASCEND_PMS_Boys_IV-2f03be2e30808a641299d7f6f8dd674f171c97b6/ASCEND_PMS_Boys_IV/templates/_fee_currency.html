@@ -1,0 +1,5 @@
+{% macro currency_picker(selected='PKR') %}
+{% set common = [('PKR','Pakistani rupee (PKR)'),('USD','US dollar (USD)'),('GBP','British pound (GBP)'),('EUR','Euro (EUR)'),('AED','UAE dirham (AED)'),('SAR','Saudi riyal (SAR)'),('CAD','Canadian dollar (CAD)'),('AUD','Australian dollar (AUD)')] %}
+{% set codes = common|map(attribute=0)|list %}
+<div class="fee-currency-picker" data-currency-picker><label>Currency<select name="currency" data-currency-select required>{% for code,label in common %}<option value="{{ code }}" {{ 'selected' if selected == code else '' }}>{{ label }}</option>{% endfor %}<option value="OTHER" {{ 'selected' if selected not in codes else '' }}>Other currency</option></select></label><label data-currency-other>Other currency code <small>(three letters)</small><input name="currency_other" value="{{ selected if selected not in codes else '' }}" maxlength="3" placeholder="e.g. JPY" autocomplete="off"></label></div>
+{% endmacro %}

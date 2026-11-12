@@ -15,7 +15,7 @@
   <link rel="stylesheet" href="/static/live-classes.css?v=1">
   <link rel="stylesheet" href="/static/design-system.css?v=1">
   <link rel="stylesheet" href="/static/banner-design.css?v=1">
-  <link rel="stylesheet" href="/static/fees.css?v=1">
+  <link rel="stylesheet" href="/static/fees.css?v=2">
 </head>
 <body class="{{ 'role-admin' if user and user.role == 'admin' else 'role-student' if user else 'role-guest' }}">
 <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -88,5 +88,5 @@
 {% else %}{% block auth_content %}{% endblock %}{% endif %}
 <script src="/static/live-classes.js?v=1" defer></script>
 <script src="/static/app.js?v=academy-7" defer></script>
-<script src="/static/fees.js?v=1" defer></script>
+<script src="/static/fees.js?v=2" defer></script>
 </body></html>

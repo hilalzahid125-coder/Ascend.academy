@@ -17,6 +17,11 @@ def _fee_currency(value):
     if not re.fullmatch(r'[A-Z]{3}',value): raise ValueError('Use a three-letter currency code, such as PKR or USD.')
     return value
 
+def _fee_form_currency(form):
+    value = form.get('currency')
+    if value == 'OTHER': value = form.get('currency_other')
+    return _fee_currency(value)
+
 def _fee_date(value, required=False):
     value=str(value or '').strip()
     if not value and not required: return None
@@ -156,7 +161,7 @@ async def fees_assign(request: Request):
     admin=require_admin(request,'fees'); f=await request.form()
     try:
         token=_fee_token(f.get('batch_key')); title=_fee_text(f,'title',160,True); period=_fee_text(f,'period',120,True)
-        desc=_fee_text(f,'description',1000); installment=_fee_text(f,'installment',120); amount=_fee_amount(f.get('amount')); currency=_fee_currency(f.get('currency')); due=_fee_date(f.get('due_date'))
+        desc=_fee_text(f,'description',1000); installment=_fee_text(f,'installment',120); amount=_fee_amount(f.get('amount')); currency=_fee_form_currency(f); due=_fee_date(f.get('due_date'))
         scope=str(f.get('scope') or ''); target=str(f.get('student_id') if scope=='student' else f.get('grade') or '')
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -178,7 +183,7 @@ async def fees_assign(request: Request):
 async def fees_method_save(request: Request):
     admin=require_admin(request,'fees'); f=await request.form()
     try:
-        name=_fee_text(f,'name',120,True); currency=_fee_currency(f.get('currency')); details={k:_fee_text(f,k,1000 if k=='instructions' else 300) for k,_ in FEE_METHOD_FIELDS}
+        name=_fee_text(f,'name',120,True); currency=_fee_form_currency(f); details={k:_fee_text(f,k,1000 if k=='instructions' else 300) for k,_ in FEE_METHOD_FIELDS}
         if not any(details.values()): raise ValueError('Enter at least one payment detail or instruction.')
         method_id=str(f.get('method_id') or '')
         with connect() as conn:
@@ -227,7 +232,7 @@ async def fees_edit(request:Request,fee_id:int):
     try:
         title=_fee_text(f,'title',160,True); period=_fee_text(f,'period',120,True)
         description=_fee_text(f,'description',1000); installment=_fee_text(f,'installment',120)
-        amount=_fee_amount(f.get('amount')); currency=_fee_currency(f.get('currency')); due=_fee_date(f.get('due_date'))
+        amount=_fee_amount(f.get('amount')); currency=_fee_form_currency(f); due=_fee_date(f.get('due_date'))
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             fee=conn.execute('SELECT * FROM fee_assignments WHERE id=?',(fee_id,)).fetchone()

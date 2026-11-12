@@ -985,3 +985,28 @@ def test_fee_backup_restore_preserves_private_receipts():
     with connect() as c:
         after=c.execute('SELECT receipt,status FROM fee_payments WHERE id=?',(before['id'],)).fetchone()
         assert bytes(after['receipt'])==bytes(before['receipt']) and after['status']==before['status']
+
+
+def test_fee_currency_picker_preserves_currency_and_supports_other():
+    import secrets
+    admin=TestClient(app); csrf(admin); post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    page=admin.get('/admin/fees')
+    assert 'Pakistani rupee (PKR)' in page.text and 'US dollar (USD)' in page.text
+    for name,currency,other,expected in [('PKR choice','PKR','','PKR'),('Dollar choice','USD','','USD'),('Other choice','OTHER','jpy','JPY')]:
+        r=post(admin,'/admin/fees/methods',{'name':name,'currency':currency,'currency_other':other,'account':'123'})
+        assert 'Payment%20method%20saved' in r.headers['location']
+        with connect() as c:
+            m=c.execute('SELECT id,currency FROM fee_methods WHERE name=?',(name,)).fetchone()
+            assert m['currency']==expected
+            if expected=='JPY': other_id=m['id']
+    page=admin.get('/admin/fees').text
+    assert 'value="OTHER" selected' in page and 'value="JPY"' in page
+    assert 'Payment%20method%20saved' in post(admin,'/admin/fees/methods',{'method_id':other_id,'name':'Other choice','currency':'OTHER','currency_other':'JPY','account':'123'}).headers['location']
+    invalid=post(admin,'/admin/fees/methods',{'name':'Invalid choice','currency':'OTHER','currency_other':'US','account':'123'})
+    assert 'three-letter' in invalid.headers['location']
+    with connect() as c:
+        student=c.execute("SELECT id FROM users WHERE admission_no='F-8801'").fetchone()['id']
+        assert not c.execute("SELECT id FROM fee_methods WHERE name='Invalid choice'").fetchone()
+    assignment={'batch_key':secrets.token_hex(16),'scope':'student','student_id':student,'title':'Dollar fee','period':'2028','amount':'25.00','currency':'USD'}
+    assert 'Fee%20assigned' in post(admin,'/admin/fees/assign',assignment).headers['location']
+    with connect() as c: assert c.execute("SELECT currency FROM fee_assignments WHERE batch_key=?",(assignment['batch_key'],)).fetchone()['currency']=='USD'
