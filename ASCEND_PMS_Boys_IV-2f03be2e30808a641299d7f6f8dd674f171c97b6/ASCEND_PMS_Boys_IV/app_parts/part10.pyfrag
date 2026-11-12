@@ -1,0 +1,240 @@
+
+# Fee management: all monetary values are integer hundredths, never floats.
+from decimal import Decimal, InvalidOperation
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+FEE_METHOD_FIELDS = [('bank_name','Bank name'),('platform_name','Platform name'),('holder','Account holder / beneficiary'),('account','Account number / receiving ID'),('iban','IBAN'),('swift','SWIFT / BIC'),('branch','Branch name'),('address','Bank address'),('reference','Payment reference instructions'),('instructions','Additional instructions')]
+
+def _fee_amount(value):
+    value=str(value or '').strip()
+    if not re.fullmatch(r'\d{1,9}(?:\.\d{1,2})?', value): raise ValueError('Enter a valid positive amount with at most two decimal places.')
+    amount=int(Decimal(value)*100)
+    if amount <= 0: raise ValueError('Amount must be greater than zero.')
+    return amount
+
+def _fee_currency(value):
+    value=str(value or '').strip().upper()
+    if not re.fullmatch(r'[A-Z]{3}',value): raise ValueError('Use a three-letter currency code, such as PKR or USD.')
+    return value
+
+def _fee_date(value, required=False):
+    value=str(value or '').strip()
+    if not value and not required: return None
+    try:
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',value): raise ValueError()
+        date.fromisoformat(value)
+    except ValueError: raise ValueError('Enter a valid date.')
+    return value
+
+def _fee_token(value):
+    value=str(value or '')
+    if not re.fullmatch(r'[a-f0-9]{32}',value): raise ValueError('This form has expired. Refresh and try again.')
+    return value
+
+def _fee_text(form, key, length, required=False):
+    return _clean_text(str(form.get(key) or ''),length,required)
+
+def _fee_format(value):
+    return f'{int(value)//100:,}.{int(value)%100:02d}'
+templates.env.filters['fee_money']=_fee_format
+templates.env.filters['fee_input']=lambda value: f'{int(value)//100}.{int(value)%100:02d}'
+
+def _fee_rows(conn, student_id=None):
+    query='''SELECT f.*,u.full_name,u.admission_no,u.class_name,
+       COALESCE((SELECT SUM(p.amount) FROM fee_payments p WHERE p.fee_id=f.id AND p.status='approved'),0) paid,
+       COALESCE((SELECT SUM(p.amount) FROM fee_payments p WHERE p.fee_id=f.id AND p.status='submitted'),0) submitted,
+       (SELECT p.status FROM fee_payments p WHERE p.fee_id=f.id ORDER BY p.id DESC LIMIT 1) latest
+       FROM fee_assignments f JOIN users u ON u.id=f.student_id'''
+    args=[]
+    if student_id is not None: query+=' WHERE f.student_id=?'; args=[student_id]
+    query+=' ORDER BY f.due_date IS NULL,f.due_date,f.id DESC'
+    rows=[]
+    for r in conn.execute(query,args).fetchall():
+        x=dict(r); x['balance']=x['amount']-x['paid']
+        x['status']=('Paid' if x['balance']<=0 else 'Submitted for Verification' if x['submitted'] else 'Overdue' if x['due_date'] and x['due_date']<date.today().isoformat() else 'Partially Paid' if x['paid'] else 'Rejected' if x['latest']=='rejected' else 'Pending')
+        rows.append(x)
+    return rows
+
+def _fee_totals(rows):
+    totals={}
+    for r in rows:
+        t=totals.setdefault(r['currency'],{'total':0,'paid':0,'balance':0,'submitted':0})
+        for k,v in [('total','amount'),('paid','paid'),('balance','balance'),('submitted','submitted')]: t[k]+=r[v]
+    return sorted(totals.items())
+
+def _fee_methods(conn, active=False):
+    rows=conn.execute('SELECT * FROM fee_methods'+(' WHERE active=1' if active else '')+' ORDER BY active DESC,name,id').fetchall()
+    return [dict(r, values=json.loads(r['details']), fields=[(label,json.loads(r['details']).get(key,'')) for key,label in FEE_METHOD_FIELDS if json.loads(r['details']).get(key)]) for r in rows]
+
+def _fee_history(conn, student_id=None):
+    q='''SELECT p.id,p.fee_id,p.student_id,p.method_name,p.amount,p.currency,p.payment_date,p.reference,p.notes,p.status,p.submitted_at,p.reviewed_at,p.review_note,
+       f.title,f.period,u.full_name,u.admission_no FROM fee_payments p JOIN fee_assignments f ON f.id=p.fee_id JOIN users u ON u.id=p.student_id'''
+    if student_id is not None: return conn.execute(q+' WHERE p.student_id=? ORDER BY p.id DESC',(student_id,)).fetchall()
+    return conn.execute(q+' ORDER BY CASE WHEN p.status=\'submitted\' THEN 0 ELSE 1 END,p.id DESC').fetchall()
+
+@app.get('/fees',response_class=HTMLResponse)
+def fees_student(request: Request):
+    u=require_user(request,'student')
+    with connect() as conn:
+        fees=_fee_rows(conn,u['id']); history=_fee_history(conn,u['id'])
+    dates=[r['due_date'] for r in fees if r['balance']>0 and r['due_date'] and r['due_date']>=date.today().isoformat()]
+    return render(request,'fees_student.html',{'fees':fees,'history':history,'totals':_fee_totals(fees),'next_due':min(dates) if dates else None})
+
+@app.get('/fees/{fee_id}/pay',response_class=HTMLResponse)
+def fees_pay(request: Request,fee_id:int):
+    u=require_user(request,'student')
+    with connect() as conn:
+        fee=next((r for r in _fee_rows(conn,u['id']) if r['id']==fee_id),None)
+        methods=_fee_methods(conn,True)
+    if not fee: raise HTTPException(404)
+    if fee['balance']<=0 or fee['submitted']: return flash_redirect('/fees','This fee is already paid or has a submission awaiting review.','error')
+    return render(request,'fees_pay.html',{'fee':fee,'methods':methods,'token':secrets.token_hex(16),'today':date.today().isoformat()})
+
+@app.post('/fees/{fee_id}/submit')
+async def fees_submit(request: Request,fee_id:int):
+    u=require_user(request,'student'); form=await request.form()
+    try:
+        token=_fee_token(form.get('submission_key')); amount=_fee_amount(form.get('amount')); currency=_fee_currency(form.get('currency'))
+        payment_date=_fee_date(form.get('payment_date'),True)
+        if payment_date>date.today().isoformat(): raise ValueError('Payment date cannot be in the future.')
+        reference=_fee_text(form,'reference',160); notes=_fee_text(form,'notes',1000)
+        method_id=int(form.get('method_id') or 0); upload=form.get('receipt')
+        if not upload or not getattr(upload,'filename','') or Path(upload.filename).suffix.lower() not in ('.jpg','.jpeg','.png','.webp'): raise ValueError('Choose a JPG, PNG or WEBP receipt image.')
+        data=await upload.read(4_000_001)
+        if len(data)>4_000_000: raise ValueError('Receipt must be smaller than 4 MB.')
+        try:
+            with Image.open(io.BytesIO(data)) as im:
+                if im.format not in ('JPEG','PNG','WEBP') or im.width*im.height>20_000_000: raise ValueError('Invalid or oversized receipt image.')
+                im.load(); im=ImageOps.exif_transpose(im).convert('RGB'); im.thumbnail((2400,2400)); out=io.BytesIO(); im.save(out,format='WEBP',quality=85)
+        except (UnidentifiedImageError, OSError, Image.DecompressionBombError): raise ValueError('The receipt is not a valid image.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            existing=conn.execute('SELECT student_id,fee_id FROM fee_payments WHERE submission_key=?',(token,)).fetchone()
+            if existing:
+                if existing['student_id']!=u['id'] or existing['fee_id']!=fee_id: raise ValueError('Invalid submission token.')
+                return flash_redirect('/fees','This payment proof was already submitted.')
+            fee=next((r for r in _fee_rows(conn,u['id']) if r['id']==fee_id),None)
+            method=conn.execute('SELECT * FROM fee_methods WHERE id=? AND active=1',(method_id,)).fetchone()
+            if not fee: raise HTTPException(404)
+            if not method or method['currency']!=fee['currency']: raise ValueError('Choose an active payment method in the fee currency.')
+            if currency!=fee['currency']: raise ValueError('Payment currency must match the assigned fee currency.')
+            if fee['submitted'] or fee['balance']<=0 or amount>fee['balance']: raise ValueError('The fee has a pending submission or the amount exceeds its remaining balance.')
+            conn.execute('''INSERT INTO fee_payments(fee_id,student_id,method_id,method_name,amount,currency,payment_date,reference,notes,receipt,status,submitted_at,submission_key)
+                VALUES (?,?,?,?,?,?,?,?,?,?,\'submitted\',?,?)''',(fee_id,u['id'],method_id,method['name'],amount,currency,payment_date,reference,notes,out.getvalue(),iso_now(),token))
+            for admin in conn.execute("SELECT * FROM users WHERE role='admin' AND status='active'").fetchall():
+                if 'fees' in _admin_permissions(admin): notify(conn,admin['id'],'Fee receipt submitted',f"{u['full_name']} ({u['admission_no']}) submitted proof for {fee['title']}.")
+    except (ValueError, TypeError) + INTEGRITY_ERRORS as exc:
+        return flash_redirect(f'/fees/{fee_id}/pay',str(exc) if isinstance(exc,ValueError) else 'Could not submit this receipt. Please refresh and try again.','error')
+    return flash_redirect('/fees','Payment proof submitted for verification. It is not yet marked paid.')
+
+@app.get('/fees/receipt/{payment_id}')
+def fees_receipt(request: Request,payment_id:int):
+    user=require_user(request)
+    with connect() as conn:
+        p=conn.execute('SELECT student_id,receipt FROM fee_payments WHERE id=?',(payment_id,)).fetchone()
+        if not p: raise HTTPException(404)
+        if user['role']=='student':
+            if p['student_id']!=user['id']: raise HTTPException(404)
+        else: require_admin(request,'fees')
+    return Response(bytes(p['receipt']),media_type='image/webp',headers={'Cache-Control':'private, no-store','Content-Disposition':'inline; filename="receipt.webp"'})
+
+@app.get('/admin/fees',response_class=HTMLResponse)
+def fees_admin(request: Request):
+    require_admin(request,'fees')
+    with connect() as conn:
+        all_fees=_fee_rows(conn); methods=_fee_methods(conn); history=_fee_history(conn)
+        periods=sorted({r['period'] for r in all_fees})
+        selected_period=request.query_params.get('period','')
+        if selected_period not in periods: selected_period=''
+        fees=[r for r in all_fees if not selected_period or r['period']==selected_period]
+        students=conn.execute("SELECT id,full_name,admission_no,class_name FROM users WHERE role='student' AND status IN ('active','unclaimed') ORDER BY full_name,id").fetchall()
+        grades=conn.execute("SELECT DISTINCT class_name FROM users WHERE role='student' AND status IN ('active','unclaimed') AND class_name IS NOT NULL AND class_name!='' ORDER BY class_name").fetchall()
+    return render(request,'fees_admin.html',{'fees':fees,'methods':methods,'history':history,'totals':_fee_totals(fees),'students':students,'grades':grades,'fields':FEE_METHOD_FIELDS,'token':secrets.token_hex(16),'periods':periods,'selected_period':selected_period,'pending_students':len({r['student_id'] for r in fees if r['balance']>0})})
+
+@app.post('/admin/fees/assign')
+async def fees_assign(request: Request):
+    admin=require_admin(request,'fees'); f=await request.form()
+    try:
+        token=_fee_token(f.get('batch_key')); title=_fee_text(f,'title',160,True); period=_fee_text(f,'period',120,True)
+        desc=_fee_text(f,'description',1000); installment=_fee_text(f,'installment',120); amount=_fee_amount(f.get('amount')); currency=_fee_currency(f.get('currency')); due=_fee_date(f.get('due_date'))
+        scope=str(f.get('scope') or ''); target=str(f.get('student_id') if scope=='student' else f.get('grade') or '')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute('SELECT 1 FROM fee_assignments WHERE batch_key=? LIMIT 1',(token,)).fetchone(): return flash_redirect('/admin/fees','This assignment was already created.')
+            if scope=='student' and target.isdigit():
+                students=conn.execute("SELECT id FROM users WHERE role='student' AND status IN ('active','unclaimed') AND id=?",(int(target),)).fetchall()
+            elif scope=='grade' and target:
+                students=conn.execute("SELECT id FROM users WHERE role='student' AND status IN ('active','unclaimed') AND class_name=?",(target,)).fetchall()
+            else: raise ValueError('Select a student or grade.')
+            if not students: raise ValueError('No eligible students found for this selection.')
+            for st in students:
+                conn.execute('''INSERT INTO fee_assignments(student_id,title,period,description,installment,amount,currency,due_date,batch_key,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',(st['id'],title,period,desc,installment,amount,currency,due,token,admin['id'],iso_now()))
+                notify(conn,st['id'],'Fee assigned',f'{title} ({period}) has been assigned. View Fee Management for details.')
+            audit(conn,admin['id'],'fee_assigned',f'{title}; {len(students)} students; {currency} {_fee_format(amount)} each')
+    except (ValueError, TypeError) + INTEGRITY_ERRORS as exc: return flash_redirect('/admin/fees',str(exc) if isinstance(exc,ValueError) else 'Could not assign this fee.','error')
+    return flash_redirect('/admin/fees',f'Fee assigned to {len(students)} student(s).')
+
+@app.post('/admin/fees/methods')
+async def fees_method_save(request: Request):
+    admin=require_admin(request,'fees'); f=await request.form()
+    try:
+        name=_fee_text(f,'name',120,True); currency=_fee_currency(f.get('currency')); details={k:_fee_text(f,k,1000 if k=='instructions' else 300) for k,_ in FEE_METHOD_FIELDS}
+        if not any(details.values()): raise ValueError('Enter at least one payment detail or instruction.')
+        method_id=str(f.get('method_id') or '')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if method_id:
+                if not method_id.isdigit() or not conn.execute('SELECT id FROM fee_methods WHERE id=?',(int(method_id),)).fetchone(): raise ValueError('Payment method not found.')
+                conn.execute('UPDATE fee_methods SET name=?,currency=?,details=? WHERE id=?',(name,currency,json.dumps(details),int(method_id)))
+            else: conn.execute('INSERT INTO fee_methods(name,currency,details,created_at) VALUES (?,?,?,?)',(name,currency,json.dumps(details),iso_now()))
+            audit(conn,admin['id'],'fee_method_saved',name)
+    except (ValueError,TypeError) as exc: return flash_redirect('/admin/fees',str(exc),'error')
+    return flash_redirect('/admin/fees','Payment method saved.')
+
+@app.post('/admin/fees/methods/{method_id}/toggle')
+def fees_method_toggle(request:Request,method_id:int):
+    admin=require_admin(request,'fees')
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        m=conn.execute('SELECT * FROM fee_methods WHERE id=?',(method_id,)).fetchone()
+        if not m: raise HTTPException(404)
+        conn.execute('UPDATE fee_methods SET active=? WHERE id=?',(0 if m['active'] else 1,method_id)); audit(conn,admin['id'],'fee_method_status',m['name'])
+    return flash_redirect('/admin/fees','Payment method availability updated.')
+
+@app.post('/admin/fees/payments/{payment_id}/review')
+async def fees_review(request:Request,payment_id:int):
+    admin=require_admin(request,'fees'); f=await request.form()
+    try:
+        decision=str(f.get('decision') or ''); note=_fee_text(f,'note',1000)
+        if decision not in ('approved','rejected'): raise ValueError('Choose approve or reject.')
+        if decision=='rejected' and not note: raise ValueError('Provide a reason for rejection.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            p=conn.execute('SELECT * FROM fee_payments WHERE id=?',(payment_id,)).fetchone()
+            if not p: raise HTTPException(404)
+            if p['status']!='submitted': raise ValueError('This payment has already been reviewed.')
+            fee=next((r for r in _fee_rows(conn,p['student_id']) if r['id']==p['fee_id']),None)
+            if not fee or (decision=='approved' and p['amount']>fee['balance']): raise ValueError('Payment exceeds the remaining balance and cannot be approved.')
+            now=iso_now(); conn.execute('UPDATE fee_payments SET status=?,reviewed_at=?,reviewed_by=?,review_note=? WHERE id=? AND status=\'submitted\'',(decision,now,admin['id'],note,payment_id))
+            notify(conn,p['student_id'],'Fee payment '+decision, f"Your payment for {fee['title']} was {decision}."+(f' {note}' if note else ''))
+            audit(conn,admin['id'],'fee_payment_'+decision,f"Payment {payment_id}; student {p['student_id']}; {p['currency']} {_fee_format(p['amount'])}")
+    except ValueError as exc: return flash_redirect('/admin/fees',str(exc),'error')
+    return flash_redirect('/admin/fees','Payment '+decision+'.')
+
+@app.post('/admin/fees/{fee_id}/edit')
+async def fees_edit(request:Request,fee_id:int):
+    admin=require_admin(request,'fees'); f=await request.form()
+    try:
+        title=_fee_text(f,'title',160,True); period=_fee_text(f,'period',120,True)
+        description=_fee_text(f,'description',1000); installment=_fee_text(f,'installment',120)
+        amount=_fee_amount(f.get('amount')); currency=_fee_currency(f.get('currency')); due=_fee_date(f.get('due_date'))
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            fee=conn.execute('SELECT * FROM fee_assignments WHERE id=?',(fee_id,)).fetchone()
+            if not fee: raise HTTPException(404)
+            if conn.execute('SELECT 1 FROM fee_payments WHERE fee_id=? LIMIT 1',(fee_id,)).fetchone(): raise ValueError('A fee with payment history cannot be edited.')
+            conn.execute('UPDATE fee_assignments SET title=?,period=?,description=?,installment=?,amount=?,currency=?,due_date=? WHERE id=?',(title,period,description,installment,amount,currency,due,fee_id))
+            notify(conn,fee['student_id'],'Fee updated',f'{title} ({period}) has been updated. View Fee Management for details.')
+            audit(conn,admin['id'],'fee_updated',f'Fee {fee_id}; student {fee["student_id"]}; {currency} {_fee_format(amount)}')
+    except (ValueError,TypeError) as exc: return flash_redirect('/admin/fees',str(exc),'error')
+    return flash_redirect('/admin/fees','Fee updated.')

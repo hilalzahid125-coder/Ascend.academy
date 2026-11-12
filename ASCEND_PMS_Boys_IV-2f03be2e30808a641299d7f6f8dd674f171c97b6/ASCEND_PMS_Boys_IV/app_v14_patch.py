@@ -97,9 +97,12 @@ def admin_dashboard(request: Request):
 def admin_student_delete(request: Request, student_id:int):
     a=require_admin(request,super_only=True)
     with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         student=conn.execute('SELECT id,admission_no,full_name,profile_picture_path FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
         if not student:
             return flash_redirect('/admin/students','Student not found.','error')
+        if conn.execute('SELECT 1 FROM fee_assignments WHERE student_id=? LIMIT 1',(student_id,)).fetchone():
+            return flash_redirect('/admin/students','This student has fee records and cannot be deleted. Disable the account instead.','error')
         admission_no=student['admission_no']; full_name=student['full_name']; photo_path=student['profile_picture_path']
         conn.execute('DELETE FROM users WHERE id=? AND role="student"',(student_id,))
         audit(conn,a['id'],'student_deleted',f'{admission_no}: {full_name}')

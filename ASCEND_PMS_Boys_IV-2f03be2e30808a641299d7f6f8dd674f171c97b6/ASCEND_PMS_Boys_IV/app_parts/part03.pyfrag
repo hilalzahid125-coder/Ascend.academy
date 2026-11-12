@@ -84,14 +84,14 @@ def leaderboards(request: Request, category: str='overall', period: str='all', c
 
 @app.get('/notifications', response_class=HTMLResponse)
 def notifications_page(request: Request):
-    u=require_user(request,'student')
+    u=require_user(request)
     with connect() as conn:
         rows=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],)).fetchall()
     return render(request,'notifications.html',{'notifications':rows})
 
 @app.post('/notifications/read-all')
 def notifications_read_all(request: Request):
-    u=require_user(request,'student')
+    u=require_user(request)
     with connect() as conn: conn.execute('UPDATE notifications SET is_read=1 WHERE user_id=?',(u['id'],))
     return flash_redirect('/notifications','Notifications marked as read.')
 

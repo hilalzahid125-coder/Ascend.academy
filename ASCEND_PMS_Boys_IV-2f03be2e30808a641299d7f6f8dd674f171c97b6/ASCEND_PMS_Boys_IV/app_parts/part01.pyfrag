@@ -100,6 +100,8 @@ STAFF_PERMISSION_LABELS = {
     'activity':'Activity log',
 }
 DEFAULT_STAFF_PERMISSIONS = set(STAFF_PERMISSION_LABELS)
+# Fee access must be explicitly granted to staff, including legacy accounts.
+STAFF_PERMISSION_LABELS['fees'] = 'Fee management'
 MAX_POST_BYTES = 5_000_000
 
 

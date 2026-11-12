@@ -890,3 +890,98 @@ def test_live_class_room_authorization_lifecycle_and_randomness(monkeypatch):
         assert post(pupil,f'/my-classes/live/{session}/room').status_code==404
         assert admin.get(f'/my-classes/live/{session}/status').status_code==404
     assert rooms[0]!=rooms[1]
+
+
+def test_fee_management_manual_workflow_and_security():
+    import io, secrets
+    from PIL import Image
+    with connect() as c:
+        for no,name,grade in [('F-8801','Fee Student','Fee Grade'),('F-8802','Other Student','Fee Grade')]:
+            c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,class_name,claimed,created_at) VALUES (?,?,?,'student','active',?,1,?)",(no,name,hash_password('StudentFee123'),grade,iso_now()))
+        student_id=c.execute("SELECT id FROM users WHERE admission_no='F-8801'").fetchone()['id']
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,admin_level,admin_permissions,created_at) VALUES ('ADMIN-FEE1','Limited Staff',?,'admin','active',1,'staff','[]',?)",(hash_password('LimitedAdmin123'),iso_now()))
+    admin=TestClient(app); student=TestClient(app); other=TestClient(app); staff=TestClient(app)
+    for client,no,pw in [(admin,'ADMIN-0001','StrongAdmin123'),(student,'F-8801','StudentFee123'),(other,'F-8802','StudentFee123'),(staff,'ADMIN-FEE1','LimitedAdmin123')]:
+        csrf(client); assert post(client,'/login',{'admission_no':no,'password':pw}).status_code==303
+    assert staff.get('/admin/fees').status_code==403
+    assert student.get('/admin/fees').status_code==403
+    assert admin.get('/admin/fees').status_code==200
+    post(admin,'/admin/fees/methods',{'name':'Transfer','currency':'PKR','holder':'Academy','account':'1234'})
+    with connect() as c: method=c.execute("SELECT id FROM fee_methods WHERE name='Transfer'").fetchone()['id']
+    token=secrets.token_hex(16)
+    assignment={'batch_key':token,'title':'Term fee','period':'2027','installment':'First','amount':'1000.00','currency':'PKR','scope':'grade','grade':'Fee Grade','due_date':'2030-01-01'}
+    assert post(admin,'/admin/fees/assign',assignment).status_code==303
+    post(admin,'/admin/fees/assign',assignment)
+    with connect() as c:
+        fees=c.execute('SELECT * FROM fee_assignments WHERE batch_key=? ORDER BY student_id',(token,)).fetchall()
+        assert len(fees)==2
+        fee=next(f for f in fees if f['student_id']==student_id)
+    page=student.get('/fees'); assert page.status_code==200 and 'Term fee' in page.text and '1,000.00' in page.text
+    assert student.get(f'/fees/{fee["id"]}/pay').status_code==200
+    assert other.get(f'/fees/{fee["id"]}/pay').status_code==404
+    assert '1234' in student.get(f'/fees/{fee["id"]}/pay').text
+    edit={'title':'Term fee','period':'2027','installment':'First','amount':'1000.00','currency':'PKR','due_date':'2030-01-01'}
+    assert 'Fee%20updated' in post(admin,f'/admin/fees/{fee["id"]}/edit',edit).headers['location']
+    assert post(staff,f'/admin/fees/{fee["id"]}/edit',edit).status_code==403
+    image=io.BytesIO(); Image.new('RGB',(8,8),'white').save(image,format='PNG'); data=image.getvalue()
+    form={'submission_key':secrets.token_hex(16),'method_id':str(method),'amount':'400.00','currency':'PKR','payment_date':'2024-01-01','reference':'REF-1'}
+    upload={'receipt':('receipt.png',data,'image/png')}
+    assert post(other,f'/fees/{fee["id"]}/submit',form,files=upload).status_code==404
+    bad=dict(form,amount='1000.01',submission_key=secrets.token_hex(16))
+    assert 'exceeds' in post(student,f'/fees/{fee["id"]}/submit',bad,files=upload).headers['location']
+    bad=dict(form,submission_key=secrets.token_hex(16))
+    assert 'valid%20image' in post(student,f'/fees/{fee["id"]}/submit',bad,files={'receipt':('fake.png',b'not an image','image/png')}).headers['location']
+    assert post(student,f'/fees/{fee["id"]}/submit',form,files=upload).status_code==303
+    post(student,f'/fees/{fee["id"]}/submit',form,files=upload)
+    with connect() as c:
+        payments=c.execute('SELECT id,status FROM fee_payments WHERE fee_id=?',(fee['id'],)).fetchall(); assert len(payments)==1 and payments[0]['status']=='submitted'
+        payment=payments[0]['id']
+    assert other.get(f'/fees/receipt/{payment}').status_code==404
+    assert staff.get(f'/fees/receipt/{payment}').status_code==403
+    assert student.get(f'/fees/receipt/{payment}').headers['content-type']=='image/webp'
+    assert admin.get('/notifications').status_code==200 and 'Fee receipt submitted' in admin.get('/notifications').text
+    assert 'Submitted for Verification' in student.get('/fees').text
+    assert 'cannot%20be%20edited' in post(admin,f'/admin/fees/{fee["id"]}/edit',edit).headers['location']
+    assert 'pending%20submission' in post(student,f'/fees/{fee["id"]}/submit',dict(form,submission_key=secrets.token_hex(16)),files=upload).headers['location']
+    post(admin,f'/admin/fees/payments/{payment}/review',{'decision':'rejected'})
+    with connect() as c: assert c.execute('SELECT status FROM fee_payments WHERE id=?',(payment,)).fetchone()['status']=='submitted'
+    post(admin,f'/admin/fees/payments/{payment}/review',{'decision':'rejected','note':'Please send a clearer image'})
+    assert 'Please send a clearer image' in student.get('/fees').text
+    form['submission_key']=secrets.token_hex(16)
+    post(student,f'/fees/{fee["id"]}/submit',form,files=upload)
+    with connect() as c: second=c.execute('SELECT MAX(id) id FROM fee_payments WHERE fee_id=?',(fee['id'],)).fetchone()['id']
+    post(admin,f'/admin/fees/payments/{second}/review',{'decision':'approved'})
+    post(admin,f'/admin/fees/payments/{second}/review',{'decision':'approved'})
+    page=student.get('/fees'); assert 'Partially Paid' in page.text and '600.00' in page.text
+    assert 'Fee payment approved' in student.get('/notifications').text
+    with connect() as c: c.execute("UPDATE users SET admin_permissions=? WHERE admission_no=?", ('["fees"]','ADMIN-FEE1'))
+    assert staff.get('/admin/fees').status_code==200
+    assert staff.get(f'/fees/receipt/{payment}').status_code==200
+    form.update(submission_key=secrets.token_hex(16),amount='600.00')
+    post(student,f'/fees/{fee["id"]}/submit',form,files=upload)
+    with connect() as c: third=c.execute('SELECT MAX(id) id FROM fee_payments WHERE fee_id=?',(fee['id'],)).fetchone()['id']
+    post(staff,f'/admin/fees/payments/{third}/review',{'decision':'approved'})
+    assert 'Paid' in student.get('/fees').text
+    assert 'already%20paid' in student.get(f'/fees/{fee["id"]}/pay',follow_redirects=False).headers['location']
+    r=post(admin,f'/admin/students/{student_id}/delete'); assert 'cannot%20be%20deleted' in r.headers['location']
+    with connect() as c:
+        assert c.execute('SELECT COUNT(*) n FROM fee_payments WHERE fee_id=?',(fee['id'],)).fetchone()['n']==3
+        assert c.execute('SELECT id FROM users WHERE id=?',(student_id,)).fetchone()
+
+
+def test_fee_backup_restore_preserves_private_receipts():
+    import pytest
+    from db import DATABASE_URL
+    if not DATABASE_URL: pytest.skip('PostgreSQL restore test')
+    from backups import create_backup, backup_bytes
+    from scripts.restore_postgres_backup import restore_backup
+    with connect() as c:
+        before=c.execute("SELECT id,receipt,status FROM fee_payments WHERE status='approved' ORDER BY id DESC LIMIT 1").fetchone()
+        assert before
+        before=dict(before)
+    backup=create_backup('fee-test')
+    path=TEST_DIR/'fee-restore-test.zip'; path.write_bytes(backup_bytes(backup.name))
+    restore_backup(path)
+    with connect() as c:
+        after=c.execute('SELECT receipt,status FROM fee_payments WHERE id=?',(before['id'],)).fetchone()
+        assert bytes(after['receipt'])==bytes(before['receipt']) and after['status']==before['status']

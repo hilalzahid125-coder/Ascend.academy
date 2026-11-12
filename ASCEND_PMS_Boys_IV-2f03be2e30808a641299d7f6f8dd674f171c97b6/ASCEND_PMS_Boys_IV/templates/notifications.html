@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-head"><div><span class="eyebrow">UPDATES</span><h1>Notifications</h1><p>Challenge decisions, points and achievement updates from ASCEND.</p></div><form method="post" action="/notifications/read-all"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn ghost">Mark all read</button></form></section>
+<section class="page-head"><div><span class="eyebrow">UPDATES</span><h1>Notifications</h1><p>Updates and decisions from Delta Academy.</p></div><form method="post" action="/notifications/read-all"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn ghost">Mark all read</button></form></section>
 <section class="panel">
 {% for n in notifications %}<article class="notification-row {{ '' if n.is_read else 'unread' }}"><div class="notification-dot"></div><div class="grow"><strong>{{ n.title }}</strong><p>{{ n.body }}</p><small>{{ n.created_at[:16].replace('T',' ') }}</small></div></article>{% else %}<div class="empty"><strong>You’re all caught up</strong><p>New updates will appear here.</p></div>{% endfor %}
 </section>
