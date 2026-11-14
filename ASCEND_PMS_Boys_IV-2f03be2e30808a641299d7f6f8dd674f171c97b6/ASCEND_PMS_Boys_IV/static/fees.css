@@ -2,3 +2,5 @@
 .fee-period-filter{display:flex;gap:10px;align-items:end;margin:20px 0}.fee-period-filter label{display:grid;gap:6px;font-size:.85rem;font-weight:600;color:#304b41}.fee-period-filter select{min-width:180px;max-width:100%}@media(max-width:370px){.fee-period-filter{flex-wrap:wrap}}
 
 .fee-currency-picker{display:grid;gap:10px;min-width:0;align-content:start}.fee-currency-picker [hidden]{display:none}
+.fee-warning{background:#fff8e7;border:1px solid #f0d69a;color:#624a16;border-radius:12px;padding:16px 18px;margin:18px 0;overflow-wrap:anywhere}.fee-warning p{margin:6px 0 0;color:#624a16}.fee-upload-fields{border:0;padding:0;margin:0;min-width:0;display:grid;gap:15px}.fee-upload-fields:disabled{opacity:.65}.fee-upload-message{overflow-wrap:anywhere}.fee-review textarea{resize:vertical}.fee-history .fee-entry p{overflow-wrap:anywhere;white-space:pre-wrap}.fee-receipt-link:focus-visible,.fee-copy:focus-visible{outline:3px solid #148560;outline-offset:3px}
+.fee-preview[hidden]{display:none}

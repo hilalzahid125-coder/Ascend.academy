@@ -917,6 +917,11 @@ def test_fee_management_manual_workflow_and_security():
         assert len(fees)==2
         fee=next(f for f in fees if f['student_id']==student_id)
     page=student.get('/fees'); assert page.status_code==200 and 'Term fee' in page.text and '1,000.00' in page.text
+    with connect() as c: c.execute("UPDATE fee_methods SET active=0 WHERE id=?",(method,))
+    unavailable=student.get(f'/fees/{fee["id"]}/pay').text
+    assert 'Receipt submission unavailable' in unavailable and 'name="receipt"' in unavailable and 'disabled' in unavailable
+    assert 'Payment method needed' in admin.get('/admin/fees').text
+    with connect() as c: c.execute("UPDATE fee_methods SET active=1 WHERE id=?",(method,))
     assert student.get(f'/fees/{fee["id"]}/pay').status_code==200
     assert other.get(f'/fees/{fee["id"]}/pay').status_code==404
     assert '1234' in student.get(f'/fees/{fee["id"]}/pay').text
@@ -924,7 +929,7 @@ def test_fee_management_manual_workflow_and_security():
     assert 'Fee%20updated' in post(admin,f'/admin/fees/{fee["id"]}/edit',edit).headers['location']
     assert post(staff,f'/admin/fees/{fee["id"]}/edit',edit).status_code==403
     image=io.BytesIO(); Image.new('RGB',(8,8),'white').save(image,format='PNG'); data=image.getvalue()
-    form={'submission_key':secrets.token_hex(16),'method_id':str(method),'amount':'400.00','currency':'PKR','payment_date':'2024-01-01','reference':'REF-1'}
+    form={'submission_key':secrets.token_hex(16),'method_id':str(method),'amount':'400.00','currency':'PKR','payment_date':'2024-01-01','reference':'REF-1','notes':'Paid from my account <test>'}
     upload={'receipt':('receipt.png',data,'image/png')}
     assert post(other,f'/fees/{fee["id"]}/submit',form,files=upload).status_code==404
     bad=dict(form,amount='1000.01',submission_key=secrets.token_hex(16))
@@ -941,12 +946,17 @@ def test_fee_management_manual_workflow_and_security():
     assert student.get(f'/fees/receipt/{payment}').headers['content-type']=='image/webp'
     assert admin.get('/notifications').status_code==200 and 'Fee receipt submitted' in admin.get('/notifications').text
     assert 'Submitted for Verification' in student.get('/fees').text
+    admin_page=admin.get('/admin/fees').text
+    for value in ['1 awaiting review','Fee Student','F-8801','Fee Grade','First','REF-1','Paid from my account &lt;test&gt;',f'/fees/receipt/{payment}','Current outstanding']:
+        assert value in admin_page
+    assert 'Paid from my account' not in other.get('/fees').text
     assert 'cannot%20be%20edited' in post(admin,f'/admin/fees/{fee["id"]}/edit',edit).headers['location']
     assert 'pending%20submission' in post(student,f'/fees/{fee["id"]}/submit',dict(form,submission_key=secrets.token_hex(16)),files=upload).headers['location']
     post(admin,f'/admin/fees/payments/{payment}/review',{'decision':'rejected'})
     with connect() as c: assert c.execute('SELECT status FROM fee_payments WHERE id=?',(payment,)).fetchone()['status']=='submitted'
     post(admin,f'/admin/fees/payments/{payment}/review',{'decision':'rejected','note':'Please send a clearer image'})
     assert 'Please send a clearer image' in student.get('/fees').text
+    assert 'Reviewed payments (1)' in admin.get('/admin/fees').text
     form['submission_key']=secrets.token_hex(16)
     post(student,f'/fees/{fee["id"]}/submit',form,files=upload)
     with connect() as c: second=c.execute('SELECT MAX(id) id FROM fee_payments WHERE fee_id=?',(fee['id'],)).fetchone()['id']

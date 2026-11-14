@@ -73,7 +73,9 @@ def _fee_methods(conn, active=False):
 
 def _fee_history(conn, student_id=None):
     q='''SELECT p.id,p.fee_id,p.student_id,p.method_name,p.amount,p.currency,p.payment_date,p.reference,p.notes,p.status,p.submitted_at,p.reviewed_at,p.review_note,
-       f.title,f.period,u.full_name,u.admission_no FROM fee_payments p JOIN fee_assignments f ON f.id=p.fee_id JOIN users u ON u.id=p.student_id'''
+       f.title,f.period,f.installment,f.amount AS fee_amount,f.due_date,u.full_name,u.admission_no,u.class_name,u.section_name,
+       COALESCE((SELECT SUM(approved.amount) FROM fee_payments approved WHERE approved.fee_id=f.id AND approved.status='approved'),0) AS fee_paid
+       FROM fee_payments p JOIN fee_assignments f ON f.id=p.fee_id JOIN users u ON u.id=p.student_id'''
     if student_id is not None: return conn.execute(q+' WHERE p.student_id=? ORDER BY p.id DESC',(student_id,)).fetchall()
     return conn.execute(q+' ORDER BY CASE WHEN p.status=\'submitted\' THEN 0 ELSE 1 END,p.id DESC').fetchall()
 
@@ -154,7 +156,8 @@ def fees_admin(request: Request):
         fees=[r for r in all_fees if not selected_period or r['period']==selected_period]
         students=conn.execute("SELECT id,full_name,admission_no,class_name FROM users WHERE role='student' AND status IN ('active','unclaimed') ORDER BY full_name,id").fetchall()
         grades=conn.execute("SELECT DISTINCT class_name FROM users WHERE role='student' AND status IN ('active','unclaimed') AND class_name IS NOT NULL AND class_name!='' ORDER BY class_name").fetchall()
-    return render(request,'fees_admin.html',{'fees':fees,'methods':methods,'history':history,'totals':_fee_totals(fees),'students':students,'grades':grades,'fields':FEE_METHOD_FIELDS,'token':secrets.token_hex(16),'periods':periods,'selected_period':selected_period,'pending_students':len({r['student_id'] for r in fees if r['balance']>0})})
+    missing_currencies=sorted({r['currency'] for r in all_fees if r['balance']>0} - {m['currency'] for m in methods if m['active']})
+    return render(request,'fees_admin.html',{'missing_currencies':missing_currencies,'fees':fees,'methods':methods,'history':history,'totals':_fee_totals(fees),'students':students,'grades':grades,'fields':FEE_METHOD_FIELDS,'token':secrets.token_hex(16),'periods':periods,'selected_period':selected_period,'pending_students':len({r['student_id'] for r in fees if r['balance']>0})})
 
 @app.post('/admin/fees/assign')
 async def fees_assign(request: Request):
@@ -220,7 +223,8 @@ async def fees_review(request:Request,payment_id:int):
             if p['status']!='submitted': raise ValueError('This payment has already been reviewed.')
             fee=next((r for r in _fee_rows(conn,p['student_id']) if r['id']==p['fee_id']),None)
             if not fee or (decision=='approved' and p['amount']>fee['balance']): raise ValueError('Payment exceeds the remaining balance and cannot be approved.')
-            now=iso_now(); conn.execute('UPDATE fee_payments SET status=?,reviewed_at=?,reviewed_by=?,review_note=? WHERE id=? AND status=\'submitted\'',(decision,now,admin['id'],note,payment_id))
+            now=iso_now(); changed=conn.execute('UPDATE fee_payments SET status=?,reviewed_at=?,reviewed_by=?,review_note=? WHERE id=? AND status=\'submitted\'',(decision,now,admin['id'],note,payment_id))
+            if not changed.rowcount: raise ValueError('This payment has already been reviewed.')
             notify(conn,p['student_id'],'Fee payment '+decision, f"Your payment for {fee['title']} was {decision}."+(f' {note}' if note else ''))
             audit(conn,admin['id'],'fee_payment_'+decision,f"Payment {payment_id}; student {p['student_id']}; {p['currency']} {_fee_format(p['amount'])}")
     except ValueError as exc: return flash_redirect('/admin/fees',str(exc),'error')

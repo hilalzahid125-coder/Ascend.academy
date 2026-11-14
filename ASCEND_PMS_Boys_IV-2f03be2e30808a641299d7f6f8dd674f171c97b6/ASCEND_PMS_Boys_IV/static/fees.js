@@ -28,7 +28,8 @@
       input.setCustomValidity('');
       if (!file) return;
       if (file.size > 4000000 || !['image/jpeg','image/png','image/webp'].includes(file.type)) { input.setCustomValidity('Choose a JPG, PNG or WEBP image smaller than 4 MB.'); message.textContent = input.validationMessage; return; }
-      const reader = new FileReader(); reader.onload = () => { preview.src = reader.result; preview.hidden = false; }; reader.readAsDataURL(file);
+      message.textContent = 'Selected: ' + file.name;
+      const reader = new FileReader(); reader.onload = () => { preview.src = reader.result; preview.hidden = false; }; reader.onerror = () => { message.textContent = 'Could not preview the image. Please choose it again.'; }; reader.readAsDataURL(file);
     });
     const drop = form.querySelector('.fee-upload');
     ['dragenter', 'dragover'].forEach(event => drop.addEventListener(event, e => { e.preventDefault(); }));
@@ -40,10 +41,19 @@
     form.addEventListener('submit', e => {
       e.preventDefault(); if (!form.reportValidity() || button.disabled) return;
       const xhr = new XMLHttpRequest(); xhr.open('POST', form.action); button.disabled = true;
-      xhr.upload.onprogress = e => { if (e.lengthComputable) message.textContent = 'Uploading: ' + Math.round(e.loaded / e.total * 100) + '%'; };
+      xhr.upload.onprogress = e => { if (e.lengthComputable) message.textContent = 'Uploading: ' + Math.round(e.loaded / e.total * 100) + '% — please wait for confirmation.'; };
       xhr.onload = () => { if (xhr.status === 200 && xhr.responseURL && xhr.responseURL !== form.action) window.location.assign(xhr.responseURL); else { message.textContent = 'Upload failed. Please check your file and try again.'; button.disabled = false; } };
-      xhr.onerror = () => { message.textContent = 'Network error. Check your connection before trying again.'; button.disabled = false; };
+      xhr.onerror = () => { message.textContent = 'Connection interrupted. Your upload may have been received. Check Fee Management before trying again; retrying this form will not create a duplicate.'; button.disabled = false; };
       xhr.send(new FormData(form));
+    });
+  });
+  document.querySelectorAll('[data-fee-review]:not([data-fee-ready])').forEach(form => {
+    form.dataset.feeReady = '1';
+    const note = form.querySelector('[name=note]');
+    note.addEventListener('input', () => note.setCustomValidity(''));
+    form.addEventListener('submit', event => {
+      note.setCustomValidity(event.submitter?.value === 'rejected' && !note.value.trim() ? 'Please provide a reason for rejection.' : '');
+      if (!form.reportValidity()) event.preventDefault();
     });
   });
   }
