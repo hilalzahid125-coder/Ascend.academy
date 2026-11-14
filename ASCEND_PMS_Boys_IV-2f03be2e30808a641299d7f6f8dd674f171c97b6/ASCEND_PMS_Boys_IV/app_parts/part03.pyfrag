@@ -3,7 +3,7 @@
                                    LEFT JOIN challenge_participations cp ON cp.challenge_id=c.id AND cp.user_id=?
                                    WHERE c.status IN ('active','scheduled')
                                    AND (c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?)
-                                   AND (c.eligibility_section IS NULL OR c.eligibility_section='' OR c.eligibility_section=?)
+                                   AND (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections') OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,''))))
                                    ORDER BY c.status='active' DESC,c.end_date LIMIT 6''',(u['id'],u['class_name'],u['section_name'])).fetchall()
         tx=conn.execute('SELECT * FROM point_transactions WHERE user_id=? ORDER BY id DESC LIMIT 6',(u['id'],)).fetchall()
         announcements=conn.execute('''SELECT * FROM announcements WHERE status='published' AND
@@ -20,13 +20,14 @@ def challenge_list(request: Request):
             LEFT JOIN challenge_participations cp ON cp.challenge_id=c.id AND cp.user_id=?
             WHERE c.status!='draft' AND c.status!='archived'
             AND (c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?)
-            AND (c.eligibility_section IS NULL OR c.eligibility_section='' OR c.eligibility_section=?)
+            AND (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections') OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,''))))
             ORDER BY CASE c.status WHEN 'active' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END,c.id DESC''',(u['id'],u['class_name'],u['section_name'])).fetchall()
     return render(request,'challenges.html',{'challenges':rows})
 
 def _student_can_enter_challenge(student, challenge):
-    return all(not challenge[field] or challenge[field] == student[student_field]
-               for field, student_field in (('eligibility_class', 'class_name'), ('eligibility_section', 'section_name')))
+    grade = challenge['eligibility_class']
+    section = (challenge['eligibility_section'] or '').strip().casefold()
+    return (not grade or grade == student['class_name']) and (section in {'', 'all', 'all section', 'all sections'} or section == (student['section_name'] or '').strip().casefold())
 
 @app.post('/challenges/{challenge_id}/join')
 def challenge_join(request: Request, challenge_id: int):

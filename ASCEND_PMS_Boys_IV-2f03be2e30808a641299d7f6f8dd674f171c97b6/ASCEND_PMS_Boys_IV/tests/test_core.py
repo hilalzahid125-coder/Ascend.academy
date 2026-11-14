@@ -1010,3 +1010,65 @@ def test_fee_currency_picker_preserves_currency_and_supports_other():
     assignment={'batch_key':secrets.token_hex(16),'scope':'student','student_id':student,'title':'Dollar fee','period':'2028','amount':'25.00','currency':'USD'}
     assert 'Fee%20assigned' in post(admin,'/admin/fees/assign',assignment).headers['location']
     with connect() as c: assert c.execute("SELECT currency FROM fee_assignments WHERE batch_key=?",(assignment['batch_key'],)).fetchone()['currency']=='USD'
+
+
+def test_daily_timetable_selected_days_one_off_and_session():
+    import json
+    from app import _class_now
+    with connect() as c:
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,class_name,claimed,created_at) VALUES ('T-8804','Timetable Student',?,'student','active','O-Level - Grade 9',1,?)",(hash_password('ClassTest1234'),iso_now()))
+        student_id=c.execute("SELECT id FROM users WHERE admission_no='T-8804'").fetchone()['id']
+        c.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?)',(student_id,json.dumps({'subjects':['Maths']}),iso_now()))
+        teacher=c.execute("SELECT id FROM users WHERE admission_no='ADMIN-0001'").fetchone()['id']
+    admin=TestClient(app); student=TestClient(app)
+    csrf(admin); post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    csrf(student); post(student,'/login',{'admission_no':'T-8804','password':'ClassTest1234'})
+    today=_class_now().date(); days=sorted({str(today.weekday()),str((today.weekday()+1)%7)})
+    base={'grade':'O-Level - Grade 9','subject':'Maths','teacher_id':str(teacher),'student_id':str(student_id),'recurrence':'daily','days':days,'start_time':'11:20','duration_minutes':'40'}
+    assert 'added' in post(admin,'/admin/my-classes/create',base).headers['location']
+    with connect() as c:
+        schedules=c.execute("SELECT * FROM class_schedules WHERE student_id=? AND start_time='11:20' ORDER BY weekday",(student_id,)).fetchall()
+        assert len(schedules)==2 and {s['weekday'] for s in schedules}=={int(d) for d in days}
+        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title='Class scheduled'",(student_id,)).fetchone()['n']==1
+    page=student.get('/my-classes'); assert page.status_code==200 and page.text.count('11:20')>=2
+    for entry in schedules: assert entry['recurrence']=='weekly'
+    current=next(s for s in schedules if s['weekday']==today.weekday())
+    start=post(admin,f'/admin/my-classes/{current["id"]}/start')
+    assert 'open_session' in start.headers['location']
+    assert 'Join live class' in student.get('/my-classes').text
+    invalid=dict(base,days=['0','9'],start_time='12:20')
+    assert 'valid%20day' in post(admin,'/admin/my-classes/create',invalid).headers['location']
+    with connect() as c: assert not c.execute("SELECT id FROM class_schedules WHERE student_id=? AND start_time='12:20'",(student_id,)).fetchone()
+    once=dict(base,recurrence='once',class_date=today.isoformat(),start_time='13:30')
+    assert 'added' in post(admin,'/admin/my-classes/create',once).headers['location']
+    assert '13:30' in student.get('/my-classes').text
+
+
+def test_challenge_all_section_legacy_normalization_and_permissions():
+    import json
+    with connect() as c:
+        student=c.execute("SELECT id FROM users WHERE admission_no='T-8804'").fetchone()['id']
+        c.execute("UPDATE users SET section_name='A' WHERE id=?",(student,))
+        admin_id=c.execute("SELECT id FROM users WHERE admission_no='ADMIN-0001'").fetchone()['id']
+        c.execute("INSERT INTO challenges(title,description,category,points,status,eligibility_section,created_by,created_at) VALUES ('Legacy All Section','Test','general',10,'active','All section',?,?)",(admin_id,iso_now()))
+        legacy=c.execute("SELECT id FROM challenges WHERE title='Legacy All Section'").fetchone()['id']
+    admin=TestClient(app); client=TestClient(app)
+    csrf(admin); post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    csrf(client); post(client,'/login',{'admission_no':'T-8804','password':'ClassTest1234'})
+    assert 'Legacy All Section' in client.get('/student').text
+    assert 'Legacy All Section' in client.get('/challenges').text
+    assert 'joined' in post(client,f'/challenges/{legacy}/join').headers['location']
+    assert 'sent%20for%20review' in post(client,f'/challenges/{legacy}/submit',{'submission_text':'Completed'}).headers['location']
+    with connect() as c: participation=c.execute('SELECT id FROM challenge_participations WHERE challenge_id=? AND user_id=?',(legacy,student)).fetchone()['id']
+    post(admin,f'/admin/submissions/{participation}/review',{'decision':'approved'})
+    post(admin,f'/admin/submissions/{participation}/review',{'decision':'approved'})
+    with connect() as c: assert c.execute('SELECT COUNT(*) n FROM point_transactions WHERE user_id=? AND challenge_id=?',(student,legacy)).fetchone()['n']==1
+    for title,section in [('Open to all','ALL SECTIONS'),('Restricted section','B')]:
+        post(admin,'/admin/challenges/create',{'title':title,'description':'Test','status':'active','eligibility_section':section})
+    with connect() as c:
+        open_challenge=c.execute("SELECT eligibility_section FROM challenges WHERE title='Open to all'").fetchone()
+        restricted=c.execute("SELECT id FROM challenges WHERE title='Restricted section'").fetchone()['id']
+        assert open_challenge['eligibility_section'] is None
+    assert 'Open to all' in client.get('/challenges').text
+    assert 'Restricted section' not in client.get('/challenges').text
+    assert 'not%20eligible' in post(client,f'/challenges/{restricted}/join').headers['location']

@@ -45,7 +45,7 @@ def student_dashboard(request: Request):
                                    LEFT JOIN challenge_participations cp ON cp.challenge_id=c.id AND cp.user_id=?
                                    WHERE c.status IN ('active','scheduled')
                                    AND (c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?)
-                                   AND (c.eligibility_section IS NULL OR c.eligibility_section='' OR c.eligibility_section=?)
+                                   AND (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections') OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,''))))
                                    ORDER BY c.status='active' DESC,c.end_date LIMIT 4''',(u['id'],u['class_name'],u['section_name'])).fetchall()
         achievement_rows=conn.execute('''SELECT a.*,sa.unlocked_at FROM achievements a
                                          LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?

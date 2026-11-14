@@ -24,7 +24,7 @@ def _members(schedule, students, schedules):
             and (st['id']==schedule['student_id'] if schedule['student_id'] else st['id'] not in overridden)]
 
 def _day_label(s):
-    return (WEEKDAYS[s['weekday']]+' · weekly') if s['recurrence']=='weekly' else (s['class_date']+' · once')
+    return (WEEKDAYS[s['weekday']]+' · repeats') if s['recurrence']=='weekly' else (s['class_date']+' · once')
 
 def _end_time(s):
     start=datetime.strptime(s['start_time'],'%H:%M')
@@ -127,14 +127,28 @@ async def class_create(request: Request):
     admin=require_admin(request); form=await request.form()
     try:
         with connect() as conn:
-            values=_class_values(form,conn); students=_class_students(conn); student_id=str(form.get('student_id','')).strip()
+            recurrence=str(form.get('recurrence',''))
+            if recurrence=='daily':
+                days=form.getlist('days')
+                if not days or any(d not in [str(i) for i in range(7)] for d in days): raise ValueError('Choose at least one valid day for the repeating timetable.')
+                # Existing weekly rows retain session, override and backup compatibility.
+                days=sorted({int(d) for d in days})
+                values_form=dict(form); values_form['recurrence']='weekly'; values_form['weekday']=str(days[0]); values=_class_values(values_form,conn)
+                all_values=[values[:4]+(day,)+values[5:] for day in days]
+            else:
+                values=_class_values(form,conn); all_values=[values]
+            students=_class_students(conn); student_id=str(form.get('student_id','')).strip()
             target=None
             if student_id:
                 if not student_id.isdigit(): raise ValueError('Choose a valid student.')
                 target=next((s for s in students if s['id']==int(student_id)),None)
                 if not target or target['class_name']!=values[0] or values[1] not in target['subjects']: raise ValueError('The student must be active, in that grade and enrolled in that subject.')
-            conn.execute('''INSERT INTO class_schedules(grade,subject,teacher_id,recurrence,weekday,class_date,start_time,duration_minutes,student_id,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)''',values+(target['id'] if target else None,iso_now()))
+            # Insert the selected days together to avoid one database round trip per day.
+            stamp=iso_now()
+            records=[entry+(target['id'] if target else None,stamp) for entry in all_values]
+            placeholders=','.join('(?,?,?,?,?,?,?,?,?,?)' for _ in records)
+            conn.execute('''INSERT INTO class_schedules(grade,subject,teacher_id,recurrence,weekday,class_date,start_time,duration_minutes,student_id,created_at) VALUES '''+placeholders,
+                         [value for record in records for value in record])
             recipients=[target] if target else [s for s in students if s['class_name']==values[0] and values[1] in s['subjects']]
             _class_notify(conn,recipients,'Class scheduled',f'{values[1]} has been added to your timetable. Open My Classes for details.')
             audit(conn,admin['id'],'Class scheduled',f'{values[0]} · {values[1]}')

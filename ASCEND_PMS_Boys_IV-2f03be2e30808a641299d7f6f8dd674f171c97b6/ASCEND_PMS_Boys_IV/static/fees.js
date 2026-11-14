@@ -1,5 +1,7 @@
 (() => {
-  document.querySelectorAll('[data-currency-picker]').forEach(picker => {
+  function init() {
+  document.querySelectorAll('[data-currency-picker]:not([data-fee-ready])').forEach(picker => {
+    picker.dataset.feeReady = '1';
     const select = picker.querySelector('[data-currency-select]');
     const other = picker.querySelector('[data-currency-other]');
     const input = other.querySelector('input');
@@ -7,12 +9,16 @@
     select.addEventListener('change', update);
     update();
   });
-  document.querySelectorAll('.fee-copy').forEach(button => button.addEventListener('click', async () => {
+  document.querySelectorAll('.fee-copy:not([data-fee-ready])').forEach(button => {
+    button.dataset.feeReady = '1';
+    button.addEventListener('click', async () => {
     const feedback = document.querySelector('.fee-copy-feedback');
     try { await navigator.clipboard.writeText(button.dataset.copy); feedback.textContent = 'Payment detail copied.'; }
     catch (_) { feedback.textContent = 'Could not copy automatically. Please select and copy the detail.'; }
-  }));
-  document.querySelectorAll('[data-fee-upload]').forEach(form => {
+    });
+  });
+  document.querySelectorAll('[data-fee-upload]:not([data-fee-ready])').forEach(form => {
+    form.dataset.feeReady = '1';
     const input = form.querySelector('[data-receipt-input]'), preview = form.querySelector('.fee-preview'), message = form.querySelector('.fee-upload-message'), button = form.querySelector('button[type=submit]');
 
     input.addEventListener('change', () => {
@@ -40,4 +46,7 @@
       xhr.send(new FormData(form));
     });
   });
+  }
+  init();
+  document.addEventListener('ascend:page-loaded', init);
 })();

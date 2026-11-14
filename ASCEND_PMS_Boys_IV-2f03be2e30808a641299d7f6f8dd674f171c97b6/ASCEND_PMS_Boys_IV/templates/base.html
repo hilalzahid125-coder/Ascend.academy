@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="/static/my-classes.css?v=1">
   <link rel="stylesheet" href="/static/student-directory.css?v=1">
   <link rel="stylesheet" href="/static/live-classes.css?v=1">
-  <link rel="stylesheet" href="/static/design-system.css?v=1">
+  <link rel="stylesheet" href="/static/design-system.css?v=2">
   <link rel="stylesheet" href="/static/banner-design.css?v=1">
   <link rel="stylesheet" href="/static/fees.css?v=2">
 </head>
@@ -41,9 +41,9 @@
       <a href="/leaderboards" class="{{ 'active' if request.url.path=='/leaderboards' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#chart-no-axes-column-increasing"></use></svg><span>Leaderboards</span></a>
       {% if is_super_admin or 'activity' in admin_permissions %}<a href="/admin/activity" class="{{ 'active' if request.url.path.startswith('/admin/activity') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#history"></use></svg><span>Activity log</span></a>{% endif %}
       {% if is_super_admin or 'students' in admin_permissions or 'challenges' in admin_permissions %}<a href="/admin/reports" class="{{ 'active' if request.url.path.startswith('/admin/reports') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#chart-column"></use></svg><span>Reports</span></a>{% endif %}
-      {% if is_super_admin %}<div class="nav-divider"><span>SUPER ADMIN</span></div><a href="/admin/admins" class="{{ 'active' if request.url.path.startswith('/admin/admins') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#shield-check"></use></svg><span>Admin team</span></a><a href="/admin/settings" class="{{ 'active' if request.url.path.startswith('/admin/settings') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#settings"></use></svg><span>Brand & settings</span></a><a href="/admin/launch" class="{{ 'active' if request.url.path.startswith('/admin/launch') or request.url.path.startswith('/admin/backups') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#database-backup"></use></svg><span>Launch & backups</span></a>{% endif %}
       <a href="/notifications" class="{{ 'active' if request.url.path=='/notifications' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#bell"></use></svg><span>Notifications</span></a>
       {% if is_super_admin or 'fees' in admin_permissions %}<a href="/admin/fees" class="{{ 'active' if request.url.path.startswith('/admin/fees') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#wallet"></use></svg><span>Fee Management</span></a>{% endif %}
+      {% if is_super_admin %}<div class="nav-divider"><span>SUPER ADMIN</span></div><a href="/admin/admins" class="{{ 'active' if request.url.path.startswith('/admin/admins') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#shield-check"></use></svg><span>Admin team</span></a><a href="/admin/settings" class="{{ 'active' if request.url.path.startswith('/admin/settings') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#settings"></use></svg><span>Brand & settings</span></a><a href="/admin/launch" class="{{ 'active' if request.url.path.startswith('/admin/launch') or request.url.path.startswith('/admin/backups') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#database-backup"></use></svg><span>Launch & backups</span></a>{% endif %}
       <a href="/admin/account" class="{{ 'active' if request.url.path.startswith('/admin/account') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#user-round"></use></svg><span>My admin account</span></a>
       {% else %}
       <a href="/student" class="{{ 'active' if request.url.path=='/student' else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#house"></use></svg><span>Overview</span></a>
@@ -87,6 +87,6 @@
 </div>
 {% else %}{% block auth_content %}{% endblock %}{% endif %}
 <script src="/static/live-classes.js?v=1" defer></script>
-<script src="/static/app.js?v=academy-7" defer></script>
-<script src="/static/fees.js?v=2" defer></script>
+<script src="/static/app.js?v=academy-8" defer></script>
+<script src="/static/fees.js?v=3" defer></script>
 </body></html>

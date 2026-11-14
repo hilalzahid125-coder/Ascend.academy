@@ -66,7 +66,8 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
   if(!document.querySelector('.app-shell')) return;
   const pages=new Set(['/student','/my-classes','/challenges','/leaderboards','/achievements','/rewards','/notifications','/profile',
     '/admin','/admin/my-classes','/admin/students','/admin/challenges','/admin/achievements','/admin/rewards','/admin/announcements',
-    '/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/about','/privacy']);
+    '/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/admin/fees','/fees','/about','/privacy']);
+  const isPage = path => pages.has(path) || /^\/fees\/\d+\/pay$/.test(path);
   let controller=null, serial=0, saving=false, pendingPop=null, shownUrl=location.href;
   function loading(on, message='Opening…'){
     let bar=document.querySelector('.nav-loading');
@@ -108,6 +109,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     const newBrand=doc.querySelector('.school-chip'), brand=document.querySelector('.school-chip');
     if(brand && newBrand) brand.replaceWith(newBrand);
     document.title=doc.title;
+    document.dispatchEvent(new Event('ascend:page-loaded'));
     shownUrl=url;
     if(mode==='push') history.pushState({ascendNavigation:true},'',url);
     else if(mode==='replace') history.replaceState({ascendNavigation:true},'',url);
@@ -134,7 +136,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     const link=event.target.closest('.app-shell a');
     if(!link || event.defaultPrevented || event.button!==0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || link.hasAttribute('download') || link.target) return;
     const url=new URL(link.href,location.href);
-    if(url.origin!==location.origin || url.hash || !pages.has(url.pathname)) return;
+    if(url.origin!==location.origin || url.hash || !isPage(url.pathname)) return;
     event.preventDefault(); if(window.LiveClass && !window.LiveClass.confirmLeave())return; navigate(url.href);
   });
   document.addEventListener('submit',async event=>{
@@ -144,7 +146,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     const method=(submitter?.getAttribute('formmethod') || form.method || 'get').toLowerCase();
     const url=new URL(submitter?.getAttribute('formaction') || form.action || location.href,location.href);
     if(url.origin!==location.origin || !['get','post'].includes(method))return;
-    if(method==='get' && !pages.has(url.pathname))return;
+    if(method==='get' && !isPage(url.pathname))return;
     event.preventDefault();
     if(saving){notice('A change is still being saved. Please wait.');return}
     if(window.LiveClass && form.hasAttribute('data-live-end'))window.LiveClass.close();
@@ -187,3 +189,15 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     if(saving) pendingPop=location.href;else navigate(location.href,'none')
   });
 })();
+
+// Keep the repeating timetable and one-off date controls clear on each fresh page.
+function initClassSchedule() {
+  document.querySelectorAll('[data-class-schedule]:not([data-schedule-ready])').forEach(form => {
+    form.dataset.scheduleReady = '1';
+    const kind = form.querySelector('[name=recurrence]'), days = form.querySelector('[data-class-days]'), dateLabel = form.querySelector('[data-class-date]'), date = dateLabel.querySelector('input');
+    const update = () => { const once = kind.value === 'once'; days.hidden = once; dateLabel.hidden = !once; date.required = once; };
+    kind.addEventListener('change', update); update();
+  });
+}
+initClassSchedule();
+document.addEventListener('ascend:page-loaded', initClassSchedule);
