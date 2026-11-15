@@ -102,6 +102,9 @@ STAFF_PERMISSION_LABELS = {
 DEFAULT_STAFF_PERMISSIONS = set(STAFF_PERMISSION_LABELS)
 # Fee access must be explicitly granted to staff, including legacy accounts.
 STAFF_PERMISSION_LABELS['fees'] = 'Fee management'
+STAFF_PERMISSION_LABELS['teaching'] = 'Assigned teaching and attendance'
+STAFF_PERMISSION_LABELS['classes'] = 'Academy-wide class management'
+STAFF_PERMISSION_LABELS['leaderboards'] = 'Academy leaderboards'
 MAX_POST_BYTES = 5_000_000
 
 
@@ -234,12 +237,12 @@ def _admin_permissions(user):
     if not user or user['role']!='admin': return set()
     if user['admin_level']=='super': return set(STAFF_PERMISSION_LABELS)
     raw=user['admin_permissions'] or ''
-    if not raw: return set(DEFAULT_STAFF_PERMISSIONS)
+    if not raw: return set()
     try:
         values=json.loads(raw)
         return {str(v) for v in values if str(v) in STAFF_PERMISSION_LABELS}
     except Exception:
-        return set(DEFAULT_STAFF_PERMISSIONS)
+        return set()
 
 def require_admin(request: Request, permission: Optional[str]=None, super_only: bool=False):
     user=require_user(request,'admin')

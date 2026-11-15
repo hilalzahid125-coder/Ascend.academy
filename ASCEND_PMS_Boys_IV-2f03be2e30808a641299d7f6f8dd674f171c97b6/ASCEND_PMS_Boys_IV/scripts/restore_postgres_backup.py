@@ -54,10 +54,22 @@ def restore_backup(archive):
             fee_present=set(fee_tables) & tables
             if fee_present and fee_present != set(fee_tables):
                 raise ValueError('Backup has an incomplete fee data set.')
+            waiver_tables=['fee_waivers']
+            waiver_present=set(waiver_tables) & tables
+            if waiver_present and not fee_present:
+                raise ValueError('Backup has waivers but no fee data.')
+            parent_tables=['parent_student_links','student_progress_records']
+            parent_present=set(parent_tables) & tables
+            if parent_present and parent_present != set(parent_tables):
+                raise ValueError('Backup has an incomplete parent data set.')
+            holiday_tables=['academy_holidays']
+            holiday_present=set(holiday_tables) & tables
+            term_tables=['academic_terms']
+            term_present=set(term_tables) & tables
             snapshot=[]
-            for table in expected + (class_tables if present else []) + (live_tables if live_present else []) + (fee_tables if fee_present else []):
+            for table in expected + (parent_tables if parent_present else []) + (class_tables if present else []) + (live_tables if live_present else []) + (fee_tables if fee_present else []) + (waiver_tables if waiver_present else []) + (holiday_tables if holiday_present else []) + (term_tables if term_present else []):
                 columns=[r['name'] for r in sqlite.execute(f'PRAGMA table_info({table})')]
-                rows=[tuple(r[c] for c in columns) for r in sqlite.execute(f'SELECT * FROM {table}')]
+                rows=[tuple(r[c] for c in columns) for r in sqlite.execute(f'SELECT * FROM {table}' + (' ORDER BY id' if table=='student_progress_records' else ''))]
                 snapshot.append((table,columns,rows))
         finally:
             sqlite.close()
@@ -66,6 +78,14 @@ def restore_backup(archive):
             conn.execute('BEGIN IMMEDIATE')
             # Older backups predate My Classes; clearing the newer tables prevents
             # stale data and foreign keys from surviving a full restore.
+            if not term_present:
+                for table in term_tables: conn.execute(f'DELETE FROM {table}')
+            if not holiday_present:
+                for table in holiday_tables: conn.execute(f'DELETE FROM {table}')
+            if not parent_present:
+                for table in reversed(parent_tables): conn.execute(f'DELETE FROM {table}')
+            if not waiver_present:
+                for table in waiver_tables: conn.execute(f'DELETE FROM {table}')
             if not fee_present:
                 for table in reversed(fee_tables): conn.execute(f'DELETE FROM {table}')
             if not live_present:

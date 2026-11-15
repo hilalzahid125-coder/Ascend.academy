@@ -21,7 +21,7 @@ function filterRows(q,id){q=q.toLowerCase();document.querySelectorAll(`#${id} tb
 document.addEventListener('click',e=>{if(e.target.classList.contains('modal'))e.target.classList.remove('open')});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.querySelectorAll('.modal.open').forEach(m=>m.classList.remove('open'));closeSidebar()}});
 function openStudentEdit(id,name,cls,section,profile={}){document.getElementById('studentEditForm').action=`/admin/students/${id}/edit`;document.getElementById('studentEditName').value=name;const grade=document.getElementById('studentEditClass');if(cls && !Array.from(grade.options).some(o=>o.value===cls)){const opt=new Option(`${cls} (existing)`,cls);opt.dataset.legacy='1';grade.add(opt)}grade.value=cls;document.getElementById('studentEditSection').value=section;for(const [id,key] of [['studentEditGuardian','guardianName'],['studentEditPhone','phone'],['studentEditCountryCode','countryCode'],['studentEditEmail','email'],['studentEditCountry','country'],['studentEditSchool','schoolName']])document.getElementById(id).value=profile[key]||'';document.querySelectorAll('#studentEditForm input[name=subjects]').forEach(box=>box.checked=Array.isArray(profile.subjects)&&profile.subjects.includes(box.value));openModal('editStudent')}
-function openChallengeEdit(id,title,description,category,points,start,end,cls,section){document.getElementById('challengeEditForm').action=`/admin/challenges/${id}/edit`;document.getElementById('challengeEditTitle').value=title;document.getElementById('challengeEditDescription').value=description;document.getElementById('challengeEditCategory').value=category;document.getElementById('challengeEditPoints').value=points;document.getElementById('challengeEditStart').value=start;document.getElementById('challengeEditEnd').value=end;const grade=document.getElementById('challengeEditClass');if(cls && !Array.from(grade.options).some(o=>o.value===cls)){grade.add(new Option(`${cls} (existing)`,cls))}grade.value=cls;document.getElementById('challengeEditSection').value=section;openModal('challengeEditModal')}
+function openChallengeEdit(id,title,description,category,points,start,end,cls,section,subject){document.getElementById('challengeEditForm').action=`/admin/challenges/${id}/edit`;document.getElementById('challengeEditTitle').value=title;document.getElementById('challengeEditDescription').value=description;document.getElementById('challengeEditCategory').value=category;document.getElementById('challengeEditPoints').value=points;document.getElementById('challengeEditStart').value=start;document.getElementById('challengeEditEnd').value=end;const grade=document.getElementById('challengeEditClass');if(cls && !Array.from(grade.options).some(o=>o.value===cls)){grade.add(new Option(`${cls} (existing)`,cls))}grade.value=cls;document.getElementById('challengeEditSection').value=section;document.getElementById('challengeEditSubject').value=subject||'';openModal('challengeEditModal')}
 function openStudentMore(id,name,path,status,grade,section,profile){
   document.getElementById('studentMoreTitle').textContent=name;
   document.getElementById('studentMoreEdit').onclick=()=>{closeModal('studentMore');openStudentEdit(id,name,grade,section,profile)};
@@ -66,7 +66,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
   if(!document.querySelector('.app-shell')) return;
   const pages=new Set(['/student','/my-classes','/challenges','/leaderboards','/achievements','/rewards','/notifications','/profile',
     '/admin','/admin/my-classes','/admin/students','/admin/challenges','/admin/achievements','/admin/rewards','/admin/announcements',
-    '/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/admin/fees','/fees','/about','/privacy']);
+    '/parent','/parent/account','/admin/parents','/admin/teaching','/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/admin/fees','/fees','/about','/privacy']);
   const isPage = path => pages.has(path) || /^\/fees\/\d+\/pay$/.test(path);
   let controller=null, serial=0, saving=false, pendingPop=null, shownUrl=location.href;
   function loading(on, message='Opening…'){
@@ -185,6 +185,10 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
     }
   });
   window.addEventListener('popstate',()=>{
+    // In-page anchors are handled by the browser; fetching the same page here
+    // replaces its contents and incorrectly jumps back to the top.
+    const before=new URL(shownUrl,location.href), after=new URL(location.href);
+    if(before.pathname===after.pathname && before.search===after.search && before.hash!==after.hash){shownUrl=after.href;return}
     if(window.LiveClass && !window.LiveClass.confirmLeave()){history.pushState({ascendNavigation:true},'',shownUrl);return}
     if(saving) pendingPop=location.href;else navigate(location.href,'none')
   });
@@ -201,3 +205,24 @@ function initClassSchedule() {
 }
 initClassSchedule();
 document.addEventListener('ascend:page-loaded', initClassSchedule);
+
+// Progressive enhancement only: the server still validates assignment and record type.
+function initProgressForms() {
+  document.querySelectorAll('[data-progress-form]:not([data-progress-ready])').forEach(form => {
+    form.dataset.progressReady='1';
+    const kind=form.querySelector('[name=kind]'), student=form.querySelector('[name=student_id]'), subject=form.querySelector('[name=subject]');
+    function updateKind() {
+      form.querySelectorAll('[data-progress-for]').forEach(item => {item.hidden=!item.dataset.progressFor.split(' ').includes(kind.value)});
+    }
+    function updateSubjects() {
+      let allowed=[];
+      try { allowed=JSON.parse(student.selectedOptions[0]?.dataset.subjects || '[]'); } catch (_) { allowed=[]; }
+      Array.from(subject.options).forEach(opt => { if(opt.value) opt.disabled=!!student.value && !allowed.includes(opt.value); });
+      if(subject.selectedOptions[0]?.disabled) subject.value='';
+    }
+    kind.addEventListener('change',updateKind); student.addEventListener('change',updateSubjects);
+    updateKind(); updateSubjects();
+  });
+}
+initProgressForms();
+document.addEventListener('ascend:page-loaded', initProgressForms);

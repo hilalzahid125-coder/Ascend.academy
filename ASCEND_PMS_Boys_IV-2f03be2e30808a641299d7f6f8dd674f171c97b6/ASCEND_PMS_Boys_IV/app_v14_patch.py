@@ -6,13 +6,21 @@ def render(request: Request, name: str, context=None, status_code=200):
     context = context or {}
     csrf = request.cookies.get('pms_csrf') or new_token(24)
     user = current_user(request)
+    unread=0
+    if user is not None:
+        try:
+            with connect() as conn:
+                unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(user['id'],)).fetchone()['c']
+        except Exception:
+            unread=0
     context.update({'request':request,'settings':getattr(request.state,'display_settings',None) or settings(),'user':user,
                     'msg':request.query_params.get('msg'),'kind':request.query_params.get('kind','success'),
                     'csrf_token':csrf,
                     'is_super_admin':is_super_admin(user),
                     'admin_permissions':_admin_permissions(user),
                     'staff_permission_labels':STAFF_PERMISSION_LABELS,
-                    'app_version':APP_VERSION,'academy_grades':ACADEMY_GRADES})
+                    'app_version':APP_VERSION,'academy_grades':ACADEMY_GRADES,'academy_subjects':ACADEMY_SUBJECTS,
+                    'unread_notifications':unread})
     response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
     if not request.cookies.get('pms_csrf'):
         set_app_cookie(response,'pms_csrf',csrf)
@@ -68,11 +76,14 @@ def student_dashboard(request: Request):
         announcements=conn.execute('''SELECT * FROM announcements WHERE status='published' AND
                                       (audience='all' OR (audience='class' AND class_name=?) OR (audience='section' AND class_name=? AND section_name=?))
                                       ORDER BY id DESC LIMIT 3''',(u['class_name'],u['class_name'],u['section_name'])).fetchall()
+        # Opening the dashboard refreshes fee reminder/overdue alerts and the badge.
+        run_fee_notifications(conn)
+        notices=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY is_read ASC,id DESC LIMIT 5',(u['id'],)).fetchall()
         unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(u['id'],)).fetchone()['c']
     return render(request,'student_dashboard.html',{
         'points':points,'rank':rank,'academy_profile':profile,'leaders':leaders,'challenges':challenges,
         'achievements_preview':achievement_preview,'rewards_preview':rewards_preview,
-        'transactions':tx,'announcements':announcements,'unread_notifications':unread
+        'transactions':tx,'announcements':announcements,'unread_notifications':unread,'student_notices':notices
     })
 
 
@@ -89,8 +100,12 @@ def admin_dashboard(request: Request):
         top=conn.execute('''SELECT u.full_name,u.admission_no,u.profile_picture_path,COALESCE(SUM(p.amount),0) points FROM users u
                             LEFT JOIN point_transactions p ON p.user_id=u.id WHERE u.role='student' AND u.status='active'
                             GROUP BY u.id ORDER BY points DESC,u.full_name ASC LIMIT 5''').fetchall()
-        logs=conn.execute('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 8').fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
-    return render(request,'admin_dashboard.html',{'stats':stats,'top':top,'logs':logs})
+        fee_filter='' if is_super_admin(a) or 'fees' in _admin_permissions(a) else " WHERE SUBSTR(action,1,4)!='fee_'"
+        logs=conn.execute('SELECT * FROM audit_logs'+fee_filter+' ORDER BY id DESC LIMIT 8').fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
+        run_fee_notifications(conn)
+        admin_notices=conn.execute("SELECT * FROM notifications WHERE user_id=? AND (?='super' OR title!='Fee receipt submitted') ORDER BY is_read ASC,id DESC LIMIT 5",(a['id'],'super' if is_super_admin(a) else 'staff')).fetchall()
+        admin_unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0'+("" if is_super_admin(a) else " AND title!='Fee receipt submitted'"),(a['id'],)).fetchone()['c']
+    return render(request,'admin_dashboard.html',{'stats':stats,'top':top,'logs':logs,'admin_notices':admin_notices,'admin_unread':admin_unread})
 
 
 @app.post('/admin/students/{student_id}/delete')
@@ -103,6 +118,10 @@ def admin_student_delete(request: Request, student_id:int):
             return flash_redirect('/admin/students','Student not found.','error')
         if conn.execute('SELECT 1 FROM fee_assignments WHERE student_id=? LIMIT 1',(student_id,)).fetchone():
             return flash_redirect('/admin/students','This student has fee records and cannot be deleted. Disable the account instead.','error')
+        if conn.execute('SELECT 1 FROM parent_student_links WHERE student_id=? LIMIT 1',(student_id,)).fetchone():
+            return flash_redirect('/admin/students','This student has linked parent accounts. Remove the links or disable the student instead.','error')
+        if conn.execute('SELECT 1 FROM student_progress_records WHERE student_id=? LIMIT 1',(student_id,)).fetchone():
+            return flash_redirect('/admin/students','This student has progress records and cannot be deleted. Disable the account instead.','error')
         admission_no=student['admission_no']; full_name=student['full_name']; photo_path=student['profile_picture_path']
         conn.execute('DELETE FROM users WHERE id=? AND role="student"',(student_id,))
         audit(conn,a['id'],'student_deleted',f'{admission_no}: {full_name}')

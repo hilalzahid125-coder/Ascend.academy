@@ -39,7 +39,7 @@ def _class_values(form, conn):
     start=str(form.get('start_time','')).strip(); duration=str(form.get('duration_minutes','')).strip()
     teacher=str(form.get('teacher_id',''))
     if grade not in ACADEMY_GRADES or subject not in ACADEMY_SUBJECTS: raise ValueError('Choose a valid grade and subject.')
-    if not teacher.isdigit() or not conn.execute("SELECT id FROM users WHERE id=? AND role='admin' AND status='active'",(int(teacher),)).fetchone(): raise ValueError('Choose an active teacher.')
+    if not teacher.isdigit() or not conn.execute("SELECT id FROM users WHERE id=? AND role IN ('admin','teacher') AND status='active'",(int(teacher),)).fetchone(): raise ValueError('Choose an active teacher.')
     if not re.fullmatch(r'\d{2}:\d{2}',start): raise ValueError('Enter a valid start time.')
     try: parsed=time.fromisoformat(start); mins=int(duration)
     except ValueError: raise ValueError('Enter a valid time and duration.')
@@ -63,6 +63,12 @@ def _class_notify(conn, students, title, body):
         values=','.join('(?,?,?,?)' for _ in batch)
         params=[value for st in batch for value in (st['id'],title,body,now)]
         conn.execute('INSERT INTO notifications(user_id,title,body,created_at) VALUES '+values,params)
+        if title=='Attendance updated':
+            ids=','.join('?' for _ in batch)
+            conn.execute("""INSERT INTO notifications(user_id,title,body,created_at)
+                SELECT DISTINCT parent.id,?,?,? FROM parent_student_links l JOIN users parent ON parent.id=l.parent_id
+                WHERE parent.role='parent' AND parent.status='active' AND l.student_id IN ("""+ids+")",
+                ['Attendance updated','A linked student has an attendance update. Open the parent workspace for details.',now]+[st['id'] for st in batch])
 
 @app.get('/my-classes', response_class=HTMLResponse)
 def my_classes(request: Request):
@@ -77,30 +83,30 @@ def my_classes(request: Request):
             ORDER BY s.session_date DESC,s.start_time DESC,s.id DESC''',(user['id'],)).fetchall()]
     streak=0
     for r in records:
-        if r['session_status']!='ended' or not r['status']: continue
+        if r['session_status']!='ended' or not r['status'] or r['status']=='excused': continue
         if r['status']=='absent': break
         streak+=1
     best=run=0
     for r in reversed(records):
-        if r['session_status']!='ended' or not r['status']: continue
-        run=run+1 if r['status']=='present' else 0
+        if r['session_status']!='ended' or not r['status'] or r['status']=='excused': continue
+        run=run+1 if r['status'] in ('present','late') else 0
         best=max(best,run)
     today=_class_now().date()
     stats=[]
     for days in (7,30):
-        selected=[r for r in records if r['session_status']=='ended' and r['status'] and today-timedelta(days=days-1)<=date.fromisoformat(r['session_date'])<=today]
-        present=sum(r['status']=='present' for r in selected)
+        selected=[r for r in records if r['session_status']=='ended' and r['status'] in ('present','late','absent') and today-timedelta(days=days-1)<=date.fromisoformat(r['session_date'])<=today]
+        present=sum(r['status'] in ('present','late') for r in selected)
         stats.append({'days':days,'total':len(selected),'present':present,'percent':round(100*present/len(selected)) if selected else None})
     live=[r for r in records if r['session_status']=='live']
     return render(request,'my_classes_student.html',{'subjects':(own or {}).get('subjects',[]),'schedules':own_schedules,'stats':stats,'streak':streak,'best':best,'live':live,'today':today.isoformat(),'subject_filter':subject_filter})
 
 @app.get('/admin/my-classes', response_class=HTMLResponse)
 def admin_my_classes(request: Request):
-    require_admin(request)
+    require_admin(request,'classes')
     grade=request.query_params.get('grade',''); subject=request.query_params.get('subject',''); teacher=request.query_params.get('teacher',''); hour=request.query_params.get('time',''); query=request.query_params.get('q','').strip()[:120]
     with connect() as conn:
         students=_class_students(conn); schedules=_schedules(conn)
-        teachers=conn.execute("SELECT id,full_name FROM users WHERE role='admin' AND status='active' ORDER BY full_name").fetchall()
+        teachers=conn.execute("SELECT id,full_name FROM users WHERE role IN ('admin','teacher') AND status='active' ORDER BY full_name").fetchall()
         today=_class_now().date()
         started={r['schedule_id'] for r in conn.execute('SELECT schedule_id FROM class_sessions WHERE session_date=?',(today.isoformat(),)).fetchall()}
         rows=[]
@@ -124,7 +130,7 @@ def admin_my_classes(request: Request):
 
 @app.post('/admin/my-classes/create')
 async def class_create(request: Request):
-    admin=require_admin(request); form=await request.form()
+    admin=require_admin(request,'classes'); form=await request.form()
     try:
         with connect() as conn:
             recurrence=str(form.get('recurrence',''))
@@ -157,7 +163,7 @@ async def class_create(request: Request):
 
 @app.post('/admin/my-classes/update')
 async def class_update(request: Request):
-    admin=require_admin(request); form=await request.form(); selected=form.getlist('selection')
+    admin=require_admin(request,'classes'); form=await request.form(); selected=form.getlist('selection')
     if not selected: return flash_redirect('/admin/my-classes','Select at least one schedule or student.','error')
     try:
         with connect() as conn:
@@ -197,12 +203,19 @@ async def class_update(request: Request):
     except (ValueError, *INTEGRITY_ERRORS) as e: return flash_redirect('/admin/my-classes',str(e) if isinstance(e,ValueError) else 'This schedule changed. Refresh and try again.','error')
     return flash_redirect('/admin/my-classes','Selected schedules updated.')
 
+@app.post('/admin/teaching/classes/{schedule_id}/start')
+@app.post('/teacher/classes/{schedule_id}/start')
 @app.post('/admin/my-classes/{schedule_id}/start')
 def class_start(request: Request, schedule_id: int):
-    admin=require_admin(request)
+    admin=require_user(request)
+    teacher_mode=(admin['role']=='teacher' and request.url.path.startswith('/teacher/')) or (admin['role']=='admin' and request.url.path.startswith('/admin/teaching/classes/'))
+    if teacher_mode and admin['role']=='admin': require_admin(request,'teaching')
+    elif not teacher_mode: admin=require_admin(request,'classes')
+    target=('/teacher/classes' if admin['role']=='teacher' else '/admin/teaching/classes') if teacher_mode else '/admin/my-classes'
     try:
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE'); schedules=_schedules(conn); s=next((x for x in schedules if x['id']==schedule_id),None); today=_class_now().date()
+            if teacher_mode and (not s or s['teacher_id']!=admin['id']): raise HTTPException(404)
             if not s or not _due_today(s,today): raise ValueError('A session can only be started on its scheduled day in Pakistan time.')
             if conn.execute('SELECT id FROM class_sessions WHERE schedule_id=? AND session_date=?',(schedule_id,today.isoformat())).fetchone(): raise ValueError('This class session has already been started today.')
             members=_members(s,_class_students(conn),schedules)
@@ -224,29 +237,48 @@ def class_start(request: Request, schedule_id: int):
                              [v for st in batch for v in (session['id'],st['id'])])
             _class_notify(conn,members,'Class session started',f"Your {s['subject']} session has started. Open My Classes to join.")
             audit(conn,admin['id'],'Class session started',f"Session {session['id']}")
-    except (ValueError, *INTEGRITY_ERRORS) as e: return flash_redirect('/admin/my-classes',str(e) if isinstance(e,ValueError) else 'This session was already started.','error')
+    except (ValueError, *INTEGRITY_ERRORS) as e: return flash_redirect(target,str(e) if isinstance(e,ValueError) else 'This session was already started.','error')
     from urllib.parse import quote
-    return RedirectResponse(f"/admin/my-classes?open_session={session['id']}&msg={quote('Session started. Students have been notified.')}&kind=success",303)
+    return RedirectResponse(f"{target}?open_session={session['id']}&msg={quote('Session started. Students have been notified.')}&kind=success",303)
 
+@app.post('/admin/teaching/classes/session/{session_id}/end')
+@app.post('/teacher/classes/session/{session_id}/end')
 @app.post('/admin/my-classes/session/{session_id}/end')
 def class_end(request: Request, session_id: int):
-    admin=require_admin(request)
+    admin=require_user(request)
+    teacher_mode=(admin['role']=='teacher' and request.url.path.startswith('/teacher/')) or (admin['role']=='admin' and request.url.path.startswith('/admin/teaching/classes/'))
+    if teacher_mode and admin['role']=='admin': require_admin(request,'teaching')
+    elif not teacher_mode: admin=require_admin(request,'classes')
+    target=('/teacher/classes' if admin['role']=='teacher' else '/admin/teaching/classes') if teacher_mode else '/admin/my-classes'
     with connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
+        if teacher_mode and not conn.execute('SELECT id FROM class_sessions WHERE id=? AND teacher_id=?',(session_id,admin['id'])).fetchone(): raise HTTPException(404)
         changed=conn.execute("UPDATE class_sessions SET status='ended',ended_at=? WHERE id=? AND status='live'",(iso_now(),session_id))
-        if not changed.rowcount: return flash_redirect('/admin/my-classes','Session is not live.','error')
+        if not changed.rowcount: return flash_redirect(target,'Session is not live.','error')
         audit(conn,admin['id'],'Class session ended',f'Session {session_id}')
-    return flash_redirect('/admin/my-classes','Session ended. Please mark attendance below.')
+    return flash_redirect(target,'Session ended. Please mark attendance below.')
 
+@app.post('/admin/teaching/classes/session/{session_id}/attendance')
+@app.post('/teacher/classes/session/{session_id}/attendance')
 @app.post('/admin/my-classes/session/{session_id}/attendance')
 async def class_mark(request: Request, session_id: int):
-    admin=require_admin(request); form=await request.form()
+    admin=require_user(request)
+    teacher_mode=(admin['role']=='teacher' and request.url.path.startswith('/teacher/')) or (admin['role']=='admin' and request.url.path.startswith('/admin/teaching/classes/'))
+    if teacher_mode and admin['role']=='admin': require_admin(request,'teaching')
+    elif not teacher_mode: admin=require_admin(request,'classes')
+    target=('/teacher/classes' if admin['role']=='teacher' else '/admin/teaching/classes') if teacher_mode else '/admin/my-classes'
+    form=await request.form()
     with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         session=conn.execute('SELECT * FROM class_sessions WHERE id=?',(session_id,)).fetchone()
-        if not session or session['status']!='ended': return flash_redirect('/admin/my-classes','End the session before marking attendance.','error')
+        if teacher_mode and (not session or session['teacher_id']!=admin['id']): raise HTTPException(404)
+        if not session or session['status']!='ended': return flash_redirect(target,'End the session before marking attendance.','error')
         roster=conn.execute('SELECT student_id,status FROM class_attendance WHERE session_id=?',(session_id,)).fetchall()
+        if teacher_mode:
+            assigned=_teacher_assignments(conn,admin['id'])
+            roster=[r for r in roster if r['student_id'] in assigned and session['subject'] in assigned[r['student_id']]['subjects']]
         values=[(r,str(form.get(f"attendance_{r['student_id']}",'')).strip()) for r in roster]
-        if any(v not in ('','present','absent') for _,v in values): return flash_redirect('/admin/my-classes','Invalid attendance selection.','error')
+        if any(v not in ('','present','absent','late','excused') for _,v in values): return flash_redirect(target,'Invalid attendance selection.','error')
         changes=[(row['student_id'],value or None) for row,value in values if (value or None)!=row['status']]
         for offset in range(0,len(changes),100):
             batch=changes[offset:offset+100]
@@ -255,15 +287,43 @@ async def class_mark(request: Request, session_id: int):
             params=[v for student_id,value in batch for v in (student_id,value)]
             params.extend([admin['id'],iso_now(),session_id]+[student_id for student_id,_ in batch])
             conn.execute('UPDATE class_attendance SET status=CASE student_id '+cases+' END,marked_by=?,marked_at=? WHERE session_id=? AND student_id IN ('+ids+')',params)
-        for status in ('present','absent'):
+        for status in ('present','absent','late','excused'):
             recipients=[{'id':student_id} for student_id,value in changes if value==status]
             _class_notify(conn,recipients,'Attendance updated',f"Your {session['subject']} attendance for {session['session_date']} was marked {status}.")
+        # Parents are told about recorded absences and attendance milestones in
+        # addition to the generic attendance update, using the shared engine.
+        for sid in [student_id for student_id,value in changes if value=='absent']:
+            notify_student_and_parents(conn,sid,'absence','Attendance marked absent',
+                f"Your {session['subject']} attendance for {session['session_date']} was marked absent.",
+                'Student absence recorded',f"{{student_name}} was marked absent for {session['subject']} on {session['session_date']}.",
+                student_link='/my-classes',parent_link=f'/parent?child={sid}#parent-attendance')
+        month=session['session_date'][:7]
+        holiday_dates={r['holiday_date'] for r in conn.execute('SELECT holiday_date FROM academy_holidays').fetchall()}
+        for sid in [student_id for student_id,_ in changes]:
+            month_rows=conn.execute("""SELECT a.status,s.session_date,s.subject,s.start_time FROM class_attendance a
+                JOIN class_sessions s ON s.id=a.session_id
+                WHERE a.student_id=? AND s.status='ended' AND s.session_date>=? AND s.session_date<=?
+                ORDER BY s.session_date,s.start_time""",(sid,month+'-01',month+'-31')).fetchall()
+            insights=_attendance_insights(month_rows,holiday_dates,_class_now().date())
+            total,attended=insights['total'],insights['attended']
+            if total<2 or (attended!=total and 100*attended/total<90):
+                continue
+            if attended==total:
+                kind='attendance'; title=f'Perfect attendance — {month}'
+                student_body=f'All {total} counted {month} sessions were attended.'
+                parent_body=f'{{student_name}} attended all {total} counted {month} classes — a perfect attendance month.'
+            else:
+                kind='attendance'; title=f'Strong attendance — {month}'
+                student_body=f'You attended {attended} of {total} counted {month} sessions (90% or better).'
+                parent_body=f'{{student_name}} attended {attended} of {total} counted {month} classes (90% or better).'
+            notify_student_and_parents(conn,sid,kind,title,student_body,title,parent_body,
+                student_link='/my-classes',parent_link=f'/parent?child={sid}#parent-attendance')
         audit(conn,admin['id'],'Class attendance saved',f'Session {session_id}')
-    return flash_redirect('/admin/my-classes','Attendance saved. Unmarked students remain pending.')
+    return flash_redirect(target,'Attendance saved. Unmarked students remain pending.')
 
 @app.post('/admin/my-classes/{schedule_id}/remove')
 def class_remove(request: Request, schedule_id: int):
-    admin=require_admin(request)
+    admin=require_admin(request,'classes')
     with connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         schedules=_schedules(conn); s=next((x for x in schedules if x['id']==schedule_id),None)
@@ -293,8 +353,12 @@ def _ensure_live_room(conn, session_id):
     return conn.execute('SELECT room_name FROM class_live_rooms WHERE session_id=?',(session_id,)).fetchone()['room_name']
 
 def _authorized_live_session(conn, user, session_id):
-    if user['role']=='admin':
+    if user['role']=='admin' and (is_super_admin(user) or 'classes' in _admin_permissions(user)):
         return conn.execute("SELECT id,subject FROM class_sessions WHERE id=? AND status='live'",(session_id,)).fetchone()
+    if user['role']=='teacher' or (user['role']=='admin' and 'teaching' in _admin_permissions(user)):
+        return conn.execute("""SELECT s.id,s.subject FROM class_sessions s JOIN class_schedules cs ON cs.id=s.schedule_id
+            WHERE s.id=? AND s.teacher_id=? AND s.status='live' AND cs.active=1 AND cs.teacher_id=?""",(session_id,user['id'],user['id'])).fetchone()
+    if user['role']!='student': return None
     return conn.execute('''SELECT s.id,s.subject FROM class_sessions s
         JOIN class_attendance a ON a.session_id=s.id AND a.student_id=?
         WHERE s.id=? AND s.status='live'

@@ -48,23 +48,27 @@ def _fee_rows(conn, student_id=None):
     query='''SELECT f.*,u.full_name,u.admission_no,u.class_name,
        COALESCE((SELECT SUM(p.amount) FROM fee_payments p WHERE p.fee_id=f.id AND p.status='approved'),0) paid,
        COALESCE((SELECT SUM(p.amount) FROM fee_payments p WHERE p.fee_id=f.id AND p.status='submitted'),0) submitted,
-       (SELECT p.status FROM fee_payments p WHERE p.fee_id=f.id ORDER BY p.id DESC LIMIT 1) latest
+       (SELECT p.status FROM fee_payments p WHERE p.fee_id=f.id ORDER BY p.id DESC LIMIT 1) latest,
+       COALESCE((SELECT w.amount FROM fee_waivers w WHERE w.fee_id=f.id AND w.revoked_at IS NULL),0) waived,
+       (SELECT w.reason FROM fee_waivers w WHERE w.fee_id=f.id AND w.revoked_at IS NULL) waiver_reason,
+       (SELECT w.waived_at FROM fee_waivers w WHERE w.fee_id=f.id AND w.revoked_at IS NULL) waived_at,
+       (SELECT COUNT(*) FROM fee_waivers w WHERE w.fee_id=f.id) waiver_history
        FROM fee_assignments f JOIN users u ON u.id=f.student_id'''
     args=[]
     if student_id is not None: query+=' WHERE f.student_id=?'; args=[student_id]
     query+=' ORDER BY f.due_date IS NULL,f.due_date,f.id DESC'
     rows=[]
     for r in conn.execute(query,args).fetchall():
-        x=dict(r); x['balance']=x['amount']-x['paid']
-        x['status']=('Paid' if x['balance']<=0 else 'Submitted for Verification' if x['submitted'] else 'Overdue' if x['due_date'] and x['due_date']<date.today().isoformat() else 'Partially Paid' if x['paid'] else 'Rejected' if x['latest']=='rejected' else 'Pending')
+        x=dict(r); x['balance']=x['amount']-x['paid']-x['waived']
+        x['status']=('Waived' if x['waived'] else 'Paid' if x['balance']<=0 else 'Submitted for Verification' if x['submitted'] else 'Overdue' if x['due_date'] and x['due_date']<date.today().isoformat() else 'Partially Paid' if x['paid'] else 'Rejected' if x['latest']=='rejected' else 'Pending')
         rows.append(x)
     return rows
 
 def _fee_totals(rows):
     totals={}
     for r in rows:
-        t=totals.setdefault(r['currency'],{'total':0,'paid':0,'balance':0,'submitted':0})
-        for k,v in [('total','amount'),('paid','paid'),('balance','balance'),('submitted','submitted')]: t[k]+=r[v]
+        t=totals.setdefault(r['currency'],{'total':0,'paid':0,'waived':0,'balance':0,'submitted':0})
+        for k,v in [('total','amount'),('paid','paid'),('waived','waived'),('balance','balance'),('submitted','submitted')]: t[k]+=r[v]
     return sorted(totals.items())
 
 def _fee_methods(conn, active=False):
@@ -73,9 +77,10 @@ def _fee_methods(conn, active=False):
 
 def _fee_history(conn, student_id=None):
     q='''SELECT p.id,p.fee_id,p.student_id,p.method_name,p.amount,p.currency,p.payment_date,p.reference,p.notes,p.status,p.submitted_at,p.reviewed_at,p.review_note,
-       f.title,f.period,f.installment,f.amount AS fee_amount,f.due_date,u.full_name,u.admission_no,u.class_name,u.section_name,
-       COALESCE((SELECT SUM(approved.amount) FROM fee_payments approved WHERE approved.fee_id=f.id AND approved.status='approved'),0) AS fee_paid
-       FROM fee_payments p JOIN fee_assignments f ON f.id=p.fee_id JOIN users u ON u.id=p.student_id'''
+       f.title,f.period,f.installment,f.amount AS fee_amount,f.due_date,u.full_name,u.admission_no,u.class_name,u.section_name,submitter.full_name submitter_name,submitter.role submitter_role,
+       COALESCE((SELECT SUM(approved.amount) FROM fee_payments approved WHERE approved.fee_id=f.id AND approved.status='approved'),0) AS fee_paid,
+       COALESCE((SELECT w.amount FROM fee_waivers w WHERE w.fee_id=f.id AND w.revoked_at IS NULL),0) AS fee_waived
+       FROM fee_payments p JOIN fee_assignments f ON f.id=p.fee_id JOIN users u ON u.id=p.student_id LEFT JOIN users submitter ON submitter.id=p.submitted_by'''
     if student_id is not None: return conn.execute(q+' WHERE p.student_id=? ORDER BY p.id DESC',(student_id,)).fetchall()
     return conn.execute(q+' ORDER BY CASE WHEN p.status=\'submitted\' THEN 0 ELSE 1 END,p.id DESC').fetchall()
 
@@ -87,19 +92,40 @@ def fees_student(request: Request):
     dates=[r['due_date'] for r in fees if r['balance']>0 and r['due_date'] and r['due_date']>=date.today().isoformat()]
     return render(request,'fees_student.html',{'fees':fees,'history':history,'totals':_fee_totals(fees),'next_due':min(dates) if dates else None})
 
+def _fee_flash(path, message, kind='success'):
+    if '?' not in path: return flash_redirect(path,message,kind)
+    from urllib.parse import quote
+    return RedirectResponse(f'{path}&msg={quote(message)}&kind={kind}',status_code=303)
+
+@app.get('/parent/children/{student_id}/fees/{fee_id}/pay',response_class=HTMLResponse)
 @app.get('/fees/{fee_id}/pay',response_class=HTMLResponse)
-def fees_pay(request: Request,fee_id:int):
-    u=require_user(request,'student')
+def fees_pay(request: Request,fee_id:int,student_id:Optional[int]=None):
+    parent_path=request.url.path.startswith('/parent/')
+    actor=require_user(request,'parent' if parent_path else 'student')
+    back=f'/parent?child={student_id}' if parent_path else '/fees'
+    pay_url=f'/parent/children/{student_id}/fees/{fee_id}/pay' if parent_path else f'/fees/{fee_id}/pay'
+    submit_url=f'/parent/children/{student_id}/fees/{fee_id}/submit' if parent_path else f'/fees/{fee_id}/submit'
     with connect() as conn:
-        fee=next((r for r in _fee_rows(conn,u['id']) if r['id']==fee_id),None)
+        student=_parent_child(conn,actor['id'],student_id) if parent_path else actor
+        fee=next((r for r in _fee_rows(conn,student['id']) if r['id']==fee_id),None)
         methods=_fee_methods(conn,True)
     if not fee: raise HTTPException(404)
-    if fee['balance']<=0 or fee['submitted']: return flash_redirect('/fees','This fee is already paid or has a submission awaiting review.','error')
-    return render(request,'fees_pay.html',{'fee':fee,'methods':methods,'token':secrets.token_hex(16),'today':date.today().isoformat()})
+    if fee['balance']<=0 or fee['submitted']: return _fee_flash(back,'This fee is already paid or has a submission awaiting review.','error')
+    return render(request,'fees_pay.html',{'fee':fee,'methods':methods,'token':secrets.token_hex(16),'today':date.today().isoformat(),'payer_student':student,'back_url':back,'submit_url':submit_url})
 
+@app.post('/parent/children/{student_id}/fees/{fee_id}/submit')
 @app.post('/fees/{fee_id}/submit')
-async def fees_submit(request: Request,fee_id:int):
-    u=require_user(request,'student'); form=await request.form()
+async def fees_submit(request: Request,fee_id:int,student_id:Optional[int]=None):
+    parent_path=request.url.path.startswith('/parent/')
+    actor=require_user(request,'parent' if parent_path else 'student')
+    back=f'/parent?child={student_id}' if parent_path else '/fees'
+    pay_url=f'/parent/children/{student_id}/fees/{fee_id}/pay' if parent_path else f'/fees/{fee_id}/pay'
+    # Reject unauthorized links before processing the uploaded image, then recheck
+    # inside the write transaction so a revoked link cannot submit a receipt.
+    with connect() as conn:
+        student=_parent_child(conn,actor['id'],student_id) if parent_path else actor
+        if not conn.execute('SELECT id FROM fee_assignments WHERE id=? AND student_id=?',(fee_id,student['id'])).fetchone(): raise HTTPException(404)
+    form=await request.form()
     try:
         token=_fee_token(form.get('submission_key')); amount=_fee_amount(form.get('amount')); currency=_fee_currency(form.get('currency'))
         payment_date=_fee_date(form.get('payment_date'),True)
@@ -116,23 +142,29 @@ async def fees_submit(request: Request,fee_id:int):
         except (UnidentifiedImageError, OSError, Image.DecompressionBombError): raise ValueError('The receipt is not a valid image.')
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
+            if parent_path:
+                active=conn.execute("SELECT id FROM users WHERE id=? AND role='parent' AND status='active'",(actor['id'],)).fetchone()
+                if not active: raise HTTPException(403)
+                student=_parent_child(conn,actor['id'],student_id)
             existing=conn.execute('SELECT student_id,fee_id FROM fee_payments WHERE submission_key=?',(token,)).fetchone()
             if existing:
-                if existing['student_id']!=u['id'] or existing['fee_id']!=fee_id: raise ValueError('Invalid submission token.')
-                return flash_redirect('/fees','This payment proof was already submitted.')
-            fee=next((r for r in _fee_rows(conn,u['id']) if r['id']==fee_id),None)
+                if existing['student_id']!=student['id'] or existing['fee_id']!=fee_id: raise ValueError('Invalid submission token.')
+                return _fee_flash(back,'This payment proof was already submitted.')
+            fee=next((r for r in _fee_rows(conn,student['id']) if r['id']==fee_id),None)
             method=conn.execute('SELECT * FROM fee_methods WHERE id=? AND active=1',(method_id,)).fetchone()
             if not fee: raise HTTPException(404)
             if not method or method['currency']!=fee['currency']: raise ValueError('Choose an active payment method in the fee currency.')
             if currency!=fee['currency']: raise ValueError('Payment currency must match the assigned fee currency.')
             if fee['submitted'] or fee['balance']<=0 or amount>fee['balance']: raise ValueError('The fee has a pending submission or the amount exceeds its remaining balance.')
-            conn.execute('''INSERT INTO fee_payments(fee_id,student_id,method_id,method_name,amount,currency,payment_date,reference,notes,receipt,status,submitted_at,submission_key)
-                VALUES (?,?,?,?,?,?,?,?,?,?,\'submitted\',?,?)''',(fee_id,u['id'],method_id,method['name'],amount,currency,payment_date,reference,notes,out.getvalue(),iso_now(),token))
+            conn.execute('''INSERT INTO fee_payments(fee_id,student_id,method_id,method_name,amount,currency,payment_date,reference,notes,receipt,status,submitted_at,submission_key,submitted_by)
+                VALUES (?,?,?,?,?,?,?,?,?,?,\'submitted\',?,?,?)''',(fee_id,student['id'],method_id,method['name'],amount,currency,payment_date,reference,notes,out.getvalue(),iso_now(),token,actor['id']))
+            audit(conn,actor['id'],'fee_payment_proof_submitted',f'Fee {fee_id}; student {student["id"]}')
+            submitted_message=(f"A parent submitted proof for {student['full_name']} ({student['admission_no']}) · {fee['title']}." if parent_path else f"{student['full_name']} ({student['admission_no']}) submitted proof for {fee['title']}.")
             for admin in conn.execute("SELECT * FROM users WHERE role='admin' AND status='active'").fetchall():
-                if 'fees' in _admin_permissions(admin): notify(conn,admin['id'],'Fee receipt submitted',f"{u['full_name']} ({u['admission_no']}) submitted proof for {fee['title']}.")
+                if 'fees' in _admin_permissions(admin): notify(conn,admin['id'],'Fee receipt submitted',submitted_message)
     except (ValueError, TypeError) + INTEGRITY_ERRORS as exc:
-        return flash_redirect(f'/fees/{fee_id}/pay',str(exc) if isinstance(exc,ValueError) else 'Could not submit this receipt. Please refresh and try again.','error')
-    return flash_redirect('/fees','Payment proof submitted for verification. It is not yet marked paid.')
+        return _fee_flash(pay_url,str(exc) if isinstance(exc,ValueError) else 'Could not submit this receipt. Please refresh and try again.','error')
+    return _fee_flash(back,'Payment proof submitted for verification. It is not yet marked paid.')
 
 @app.get('/fees/receipt/{payment_id}')
 def fees_receipt(request: Request,payment_id:int):
@@ -142,6 +174,9 @@ def fees_receipt(request: Request,payment_id:int):
         if not p: raise HTTPException(404)
         if user['role']=='student':
             if p['student_id']!=user['id']: raise HTTPException(404)
+        elif user['role']=='parent':
+            require_user(request,'parent')
+            _parent_child(conn,user['id'],p['student_id'])
         else: require_admin(request,'fees')
     return Response(bytes(p['receipt']),media_type='image/webp',headers={'Cache-Control':'private, no-store','Content-Disposition':'inline; filename="receipt.webp"'})
 
@@ -150,6 +185,10 @@ def fees_admin(request: Request):
     require_admin(request,'fees')
     with connect() as conn:
         all_fees=_fee_rows(conn); methods=_fee_methods(conn); history=_fee_history(conn)
+        waivers_by_fee={}
+        for w in conn.execute('''SELECT w.*,a.full_name waived_by_name,r.full_name revoked_by_name
+            FROM fee_waivers w JOIN users a ON a.id=w.waived_by LEFT JOIN users r ON r.id=w.revoked_by ORDER BY w.id DESC''').fetchall():
+            waivers_by_fee.setdefault(w['fee_id'],[]).append(w)
         periods=sorted({r['period'] for r in all_fees})
         selected_period=request.query_params.get('period','')
         if selected_period not in periods: selected_period=''
@@ -157,7 +196,7 @@ def fees_admin(request: Request):
         students=conn.execute("SELECT id,full_name,admission_no,class_name FROM users WHERE role='student' AND status IN ('active','unclaimed') ORDER BY full_name,id").fetchall()
         grades=conn.execute("SELECT DISTINCT class_name FROM users WHERE role='student' AND status IN ('active','unclaimed') AND class_name IS NOT NULL AND class_name!='' ORDER BY class_name").fetchall()
     missing_currencies=sorted({r['currency'] for r in all_fees if r['balance']>0} - {m['currency'] for m in methods if m['active']})
-    return render(request,'fees_admin.html',{'missing_currencies':missing_currencies,'fees':fees,'methods':methods,'history':history,'totals':_fee_totals(fees),'students':students,'grades':grades,'fields':FEE_METHOD_FIELDS,'token':secrets.token_hex(16),'periods':periods,'selected_period':selected_period,'pending_students':len({r['student_id'] for r in fees if r['balance']>0})})
+    return render(request,'fees_admin.html',{'missing_currencies':missing_currencies,'fees':fees,'methods':methods,'history':history,'totals':_fee_totals(fees),'students':students,'grades':grades,'fields':FEE_METHOD_FIELDS,'token':secrets.token_hex(16),'periods':periods,'selected_period':selected_period,'waivers_by_fee':waivers_by_fee,'pending_students':len({r['student_id'] for r in fees if r['balance']>0})})
 
 @app.post('/admin/fees/assign')
 async def fees_assign(request: Request):
@@ -242,6 +281,7 @@ async def fees_edit(request:Request,fee_id:int):
             fee=conn.execute('SELECT * FROM fee_assignments WHERE id=?',(fee_id,)).fetchone()
             if not fee: raise HTTPException(404)
             if conn.execute('SELECT 1 FROM fee_payments WHERE fee_id=? LIMIT 1',(fee_id,)).fetchone(): raise ValueError('A fee with payment history cannot be edited.')
+            if conn.execute('SELECT 1 FROM fee_waivers WHERE fee_id=? LIMIT 1',(fee_id,)).fetchone(): raise ValueError('A fee with waiver history cannot be edited.')
             conn.execute('UPDATE fee_assignments SET title=?,period=?,description=?,installment=?,amount=?,currency=?,due_date=? WHERE id=?',(title,period,description,installment,amount,currency,due,fee_id))
             notify(conn,fee['student_id'],'Fee updated',f'{title} ({period}) has been updated. View Fee Management for details.')
             audit(conn,admin['id'],'fee_updated',f'Fee {fee_id}; student {fee["student_id"]}; {currency} {_fee_format(amount)}')

@@ -60,6 +60,8 @@ def challenge_submit(request: Request, challenge_id: int, submission_text: str=F
 @app.get('/leaderboards', response_class=HTMLResponse)
 def leaderboards(request: Request, category: str='overall', period: str='all', class_name: str='', section_name: str='', challenge_id: int=0):
     u=require_user(request)
+    if u['role'] in ('parent','teacher'): raise HTTPException(403)
+    if u['role']=='admin': require_admin(request,'leaderboards')
     if category not in {'overall'}|ALLOWED_CATEGORIES: category='overall'
     since=None
     if period=='week':
@@ -87,13 +89,26 @@ def leaderboards(request: Request, category: str='overall', period: str='all', c
 def notifications_page(request: Request):
     u=require_user(request)
     with connect() as conn:
-        rows=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],)).fetchall()
-    return render(request,'notifications.html',{'notifications':rows})
+        if u['role']=='admin' and 'fees' not in _admin_permissions(u):
+            rows=conn.execute('SELECT * FROM notifications WHERE user_id=? AND title!=? ORDER BY is_read ASC,id DESC',(u['id'],'Fee receipt submitted')).fetchall()
+        else:
+            rows=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY is_read ASC,id DESC',(u['id'],)).fetchall()
+        unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(u['id'],)).fetchone()['c']
+    return render(request,'notifications.html',{'notifications':rows,'unread_notifications':unread,'notification_categories':NOTIFICATION_CATEGORIES})
+
+@app.post('/notifications/{notification_id}/read')
+def notification_read(request: Request,notification_id:int):
+    u=require_user(request)
+    with connect() as conn:
+        result=conn.execute('UPDATE notifications SET is_read=1,read_at=? WHERE id=? AND user_id=?',(iso_now(),notification_id,u['id']))
+        if not result.rowcount: raise HTTPException(404)
+    return flash_redirect('/notifications','Notification marked as read.')
 
 @app.post('/notifications/read-all')
 def notifications_read_all(request: Request):
     u=require_user(request)
-    with connect() as conn: conn.execute('UPDATE notifications SET is_read=1 WHERE user_id=?',(u['id'],))
+    with connect() as conn:
+        conn.execute('UPDATE notifications SET is_read=1,read_at=? WHERE user_id=? AND is_read=0',(iso_now(),u['id']))
     return flash_redirect('/notifications','Notifications marked as read.')
 
 @app.get('/achievements', response_class=HTMLResponse)

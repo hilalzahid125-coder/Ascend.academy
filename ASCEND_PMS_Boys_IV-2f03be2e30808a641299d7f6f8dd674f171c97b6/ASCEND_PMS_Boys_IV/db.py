@@ -1,4 +1,4 @@
-import os, sqlite3, hashlib
+import os, sqlite3, hashlib, re, json
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from pathlib import Path
@@ -48,10 +48,14 @@ CREATE TABLE IF NOT EXISTS class_sessions (
 );
 CREATE TABLE IF NOT EXISTS class_attendance (
  session_id INTEGER NOT NULL REFERENCES class_sessions(id) ON DELETE CASCADE, student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
- status TEXT CHECK(status IN ('present','absent') OR status IS NULL), marked_by INTEGER REFERENCES users(id), marked_at TEXT,
+ status TEXT CHECK(status IN ('present','absent','late','excused') OR status IS NULL), marked_by INTEGER REFERENCES users(id), marked_at TEXT,
  PRIMARY KEY(session_id,student_id)
 );
 CREATE INDEX IF NOT EXISTS idx_class_attendance_student ON class_attendance(student_id);
+CREATE TABLE IF NOT EXISTS academy_holidays (
+ holiday_date TEXT PRIMARY KEY, title TEXT NOT NULL,
+ created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS class_live_rooms (
   session_id INTEGER PRIMARY KEY REFERENCES class_sessions(id) ON DELETE CASCADE,
   room_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
@@ -67,7 +71,7 @@ CREATE TABLE IF NOT EXISTS users (
   admission_no TEXT UNIQUE NOT NULL,
   full_name TEXT NOT NULL,
   password_hash TEXT,
-  role TEXT NOT NULL CHECK(role IN ('student','admin')),
+  role TEXT NOT NULL CHECK(role IN ('student','admin','parent','teacher')),
   status TEXT NOT NULL DEFAULT 'unclaimed' CHECK(status IN ('unclaimed','active','disabled','pending')),
   class_name TEXT,
   section_name TEXT,
@@ -79,6 +83,35 @@ CREATE TABLE IF NOT EXISTS users (
   admin_permissions TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS parent_student_links (
+ parent_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+ created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL,
+ PRIMARY KEY(parent_id,student_id)
+);
+CREATE INDEX IF NOT EXISTS idx_parent_student ON parent_student_links(student_id);
+CREATE TABLE IF NOT EXISTS student_progress_records (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+ teacher_id INTEGER NOT NULL REFERENCES users(id), subject TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('assessment','assignment','participation','feedback')),
+ title TEXT NOT NULL, details TEXT NOT NULL, record_date TEXT NOT NULL,
+ score INTEGER, score_max INTEGER, outcome TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+ created_at TEXT NOT NULL, reviewed_by INTEGER REFERENCES users(id), reviewed_at TEXT,
+ review_note TEXT NOT NULL DEFAULT '', replaces_id INTEGER REFERENCES student_progress_records(id), version INTEGER NOT NULL DEFAULT 1,
+ assessment_type TEXT NOT NULL DEFAULT 'general' CHECK(assessment_type IN ('general','quiz','test')),
+ feedback_type TEXT NOT NULL DEFAULT 'general' CHECK(feedback_type IN ('general','academic','improvement','behavior','parent_feedback')),
+ participation_type TEXT NOT NULL DEFAULT 'general' CHECK(participation_type IN ('general','classroom','answers','discussions','group','homework','activities','competitions','events','extracurricular')),
+ period_start TEXT, period_end TEXT
+);
+CREATE TABLE IF NOT EXISTS academic_terms (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+ created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS academic_terms_dates ON academic_terms(start_date,end_date);
+CREATE INDEX IF NOT EXISTS idx_progress_student ON student_progress_records(student_id,status,record_date);
 
 CREATE TABLE IF NOT EXISTS fee_methods (
  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, currency TEXT NOT NULL,
@@ -98,8 +131,19 @@ CREATE TABLE IF NOT EXISTS fee_payments (
  payment_date TEXT NOT NULL, reference TEXT NOT NULL, notes TEXT NOT NULL,
  receipt BLOB NOT NULL, status TEXT NOT NULL CHECK(status IN ('submitted','approved','rejected')),
  submitted_at TEXT NOT NULL, reviewed_at TEXT, reviewed_by INTEGER REFERENCES users(id), review_note TEXT NOT NULL DEFAULT '',
- submission_key TEXT NOT NULL UNIQUE
+ submission_key TEXT NOT NULL UNIQUE, submitted_by INTEGER REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS fee_waivers (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ fee_id INTEGER NOT NULL REFERENCES fee_assignments(id),
+ amount INTEGER NOT NULL CHECK(amount>0), reason TEXT NOT NULL,
+ waived_by INTEGER NOT NULL REFERENCES users(id), waived_at TEXT NOT NULL,
+ revoked_by INTEGER REFERENCES users(id), revoked_at TEXT, revocation_reason TEXT,
+ CHECK((revoked_at IS NULL AND revoked_by IS NULL AND revocation_reason IS NULL) OR
+       (revoked_at IS NOT NULL AND revoked_by IS NOT NULL AND revocation_reason IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS fee_one_active_waiver ON fee_waivers(fee_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS fee_waiver_history_idx ON fee_waivers(fee_id,id);
 CREATE UNIQUE INDEX IF NOT EXISTS fee_one_pending ON fee_payments(fee_id) WHERE status='submitted';
 CREATE INDEX IF NOT EXISTS fee_student_idx ON fee_assignments(student_id);
 CREATE INDEX IF NOT EXISTS fee_payment_idx ON fee_payments(fee_id,status);
@@ -129,6 +173,7 @@ CREATE TABLE IF NOT EXISTS challenges (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   category TEXT NOT NULL DEFAULT 'general',
+  subject TEXT,
   points INTEGER NOT NULL DEFAULT 0,
   start_date TEXT,
   end_date TEXT,
@@ -158,6 +203,7 @@ CREATE TABLE IF NOT EXISTS point_transactions (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   amount INTEGER NOT NULL,
   category TEXT NOT NULL DEFAULT 'general',
+  subject TEXT,
   reason TEXT NOT NULL,
   challenge_id INTEGER REFERENCES challenges(id),
   admin_id INTEGER REFERENCES users(id),
@@ -219,6 +265,10 @@ CREATE TABLE IF NOT EXISTS notifications (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   is_read INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL DEFAULT 'update',
+  student_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  link_path TEXT,
+  read_at TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -249,6 +299,7 @@ DEFAULT_SETTINGS = {
     'registration_enabled': '0',
     'school_logo_path': '/static/school-mark.svg',
     'competition_structure_version': '0',
+    'academic_session': '',
 }
 
 
@@ -309,6 +360,141 @@ def _migrate(conn):
     conn.execute('CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)')
 
 
+
+def _migrate_sqlite_parent_role(conn):
+    """Expand the users role constraint without renaming referenced tables.
+
+    Preserve all columns, indexes and triggers of legacy installations. The
+    rebuild is atomic and validates foreign keys before committing.
+    """
+    row=conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+    if not row or ("'parent'" in row['sql'] and "'teacher'" in row['sql']):
+        return
+    original=row['sql']
+    pattern=r"CHECK\s*\(\s*role\s+IN\s*\(\s*'student'\s*,\s*'admin'(?:\s*,\s*'parent')?\s*\)\s*\)"
+    expanded,count=re.subn(pattern,"CHECK(role IN ('student','admin','parent','teacher'))",original,flags=re.I)
+    if count!=1:
+        raise RuntimeError('Unexpected users role constraint; cannot safely enable parent accounts.')
+    expanded=re.sub(r'^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:"users"|users)',r'\1users_parent_migration',expanded,count=1,flags=re.I)
+    objects=[r['sql'] for r in conn.execute("SELECT sql FROM sqlite_master WHERE tbl_name='users' AND type IN ('index','trigger') AND sql IS NOT NULL").fetchall()]
+    cols=[r['name'] for r in conn.execute('PRAGMA table_info(users)').fetchall()]
+    quoted=','.join('"'+c.replace('"','""')+'"' for c in cols)
+    conn.commit()
+    conn.execute('PRAGMA foreign_keys=OFF')
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(expanded)
+        conn.execute(f'INSERT INTO users_parent_migration ({quoted}) SELECT {quoted} FROM users')
+        conn.execute('DROP TABLE users')
+        conn.execute('ALTER TABLE users_parent_migration RENAME TO users')
+        for sql in objects: conn.execute(sql)
+        if conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise RuntimeError('Parent migration failed foreign-key validation.')
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute('PRAGMA foreign_keys=ON')
+
+
+def _migrate_sqlite_attendance_status(conn):
+    row=conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='class_attendance'").fetchone()
+    if not row or ("'late'" in row['sql'] and "'excused'" in row['sql']): return
+    original=row['sql']
+    expanded,count=re.subn(r"status\s+IN\s*\(\s*'present'\s*,\s*'absent'\s*\)", "status IN ('present','absent','late','excused')", original,flags=re.I)
+    if count!=1: raise RuntimeError('Unexpected attendance constraint; cannot safely expand statuses.')
+    expanded=re.sub(r'^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:"class_attendance"|class_attendance)',r'\1attendance_status_migration',expanded,count=1,flags=re.I)
+    objects=[r['sql'] for r in conn.execute("SELECT sql FROM sqlite_master WHERE tbl_name='class_attendance' AND type IN ('index','trigger') AND sql IS NOT NULL").fetchall()]
+    cols=[r['name'] for r in conn.execute('PRAGMA table_info(class_attendance)').fetchall()]
+    quoted=','.join('"'+c.replace('"','""')+'"' for c in cols)
+    conn.commit(); conn.execute('PRAGMA foreign_keys=OFF')
+    try:
+        conn.execute('BEGIN IMMEDIATE'); conn.execute(expanded)
+        conn.execute(f'INSERT INTO attendance_status_migration ({quoted}) SELECT {quoted} FROM class_attendance')
+        conn.execute('DROP TABLE class_attendance'); conn.execute('ALTER TABLE attendance_status_migration RENAME TO class_attendance')
+        for sql in objects: conn.execute(sql)
+        if conn.execute('PRAGMA foreign_key_check').fetchone(): raise RuntimeError('Attendance migration failed foreign-key validation.')
+        conn.commit()
+    except Exception:
+        conn.rollback(); raise
+    finally:
+        conn.execute('PRAGMA foreign_keys=ON')
+
+def _migrate_sqlite_progress_revisions(conn):
+    columns={r['name'] for r in conn.execute('PRAGMA table_info(student_progress_records)').fetchall()}
+    if 'replaces_id' not in columns:
+        conn.execute('ALTER TABLE student_progress_records ADD COLUMN replaces_id INTEGER REFERENCES student_progress_records(id)')
+    if 'version' not in columns:
+        conn.execute('ALTER TABLE student_progress_records ADD COLUMN version INTEGER NOT NULL DEFAULT 1')
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS progress_one_active_revision ON student_progress_records(replaces_id) WHERE replaces_id IS NOT NULL AND status IN ('pending','approved')")
+
+
+def _migrate_sqlite_assessment_type(conn):
+    columns={r['name'] for r in conn.execute('PRAGMA table_info(student_progress_records)').fetchall()}
+    if 'assessment_type' not in columns:
+        conn.execute("ALTER TABLE student_progress_records ADD COLUMN assessment_type TEXT NOT NULL DEFAULT 'general' CHECK(assessment_type IN ('general','quiz','test'))")
+
+
+def _migrate_sqlite_feedback_details(conn):
+    columns={r['name'] for r in conn.execute('PRAGMA table_info(student_progress_records)').fetchall()}
+    if 'feedback_type' not in columns:
+        conn.execute("ALTER TABLE student_progress_records ADD COLUMN feedback_type TEXT NOT NULL DEFAULT 'general' CHECK(feedback_type IN ('general','academic','improvement','behavior','parent_feedback'))")
+    if 'period_start' not in columns: conn.execute('ALTER TABLE student_progress_records ADD COLUMN period_start TEXT')
+    if 'period_end' not in columns: conn.execute('ALTER TABLE student_progress_records ADD COLUMN period_end TEXT')
+
+
+def _migrate_sqlite_participation_type(conn):
+    columns={r['name'] for r in conn.execute('PRAGMA table_info(student_progress_records)').fetchall()}
+    if 'participation_type' not in columns:
+        conn.execute("ALTER TABLE student_progress_records ADD COLUMN participation_type TEXT NOT NULL DEFAULT 'general' CHECK(participation_type IN ('general','classroom','answers','discussions','group','homework','activities','competitions','events','extracurricular'))")
+
+
+def _migrate_sqlite_subject_point_metadata(conn):
+    for table in ('challenges','point_transactions'):
+        columns={r['name'] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()}
+        if 'subject' not in columns: conn.execute(f'ALTER TABLE {table} ADD COLUMN subject TEXT')
+
+
+def _migrate_sqlite_fee_submitter(conn):
+    columns={r['name'] for r in conn.execute('PRAGMA table_info(fee_payments)').fetchall()}
+    if 'submitted_by' not in columns:
+        conn.execute('ALTER TABLE fee_payments ADD COLUMN submitted_by INTEGER REFERENCES users(id)')
+
+
+def _migrate_sqlite_notification_categories(conn):
+    cols={r['name'] for r in conn.execute('PRAGMA table_info(notifications)').fetchall()}
+    if 'kind' not in cols:
+        conn.execute("ALTER TABLE notifications ADD COLUMN kind TEXT NOT NULL DEFAULT 'update'")
+    if 'student_id' not in cols:
+        conn.execute('ALTER TABLE notifications ADD COLUMN student_id INTEGER REFERENCES users(id) ON DELETE SET NULL')
+    if 'link_path' not in cols:
+        conn.execute('ALTER TABLE notifications ADD COLUMN link_path TEXT')
+    if 'read_at' not in cols:
+        conn.execute('ALTER TABLE notifications ADD COLUMN read_at TEXT')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id,is_read)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_notifications_kind ON notifications(kind)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_notifications_student ON notifications(student_id)')
+
+
+def _migrate_sqlite_staff_permissions(conn):
+    # Preserve historical implicit staff capabilities once; do not re-grant
+    # revoked permissions on subsequent starts.
+    if not conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('staff_permissions_explicit_v1','1')").rowcount:
+        return
+    default=['students','challenges','achievements','rewards','announcements','activity']
+    rows=conn.execute("SELECT id,admin_permissions FROM users WHERE role='admin' AND admin_level='staff'").fetchall()
+    for row in rows:
+        try:
+            permissions=json.loads(row['admin_permissions']) if row['admin_permissions'] else default[:]
+            if not isinstance(permissions,list): permissions=default[:]
+        except (ValueError,TypeError):
+            permissions=default[:]
+        for permission in ('classes','leaderboards'):
+            if permission not in permissions: permissions.append(permission)
+        conn.execute('UPDATE users SET admin_permissions=? WHERE id=?',(json.dumps(permissions),row['id']))
+
+
 def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     if DATABASE_URL:
@@ -334,6 +520,16 @@ def init_db():
         if not DATABASE_URL:
             conn.executescript(SCHEMA)
             _migrate(conn)
+            _migrate_sqlite_parent_role(conn)
+            _migrate_sqlite_attendance_status(conn)
+            _migrate_sqlite_progress_revisions(conn)
+            _migrate_sqlite_fee_submitter(conn)
+            _migrate_sqlite_assessment_type(conn)
+            _migrate_sqlite_feedback_details(conn)
+            _migrate_sqlite_participation_type(conn)
+            _migrate_sqlite_subject_point_metadata(conn)
+            _migrate_sqlite_notification_categories(conn)
+            _migrate_sqlite_staff_permissions(conn)
         default_values=list(DEFAULT_SETTINGS.items())
         conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES '+','.join('(?,?)' for _ in default_values),
                      [value for pair in default_values for value in pair])

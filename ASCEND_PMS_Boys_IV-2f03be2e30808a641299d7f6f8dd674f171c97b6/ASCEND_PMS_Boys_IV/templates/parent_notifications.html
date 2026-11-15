@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head"><div><span class="eyebrow">PARENT WORKSPACE</span><h1>Notifications</h1><p>Updates about your student and important academy announcements.</p></div><form method="post" action="/parent/notifications/read-all"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn ghost">Mark all read</button></form></section>
+<section class="panel">
+  <div class="notif-filters" role="group" aria-label="Filter notifications by category">
+    <a class="notif-chip {{ 'active' if filter=='all' else '' }}" href="/parent/notifications"{{ ' aria-current="page"' if filter=='all' else '' }}>All<span class="notif-chip-count">{{ notifications|length }}</span></a>
+    {% for value,label in categories %}<a class="notif-chip {{ 'active' if filter==value else '' }}" href="/parent/notifications?filter={{ value }}"{{ ' aria-current="page"' if filter==value else '' }}>{{ label }}<span class="notif-chip-count">{{ notifications|selectattr('kind','equalto',value)|list|length }}</span></a>{% endfor %}
+  </div>
+  {% for n in notifications %}<article class="notification-row {{ '' if n.is_read else 'unread' }}">
+    <div class="notification-dot" aria-hidden="true"></div>
+    <div class="grow">
+      <div class="notification-head"><strong>{{ n.title }}</strong><span class="notif-cat">{{ n.kind|title }}</span></div>
+      <p>{{ n.body }}</p>
+      <small>{% if n.read_at %}Read {{ n.read_at[:16].replace('T',' ') }} · {% endif %}{{ n.created_at[:16].replace('T',' ') }}</small>
+    </div>
+    <div class="notification-actions">
+      {% if n.link_path %}<a class="btn ghost small" href="{{ n.link_path }}">View</a>{% endif %}
+      {% if not n.is_read %}<form method="post" action="/parent/notifications/{{ n.id }}/read"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn ghost small" type="submit">Mark as read</button></form>{% else %}<span class="notif-tick" aria-label="Read">✓</span>{% endif %}
+    </div>
+  </article>{% else %}<div class="empty"><strong>You’re all caught up</strong><p>New updates will appear here as the academy records them.</p></div>{% endfor %}
+</section>
+{% endblock %}

@@ -83,7 +83,7 @@ def admin_team_edit(request: Request, admin_id:int, full_name:str=Form(...), per
         target=conn.execute('SELECT * FROM users WHERE id=? AND role="admin" AND admin_level="staff"',(admin_id,)).fetchone()
         if not target: return flash_redirect('/admin/admins','Staff admin not found or protected.','error')
         conn.execute('UPDATE users SET full_name=?,admin_permissions=? WHERE id=?',(full_name,json.dumps(allowed),admin_id))
-        audit(conn,owner['id'],'staff_admin_updated',target['admission_no'])
+        audit(conn,owner['id'],'staff_admin_updated',f"{target['admission_no']}: {', '.join(sorted(set(allowed))) or 'no operational permissions'}")
     return flash_redirect('/admin/admins','Staff admin permissions updated.')
 
 @app.post('/admin/admins/{admin_id}/status')
