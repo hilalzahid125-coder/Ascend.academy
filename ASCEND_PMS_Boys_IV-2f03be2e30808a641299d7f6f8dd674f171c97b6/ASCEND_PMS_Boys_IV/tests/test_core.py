@@ -1119,7 +1119,8 @@ def test_parent_accounts_authorization_and_live_records():
         one=c.execute("SELECT id FROM users WHERE admission_no='P-88171' AND role='parent'").fetchone()['id']
         two=c.execute("SELECT id FROM users WHERE admission_no='P-88171-2' AND role='parent'").fetchone()['id']
     csrf(parent); assert post(parent,'/login',{'admission_no':'P-88171','password':'ParentStrong123'}).headers['location']=='/parent'
-    page=parent.get('/parent'); assert page.status_code==200 and 'Parent Test Student' in page.text and 'Parent Test Fee' in page.text
+    page=parent.get('/parent'); assert page.status_code==200 and 'Parent Test Student' in page.text
+    assert 'Parent Test Fee' in parent.get(f'/parent/children/{child}/fees').text
     assert parent.get(f'/parent?child={stranger}').status_code==404
     pdf=parent.get(f'/parent/children/{child}/report.pdf')
     assert pdf.status_code==200 and pdf.headers['content-type']=='application/pdf' and pdf.content.startswith(b'%PDF-')
@@ -1163,7 +1164,7 @@ def test_teacher_progress_is_scoped_and_reviewed():
     assert review_progress(tutor,rid,{'decision':'approved'}).status_code==403
     assert post(tutor,'/admin/teaching/records',dict(record,subject='Computer Science')).status_code==403
     review_progress(owner,rid,{'decision':'approved'})
-    assert 'Assessment One' in guardian.get('/parent').text
+    assert 'Assessment One' in guardian.get(f'/parent/children/{student}/report').text
     assert 'New assessment result' in guardian.get('/notifications').text
     review_progress(owner,rid,{'decision':'approved'})
     with connect() as c: assert c.execute("SELECT COUNT(*) n FROM notifications WHERE title='New assessment result' AND kind='assessment' AND user_id=(SELECT id FROM users WHERE admission_no='P-994319')").fetchone()['n']==1
@@ -1207,7 +1208,7 @@ def test_parent_attendance_and_fee_are_live_and_link_scoped():
         csrf(client); post(client,'/login',{'admission_no':no,'password':pw})
     post(owner,'/admin/parents/create',{'full_name':'Calendar Parent','student_id':sid,'password':'ParentStrong123'})
     csrf(parent); post(parent,'/login',{'admission_no':'P-88231','password':'ParentStrong123'})
-    page=parent.get('/parent?month=2024-01&day=2024-01-01').text
+    page=parent.get(f'/parent/children/{sid}/attendance?month=2024-01&day=2024-01-01').text
     assert '2024-01-01, present recorded' in page and '09:00 · Maths · Present' in page
     assert 'Other Calendar Student' not in page and '100%' in page
     assert parent.get('/parent?month=2024-02&day=2024-01-01').status_code==400
@@ -1215,16 +1216,16 @@ def test_parent_attendance_and_fee_are_live_and_link_scoped():
     assert post(parent,'/admin/holidays',{'holiday_date':'2024-01-02','title':'School holiday'}).status_code==403
     assert owner.get('/admin/holidays').status_code==200
     post(owner,'/admin/holidays',{'holiday_date':'2024-01-02','title':'School holiday'})
-    holiday=parent.get('/parent?month=2024-01&day=2024-01-02').text
+    holiday=parent.get(f'/parent/children/{sid}/attendance?month=2024-01&day=2024-01-02').text
     assert '2024-01-02, holiday: School holiday' in holiday and 'Holiday · School holiday' in holiday
     assert 'No marked completed sessions on this date.' in holiday
     post(owner,'/admin/holidays/remove',{'holiday_date':'2024-01-02'})
-    assert 'Holiday · School holiday' not in parent.get('/parent?month=2024-01&day=2024-01-02').text
+    assert 'Holiday · School holiday' not in parent.get(f'/parent/children/{sid}/attendance?month=2024-01&day=2024-01-02').text
     post(owner,f'/admin/my-classes/session/{session}/attendance',{f'attendance_{sid}':'late',f'attendance_{uid}':'absent'})
-    page=parent.get('/parent?month=2024-01&day=2024-01-01').text
+    page=parent.get(f'/parent/children/{sid}/attendance?month=2024-01&day=2024-01-01').text
     assert '2024-01-01, late recorded' in page and '09:00 · Maths · Late' in page and '100%' in page
     post(owner,f'/admin/my-classes/session/{session}/attendance',{f'attendance_{sid}':'excused',f'attendance_{uid}':'absent'})
-    page=parent.get('/parent?month=2024-01&day=2024-01-01').text
+    page=parent.get(f'/parent/children/{sid}/attendance?month=2024-01&day=2024-01-01').text
     assert '2024-01-01, excused recorded' in page and '09:00 · Maths · Excused' in page and 'Not recorded' in page
     post(owner,'/admin/fees/methods',{'name':'Calendar Transfer','currency':'PKR','account':'test'})
     with connect() as c: method=c.execute("SELECT id FROM fee_methods WHERE name='Calendar Transfer'").fetchone()['id']
@@ -1236,9 +1237,9 @@ def test_parent_attendance_and_fee_are_live_and_link_scoped():
     image=io.BytesIO(); Image.new('RGB',(8,8),'white').save(image,format='PNG')
     post(student,f'/fees/{fee}/submit',{'submission_key':secrets.token_hex(16),'method_id':method,'amount':'40','currency':'PKR','payment_date':'2024-01-01'},files={'receipt':('receipt.png',image.getvalue(),'image/png')})
     with connect() as c: pay=c.execute('SELECT id FROM fee_payments WHERE fee_id=?',(fee,)).fetchone()['id']
-    assert 'Submitted for Verification' in parent.get('/parent').text
+    assert 'Submitted for Verification' in parent.get(f'/parent/children/{sid}/fees').text
     post(owner,f'/admin/fees/payments/{pay}/review',{'decision':'approved'})
-    page=parent.get('/parent').text
+    page=parent.get(f'/parent/children/{sid}/fees').text
     assert 'Partially Paid' in page and '60.00' in page and '40.00' in page
     assert 'Fee payment approved' in parent.get('/notifications').text
     post(parent,'/notifications/read-all')
@@ -1393,7 +1394,7 @@ def test_progress_edit_rejection_resubmission_and_approval_lock():
         record=c.execute('SELECT * FROM student_progress_records WHERE id=?',(rid,)).fetchone()
         assert record['status']=='pending' and record['reviewed_by'] is None and record['review_note']==''
     review_progress(owner,rid,{'decision':'approved'})
-    assert 'Resubmitted score' in parent.get('/parent').text
+    assert 'Resubmitted score' in parent.get(f'/parent/children/{st}/report').text
     assert teacher.get(edit,follow_redirects=False).status_code==303
     post(teacher,edit,dict(data,title='Tampered approved score',score='3'))
     with connect() as c:
@@ -1402,12 +1403,12 @@ def test_progress_edit_rejection_resubmission_and_approval_lock():
     assert teacher.get(revise).status_code==200
     assert other.get(revise).status_code==404
     assert 'Correction%20submitted' in post(teacher,revise,dict(data,title='Corrected score',score='3')).headers['location']
-    assert 'Resubmitted score' in parent.get('/parent').text and 'Corrected score' not in parent.get('/parent').text
+    assert 'Resubmitted score' in parent.get(f'/parent/children/{st}/report').text and 'Corrected score' not in parent.get(f'/parent/children/{st}/report').text
     with connect() as c: revision=c.execute('SELECT id FROM student_progress_records WHERE replaces_id=?',(rid,)).fetchone()['id']
     assert 'already' in post(teacher,revise,dict(data,title='Second correction')).headers['location']
     assert 'correction to record' in owner.get('/admin/teaching').text
     review_progress(owner,revision,{'decision':'approved'})
-    page=parent.get('/parent').text
+    page=parent.get(f'/parent/children/{st}/report').text
     assert 'Corrected score' in page and 'Resubmitted score' not in page
     pdf=parent.get(f'/parent/children/{st}/report.pdf'); assert pdf.status_code==200
     import importlib.util,io
@@ -1419,8 +1420,8 @@ def test_progress_edit_rejection_resubmission_and_approval_lock():
     post(teacher,'/teacher/progress/records',dict(data,title='Later assessment',score='6',record_date='2024-02-01'))
     with connect() as c: later=c.execute("SELECT id FROM student_progress_records WHERE title='Later assessment'").fetchone()['id']
     review_progress(owner,later,{'decision':'approved'})
-    page=parent.get('/parent').text
-    assert 'Change: +30 percentage points' in page and 'Assessments recorded' in page
+    page=parent.get(f'/parent/children/{st}/report').text
+    assert 'Latest vs previous: +30.0 percentage points' in page and 'Assessments' in page
     assignment=dict(data,kind='assignment',title='Algebra homework',outcome='pending')
     post(teacher,'/teacher/progress/records',assignment)
     with connect() as c: homework=c.execute("SELECT id FROM student_progress_records WHERE title='Algebra homework'").fetchone()['id']
@@ -1428,8 +1429,8 @@ def test_progress_edit_rejection_resubmission_and_approval_lock():
     post(teacher,f'/teacher/progress/records/{homework}/revise',dict(assignment,outcome='completed'))
     with connect() as c: revision2=c.execute('SELECT id FROM student_progress_records WHERE replaces_id=?',(homework,)).fetchone()['id']
     review_progress(owner,revision2,{'decision':'approved'})
-    page=parent.get('/parent').text
-    assert 'Assignment records completed' in page and 'Algebra homework' in page and 'Completed' in page
+    page=parent.get(f'/parent/children/{st}/report').text
+    assert 'Algebra homework' in page and 'Completed' in page
     assert page.count('<h3>Algebra homework</h3>')==1
     with connect() as c: c.execute('UPDATE class_schedules SET active=0 WHERE id=?',(sched,))
     assert teacher.get(edit,follow_redirects=False).status_code==404
@@ -1488,10 +1489,11 @@ def test_parent_published_achievement_progress_and_reward_stock_are_real():
     csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
     post(owner,'/admin/parents/create',{'full_name':'Recognition Parent','student_id':child,'password':'ParentStrong123'})
     csrf(parent); post(parent,'/login',{'admission_no':'P-RECOG1','password':'ParentStrong123'})
-    page=parent.get('/parent').text
-    assert 'Recognition Goal' in page and 'Academic · 30 / 100 points' in page
-    assert 'Limited reward' in page and 'Out of stock' in page
-    assert 'A-RECOG2' not in page
+    page=parent.get(f'/parent/children/{child}/achievements').text
+    assert 'Recognition Goal' in page and '30 / 100 points' in page
+    rewards=parent.get(f'/parent/children/{child}/challenges-rewards').text
+    assert 'Limited reward' in rewards and 'Out of stock' in rewards
+    assert 'A-RECOG2' not in page and 'A-RECOG2' not in rewards
 
 
 def test_parent_submit_fee_proof_uses_linked_student_and_existing_review():
@@ -1518,7 +1520,7 @@ def test_parent_submit_fee_proof_uses_linked_student_and_existing_review():
         parent_id=c.execute("SELECT id FROM users WHERE admission_no='P-PAYPAR1'").fetchone()['id']
     pay=f'/parent/children/{child}/fees/{fee}/pay'; submit=f'/parent/children/{child}/fees/{fee}/submit'
     page=parent.get(pay); assert page.status_code==200 and 'Payment Linked Child' in page.text and 'P-PAYPAR1' not in page.text
-    assert f'/parent/children/{child}/fees/{fee}/pay' in parent.get('/parent').text
+    assert f'/parent/children/{child}/fees/{fee}/pay' in parent.get(f'/parent/children/{child}/fees').text
     assert other_parent.get(pay).status_code==404
     assert parent.get(f'/parent/children/{other}/fees/{otherfee}/pay').status_code==404
     assert parent.get(f'/parent/children/{child}/fees/{otherfee}/pay').status_code==404
@@ -1545,7 +1547,7 @@ def test_parent_submit_fee_proof_uses_linked_student_and_existing_review():
     assert 'Fee Payment Proof Submitted' in owner.get('/admin/activity').text
     assert parent.get(f'/fees/receipt/{payment["id"]}').status_code==200
     post(owner,f'/admin/fees/payments/{payment["id"]}/review',{'decision':'rejected','note':'Unreadable'})
-    assert 'Unreadable' in parent.get('/parent').text
+    assert 'Unreadable' in parent.get(f'/parent/children/{child}/fees/{fee}').text
     form['submission_key']=secrets.token_hex(16)
     post(parent,submit,form,files=upload)
     with connect() as c: second=c.execute('SELECT MAX(id) id FROM fee_payments WHERE fee_id=?',(fee,)).fetchone()['id']
@@ -1647,19 +1649,22 @@ def test_parent_dashboard_timetable_uses_real_student_membership_and_child_selec
     post(owner,f'/admin/parents/{parent_id}/link',{'student_id':ids['A-WORK02']})
     csrf(parent); post(parent,'/login',{'admission_no':'P-WORK01','password':'ParentStrong123'})
     one=parent.get(f'/parent?child={ids["A-WORK01"]}').text
-    assert 'Assigned classes' in one and 'Individual Teacher' in one and '10:00 – 10:40' in one
-    assert 'General Teacher' not in one and 'Past Teacher' not in one and 'Private Workspace Child' not in one
     assert 'Workspace Child One’s overview' in one and '>37<' in one
-    assert all(f'id="parent-{part}"' in one for part in ('classes','attendance','progress','recognition','fees','announcements'))
+    assert 'Individual Teacher' in one and 'General Teacher' not in one and 'Past Teacher' not in one and 'Private Workspace Child' not in one
+    assert all(f'href="/parent/children/{ids["A-WORK01"]}/{part}"' in one for part in ('classes','attendance','report','participation','analytics','leaderboard','achievements','challenges-rewards','fees'))
+    one_classes=parent.get(f'/parent/children/{ids["A-WORK01"]}/classes').text
+    assert 'Assigned classes' in one_classes and 'Individual Teacher' in one_classes and '10:00 – 10:40' in one_classes
+    assert 'General Teacher' not in one_classes and 'Past Teacher' not in one_classes
     two=parent.get(f'/parent?child={ids["A-WORK02"]}').text
-    assert 'General Teacher' in two and '09:00 – 09:40' in two and 'Individual Teacher' not in two
     assert 'Workspace Child Two’s overview' in two and 'Private Workspace Child' not in two
     assert 'name="child"' in two  # Selector appears when there is more than one linked child.
+    two_classes=parent.get(f'/parent/children/{ids["A-WORK02"]}/classes').text
+    assert 'General Teacher' in two_classes and '09:00 – 09:40' in two_classes and 'Individual Teacher' not in two_classes
     assert parent.get(f'/parent?child={ids["A-WORK03"]}').status_code==404
     # Removing the individual override immediately restores the grade-wide class.
     with connect() as c:
         c.execute('UPDATE class_schedules SET active=0 WHERE parent_id=? AND student_id=?',(base,ids['A-WORK01']))
-    updated=parent.get(f'/parent?child={ids["A-WORK01"]}').text
+    updated=parent.get(f'/parent/children/{ids["A-WORK01"]}/classes').text
     assert 'General Teacher' in updated and 'Individual Teacher' not in updated and '09:00 – 09:40' in updated
     post(owner,f'/admin/parents/{parent_id}/unlink',{'student_id':ids['A-WORK02']})
     single=parent.get('/parent').text
@@ -1819,9 +1824,9 @@ def test_parent_overview_real_metrics_and_academic_session():
     post(owner,f'/admin/parents/{pid}/link',{'student_id':sibling})
     csrf(parent,'/parent/login'); post(parent,'/parent/login',{'admission_no':'P-OVIEW1','password':'ParentStrong123'})
     def metric(html,name):
-        match=re.search(r'<div><span>'+re.escape(name)+r'</span>(.*?)</div>',html,re.S)
+        match=re.search(r'<div[^>]*><span>'+re.escape(name)+r'</span>(.*?)</div>',html,re.S)
         assert match,name
-        return re.findall(r'<strong>(.*?)</strong>',match.group(1),re.S)
+        return re.findall(r'<strong[^>]*>(.*?)</strong>',match.group(1),re.S)
     page=parent.get(f'/parent?child={child}').text
     assert metric(page,'Academic session')==['Not set for today']
     assert metric(page,'Overall performance')==['Not recorded'] and metric(page,'Participation score')==['Not recorded']
@@ -2076,18 +2081,18 @@ def test_admin_teaching_assigned_profiles_periodic_feedback_and_privacy():
     assert 'Monthly learning feedback' not in guardian.get('/parent').text
     assert 'Feedback for parents' in owner.get('/admin/teaching').text
     review_progress(owner,rid,{'decision':'approved'})
-    parent=guardian.get('/parent').text
+    parent=guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text
     assert 'Monthly learning feedback' in parent and 'Feedback for parents' in parent and record['period_start'] in parent and 'Excellent improvement' in parent
     report=guardian.get(f'/parent/children/{students["A-TCH501"]}/report').text
     assert 'Feedback for parents' in report and 'Excellent improvement' in report
     # Approved feedback is immutable until an approved correction supersedes it.
     revision=post(staff,f'/admin/teaching/records/{rid}/revise',dict(record,title='Corrected classroom observation',feedback_type='behavior',details='Participates respectfully.'))
     assert 'submitted' in revision.headers['location']
-    assert 'Corrected classroom observation' not in guardian.get('/parent').text
+    assert 'Corrected classroom observation' not in guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text
     with connect() as c: revised=c.execute("SELECT id FROM student_progress_records WHERE student_id=? AND title='Corrected classroom observation'",(students['A-TCH501'],)).fetchone()['id']
     review_progress(owner,revised,{'decision':'approved'})
-    assert 'Corrected classroom observation' in guardian.get('/parent').text and 'Monthly learning feedback' not in guardian.get('/parent').text
-    assert 'Classroom observation' in guardian.get('/parent').text
+    assert 'Corrected classroom observation' in guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text and 'Monthly learning feedback' not in guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text
+    assert 'Classroom observation' in guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text
     # Loss of a teaching assignment immediately denies profile and updates.
     with connect() as c: c.execute("UPDATE class_schedules SET active=0 WHERE student_id=? AND teacher_id=?",(students['A-TCH501'],teachers['ADMIN-TCH501']))
     assert staff.get(f'/admin/teaching/students/{students["A-TCH501"]}').status_code==404
@@ -2249,9 +2254,9 @@ def test_parent_attendance_section_calendar_privacy_and_live_corrections(monkeyp
         c.execute("INSERT INTO class_attendance(session_id,student_id,status) VALUES (?,?,'absent')",(ids[0],other))
         c.execute("INSERT INTO academy_holidays(holiday_date,title,created_at) VALUES ('2025-03-03','Attendance Test Holiday',?) ON CONFLICT(holiday_date) DO UPDATE SET title=excluded.title",(now,))
     parent=TestClient(app); csrf(parent,'/parent/login'); post(parent,'/parent/login',{'admission_no':'P-ATD601','password':'ParentStrong123'})
-    page=parent.get('/parent?month=2025-03&day=2025-03-03').text
+    page=parent.get(f'/parent/children/{child}/attendance?month=2025-03&day=2025-03-03').text
     def metric(name):
-        match=re.search(r'<div><span>'+re.escape(name)+r'</span>\s*<strong>(.*?)</strong>',page,re.S)
+        match=re.search(r'<div><span>'+re.escape(name)+r'</span>\s*<strong[^>]*>(.*?)</strong>',page,re.S)
         assert match,name
         return match.group(1)
     for name,value in [('Total classes','11'),('Classes attended','6'),('Classes missed','2'),('Late arrivals','2'),('Attendance percentage','75%'),('Current attendance streak','2 days'),('Longest attendance streak','2 days'),('Awaiting marking','1')]:
@@ -2264,7 +2269,7 @@ def test_parent_attendance_section_calendar_privacy_and_live_corrections(monkeyp
     assert 'Private Attendance Child' not in page
     assert parent.get(f'/parent?child={other}').status_code==404
     assert parent.get(f'/parent/children/{other}/report.pdf').status_code==404
-    pending=parent.get('/parent?month=2025-03&day=2025-03-05').text
+    pending=parent.get(f'/parent/children/{child}/attendance?month=2025-03&day=2025-03-05').text
     assert '10:00 · Maths · Pending' in pending
     pdf=parent.get(f'/parent/children/{child}/report.pdf'); assert pdf.status_code==200
     if importlib.util.find_spec('pypdf'):
@@ -2273,14 +2278,14 @@ def test_parent_attendance_section_calendar_privacy_and_live_corrections(monkeyp
         assert '6 present or late; 2 absent' in pdf_text and 'holiday absences excluded' in pdf_text
     # Correct the mixed-day absence: insights refresh immediately without changing the holiday record.
     with connect() as c: c.execute("UPDATE class_attendance SET status='present' WHERE session_id=? AND student_id=?",(ids[6],child))
-    corrected=parent.get('/parent?month=2025-03&day=2025-03-03').text
-    assert '<span>Classes missed</span><strong>1</strong>' in corrected
-    assert '<span>Current attendance streak</span><strong>4 days</strong>' in corrected
+    corrected=parent.get(f'/parent/children/{child}/attendance?month=2025-03&day=2025-03-03').text
+    assert re.search(r'<span>Classes missed</span><strong[^>]*>1</strong>',corrected)
+    assert re.search(r'<span>Current attendance streak</span><strong[^>]*>4 days</strong>',corrected)
     assert '100% · 4 of 4 recorded class days attended' in corrected
     # Removing the holiday immediately restores its recorded absence to the calculation.
     with connect() as c: c.execute("DELETE FROM academy_holidays WHERE holiday_date='2025-03-03'")
-    updated=parent.get('/parent?month=2025-03&day=2025-03-03').text
-    assert '<span>Classes missed</span><strong>2</strong>' in updated
+    updated=parent.get(f'/parent/children/{child}/attendance?month=2025-03&day=2025-03-03').text
+    assert re.search(r'<span>Classes missed</span><strong[^>]*>2</strong>',updated)
     assert '<span>Current attendance streak</span><strong>2 days</strong>' in updated
 
 
@@ -2340,7 +2345,8 @@ def test_participation_teacher_approval_categories_privacy_and_no_points():
         ids.append(rid)
     before=parent.get('/parent').text
     assert 'Activity classroom' not in before and 'Constructive activity feedback.' not in before
-    assert 'Separate challenge' in before and 'Joined' in before
+    challenges_before=parent.get(f'/parent/children/{student}/challenges-rewards').text
+    assert 'Separate challenge' in challenges_before and 'Joined' in challenges_before
     assert other_teacher.get(f'/teacher/progress/records/{ids[0]}/edit').status_code==404
     assert review_progress(staff,ids[0],{'decision':'approved'}).status_code==403
     assert 'Classroom participation' in owner.get('/admin/teaching').text
@@ -2354,10 +2360,11 @@ def test_participation_teacher_approval_categories_privacy_and_no_points():
     assert 'kind=error' in post(staff,f'/admin/teaching/records/{ids[3]}/edit',dict(base,title='Activity group',participation_type='invalid')).headers['location']
     assert 'submitted' in post(staff,f'/admin/teaching/records/{ids[3]}/edit',dict(base,title='Activity group',participation_type='group')).headers['location']
     for rid in ids: assert 'approved' in review_progress(owner,rid,{'decision':'approved'}).headers['location']
-    visible=parent.get('/parent').text
+    visible=parent.get(f'/parent/children/{student}/participation').text
     assert 'Activity classroom' in visible and 'Constructive activity feedback.' in visible
     assert '40.0%' in visible and '2 scored records' in visible
-    assert 'Separate challenge' in visible and 'Private Activity Child' not in visible
+    assert 'Private Activity Child' not in visible
+    assert 'Separate challenge' in parent.get(f'/parent/children/{student}/challenges-rewards').text
     assert parent.get(f'/parent?child={private}').status_code==404
     assert parent.get(f'/parent/children/{private}/report').status_code==404
     report=parent.get(f'/parent/children/{student}/report').text
@@ -2365,13 +2372,13 @@ def test_participation_teacher_approval_categories_privacy_and_no_points():
     # Teacher corrections retain the old approved record until review, including when the category changes.
     revised=post(staff,f'/admin/teaching/records/{ids[0]}/revise',dict(base,title='Revised participation',participation_type='events',score='6',score_max='10'))
     assert 'submitted' in revised.headers['location']
-    assert 'Activity classroom' in parent.get('/parent').text and 'Revised participation' not in parent.get('/parent').text
+    assert 'Activity classroom' in parent.get(f'/parent/children/{student}/participation').text and 'Revised participation' not in parent.get(f'/parent/children/{student}/participation').text
     with connect() as c:
         revision=c.execute("SELECT id,participation_type FROM student_progress_records WHERE student_id=? AND title='Revised participation'",(student,)).fetchone()
         assert revision['participation_type']=='events'; revision_id=revision['id']
     assert 'Previous category: Classroom participation' in owner.get('/admin/teaching').text
     review_progress(owner,revision_id,{'decision':'approved'})
-    revised_page=parent.get('/parent').text
+    revised_page=parent.get(f'/parent/children/{student}/participation').text
     assert 'Revised participation' in revised_page and 'Activity classroom' not in revised_page
     assert '70.0%' in revised_page
     # Neither submission, approval, nor correction creates or changes academy points.
@@ -2618,7 +2625,7 @@ def test_parent_challenges_rewards_use_real_student_flow_and_scoped_history():
     with connect() as c: participation=c.execute('SELECT id FROM challenge_participations WHERE challenge_id=? AND user_id=?',(challenge_id,child)).fetchone()['id']
     post(owner,f'/admin/submissions/{participation}/review',{'decision':'approved','review_note':'Private review note'})
     page=guardian.get(path).text
-    assert 'Completed · approved' in page and '30 Academic points' in page and '30 points' in page
+    assert 'Completed · approved' in page and '30 points' in page
     assert 'Private submission proof' not in page and 'Private review note' not in page
     assert 'Scoped prize' in page and 'Threshold reached' in page and '30 / 60 points' in page
     assert 'submitted' in post(student,f'/rewards/{available}/claim').headers['location']
@@ -2633,7 +2640,7 @@ def test_parent_challenges_rewards_use_real_student_flow_and_scoped_history():
         c.execute("UPDATE rewards SET status='inactive' WHERE id=?",(available,))
         before=c.execute('SELECT COUNT(*) n FROM point_transactions WHERE user_id=?',(child,)).fetchone()['n']
     page=guardian.get(path).text
-    assert 'Archived' in page and '55 Academic points' in page and '30 points' in page and 'Fulfilled' in page
+    assert 'Archived' in page and '55 points' in page and '30 points' in page and 'Fulfilled' in page
     sibling_page=guardian.get(f'/parent/children/{sibling}/challenges-rewards').text
     assert 'Scoped challenge' not in sibling_page and 'Inactive prize' not in sibling_page and 'Stock prize' in sibling_page
     guardian.get(path);guardian.get(path)

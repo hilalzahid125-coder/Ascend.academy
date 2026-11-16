@@ -1,0 +1,33 @@
+{% extends "base.html" %}{% block title %}Classes · {{ settings.app_name }}{% endblock %}
+{% block content %}
+<section class="page-head overview-banner">
+  <div><span class="eyebrow">PARENT WORKSPACE</span><h1>{{ child.full_name }}’s classes</h1><p>The student’s assigned timetable and teachers, as recorded by the academy.</p></div>
+  <a class="btn ghost" href="/parent">Back to overview</a>
+</section>
+{% if children|length > 1 %}<form class="fee-period-filter" method="get" action="/parent/children/{{ child.id }}/classes"><label>Student<select name="child">{% for s in children %}<option value="{{ s.id }}" {{ 'selected' if s.id==child.id else '' }}>{{ s.full_name }} · {{ s.admission_no }}</option>{% endfor %}</select></label><button class="btn primary">View student</button></form>{% endif %}
+<section class="panel academy-profile-summary parent-child-card">
+  <div class="panel-head"><div><span class="eyebrow">STUDENT</span><h2>{{ child.full_name }}</h2></div><div class="fee-actions"><a class="btn ghost small" href="/parent/children/{{ child.id }}/attendance">View attendance</a></div></div>
+  <div class="academy-details-grid">
+    <div><span>Student ID</span><strong>{{ child.admission_no }}</strong></div>
+    <div><span>Grade / section</span><strong>{{ child.class_name or 'Not set' }}{% if child.section_name %} · {{ child.section_name }}{% endif %}</strong></div>
+    <div><span>Assigned teachers</span><strong>{{ teachers|join(', ') or 'Not assigned' }}</strong></div>
+    <div><span>Academic session</span><strong>{% if academic_session %}{{ academic_session.name }}{% else %}Not set for today{% endif %}</strong>{% if academic_session %}<small>{{ academic_session.start }} – {{ academic_session.end }}</small>{% endif %}</div>
+  </div>
+</section>
+<section class="panel parent-timetable-panel" aria-labelledby="timetable-heading">
+  <div class="class-heading"><span class="class-kicker">WEEKLY TIMETABLE</span><h2 id="timetable-heading">Assigned classes</h2><p>Current recurring classes and upcoming one-off sessions. All times are Pakistan time.</p></div>
+  {% if classes %}
+  <div class="parent-week-grid">
+    {% for label in weekdays %}
+    <div class="parent-day-col">
+      <div class="parent-day-head">{{ label }}</div>
+      {% for s in by_day.get(loop.index0,[]) %}
+      <article class="schedule-card parent-class-card"><div class="schedule-main"><div class="schedule-subject"><strong>{{ s.subject }}</strong><span>{{ s.grade }}</span></div><div><span class="class-label">TIME</span><strong>{{ s.start_time }} – {{ s.end_time }}</strong></div><div><span class="class-label">TEACHER</span><strong>{{ s.teacher_name }}</strong></div></div>{% if s['recurrence']!='weekly' %}<small class="schedule-once">{{ s.day_label }}</small>{% endif %}</article>
+      {% else %}<div class="parent-day-empty">No class</div>{% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}<div class="class-empty">No current classes are assigned to this student.</div>{% endif %}
+  <p class="parent-panel-note">Weekly classes repeat on their scheduled day. One-off sessions appear on their recorded date.</p>
+</section>
+{% endblock %}

@@ -111,7 +111,7 @@ def fees_pay(request: Request,fee_id:int,student_id:Optional[int]=None):
         methods=_fee_methods(conn,True)
     if not fee: raise HTTPException(404)
     if fee['balance']<=0 or fee['submitted']: return _fee_flash(back,'This fee is already paid or has a submission awaiting review.','error')
-    return render(request,'fees_pay.html',{'fee':fee,'methods':methods,'token':secrets.token_hex(16),'today':date.today().isoformat(),'payer_student':student,'back_url':back,'submit_url':submit_url})
+    return render(request,'fees_pay.html',{'fee':fee,'methods':methods,'token':secrets.token_hex(16),'today':date.today().isoformat(),'payer_student':student,'back_url':back,'submit_url':submit_url,'parent_child_id':student_id if parent_path else None})
 
 @app.post('/parent/children/{student_id}/fees/{fee_id}/submit')
 @app.post('/fees/{fee_id}/submit')

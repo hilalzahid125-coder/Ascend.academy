@@ -104,7 +104,7 @@ def parent_leaderboard(request:Request,student_id:int,period:str='all',category:
             for pos,row in enumerate(assignments,1): row['rank']=pos
         points=total_points(conn,student_id)
         children=_parent_children(conn,parent['id'])
-    return render(request,'parent_leaderboard.html',{'child':child,'children':children,'rows':users if has_matching else [],
+    return render(request,'parent_leaderboard.html',{'child':child,'children':children,'parent_child_id':student_id,'rows':users if has_matching else [],
         'own':child_row if has_matching else None,'movement':movement,'cutoff':cutoff.date().isoformat(),
         'period':period,'category':category,'class_name':class_name,'section_name':section_name,
         'subject':subject,'challenge_id':challenge_id,'challenges':challenges,'classes':classes,'sections':sections,
@@ -129,7 +129,7 @@ def parent_achievements(request:Request,student_id:int):
             item=dict(r); item['current_points']=max(0,scores.get(r['category'],0))
             item['percent']=min(100,int(item['current_points']*100/r['points_required'])) if r['points_required'] else 100
             progress.append(item)
-    return render(request,'parent_achievements.html',{'child':child,'earned':earned,'progress':progress})
+    return render(request,'parent_achievements.html',{'child':child,'parent_child_id':student_id,'earned':earned,'progress':progress})
 
 @app.get('/parent/children/{student_id}/challenges-rewards',response_class=HTMLResponse)
 def parent_challenges_rewards(request:Request,student_id:int):
@@ -170,7 +170,7 @@ def parent_challenges_rewards(request:Request,student_id:int):
                 elif points>=r['points_required']: available.append(r)
                 else: upcoming.append(r)
         claims.sort(key=lambda r:(r['claim_date'],r['id']),reverse=True)
-    return render(request,'parent_challenges_rewards.html',{'child':child,'challenges':challenges,'history':history,
+    return render(request,'parent_challenges_rewards.html',{'child':child,'parent_child_id':student_id,'challenges':challenges,'history':history,
         'points':points,'available':available,'upcoming':upcoming,'unavailable':unavailable,'claims':claims,
         'redeemed':[r for r in claims if r['claim_status']=='fulfilled']})
 
@@ -190,7 +190,7 @@ def parent_fees(request:Request,student_id:int):
         fees=_fee_rows(conn,student_id); history=_fee_history(conn,student_id)
     today=date.today().isoformat()
     upcoming=sorted((f for f in fees if f['balance']>0 and f['due_date'] and f['due_date']>=today),key=lambda f:(f['due_date'],f['id']))
-    return render(request,'parent_fees.html',{'child':child,'fees':fees,'history':history,'totals':_fee_totals(fees),'upcoming':upcoming})
+    return render(request,'parent_fees.html',{'child':child,'parent_child_id':student_id,'fees':fees,'history':history,'totals':_fee_totals(fees),'upcoming':upcoming})
 
 @app.get('/parent/children/{student_id}/fees/{fee_id}',response_class=HTMLResponse)
 def parent_fee_detail(request:Request,student_id:int,fee_id:int):
@@ -198,7 +198,7 @@ def parent_fee_detail(request:Request,student_id:int,fee_id:int):
     with connect() as conn:
         child,fee=_parent_fee(conn,parent['id'],student_id,fee_id)
         history=[p for p in _fee_history(conn,student_id) if p['fee_id']==fee_id]
-    return render(request,'parent_fee_detail.html',{'child':child,'fee':fee,'history':history})
+    return render(request,'parent_fee_detail.html',{'child':child,'parent_child_id':student_id,'fee':fee,'history':history})
 
 @app.get('/parent/children/{student_id}/fees/{fee_id}/voucher.pdf')
 def parent_fee_voucher(request:Request,student_id:int,fee_id:int):
@@ -292,7 +292,8 @@ def parent_notifications(request:Request,filter:str='all'):
         query+=' ORDER BY is_read ASC,id DESC'
         rows=conn.execute(query,args).fetchall()
         unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(parent['id'],)).fetchone()['c']
-    return render(request,'parent_notifications.html',{'notifications':rows,'categories':categories,'filter':filter,'unread_notifications':unread})
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_notifications.html',{'notifications':rows,'categories':categories,'filter':filter,'unread_notifications':unread,'parent_child_id':children[0]['id'] if children else None})
 
 @app.post('/parent/notifications/{notification_id}/read')
 def parent_notification_read(request:Request,notification_id:int):
@@ -478,7 +479,7 @@ def parent_analytics(request:Request,student_id:int,period:str='month',term_id:i
             else: state='present'
             heat.append({'date':d,'state':state,'label':d.strftime('%d %b')})
         return render(request,'parent_analytics.html',{
-            'child':child,'children':_parent_children(conn,parent['id']),'period':period,'terms':terms,'term_id':term['id'] if period=='term' else 0,
+            'child':child,'children':_parent_children(conn,parent['id']),'parent_child_id':sid,'period':period,'terms':terms,'term_id':term['id'] if period=='term' else 0,
             'period_label':'Last 7 days' if period=='week' else ('Last 6 months' if period=='month' else term['name']),
             'academic':academic,'attendance_series':att_series,'participation_series':part_series,'assignment_series':assign_series,
             'academic_chart':academic_chart,

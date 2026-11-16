@@ -259,7 +259,7 @@ def parent_dashboard(request: Request,child:Optional[int]=None,month:str='',day:
         children=_parent_children(conn,parent['id'])
         if child is not None: student=_parent_child(conn,parent['id'],child)
         elif children: student=_parent_child(conn,parent['id'],children[0]['id'])
-        else: return render(request,'parent_dashboard.html',{'children':children,'child':None})
+        else: return render(request,'parent_dashboard.html',{'children':children,'child':None,'parent_child_id':None})
         sid=student['id']
         if student['status']=='active': sync_achievements(conn,sid)
         points=total_points(conn,sid)
@@ -348,9 +348,98 @@ def parent_dashboard(request: Request,child:Optional[int]=None,month:str='',day:
         run_fee_notifications(conn)
         parent_notices=conn.execute("""SELECT * FROM notifications WHERE user_id=? ORDER BY is_read ASC,id DESC LIMIT 5""",(parent['id'],)).fetchall()
         parent_unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(parent['id'],)).fetchone()['c']
-    return render(request,'parent_dashboard.html',{'children':children,'child':student,'points':points,'attendance':attendance,'present':present,'missed':missed,
+    return render(request,'parent_dashboard.html',{'children':children,'child':student,'parent_child_id':sid,'points':points,'attendance':attendance,'present':present,'missed':missed,
         'attendance_insights':insights,'achievements':achievements,'achievement_options':achievement_options,'challenges':challenges,'rewards':rewards,'fees':fees,'history':history,
         'totals':_fee_totals(fees),'teachers':teachers,'academic_session':academic_session,'academic_performance':academic_performance,'participation_score':participation_score,'learning_streak':learning_streak,'upcoming_classes':upcoming_classes,'announcements':announcements,'progress':progress,'ranks':ranks,'calendar_weeks':weeks,'calendar_month':month,'selected_day':day,'selected_records':selected_records,'selected_holiday':holidays.get(day),'all_holiday_dates':set(all_holidays),'subject_scores':subject_scores,'progress_counts':progress_counts,'available_challenges':available_challenges,'feedback_labels':FEEDBACK_LABELS,'participation':participation,'participation_labels':PARTICIPATION_LABELS,'parent_notices':parent_notices,'parent_unread':parent_unread})
+
+# Parent detail pages: one focused page per section, all driven by the same
+# recorded academy data as the student portal. The shell navigates between
+# them without reloading the whole page.
+@app.get('/parent/children/{student_id}/classes',response_class=HTMLResponse)
+def parent_classes(request:Request,student_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        sid=child['id']; current=_class_now().date()
+        # Follow the student's existing My Classes membership and one-off date
+        # rules. Never expose the rest of a class roster in the parent workspace.
+        schedules=_schedules(conn); students=_class_students(conn)
+        member=next((s for s in students if s['id']==sid),None)
+        assigned=[s for s in schedules if member and member in _members(s,students,schedules)]
+        classes=[dict(s,day_label=_day_label(s),end_time=_end_time(s)) for s in assigned
+            if s['recurrence']=='weekly' or s['class_date']>=current.isoformat()]
+        teachers=sorted({s['teacher_name'] for s in classes})
+        by_day={i:[] for i in range(7)}
+        for s in sorted(classes,key=lambda x:(x['weekday'],x['start_time'])):
+            by_day.setdefault(s['weekday'],[]).append(s)
+        academic_session=_academic_session(conn,current)
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_classes.html',{'child':child,'children':children,'parent_child_id':sid,
+        'classes':classes,'by_day':by_day,'weekdays':WEEKDAYS,'teachers':teachers,'academic_session':academic_session})
+
+@app.get('/parent/children/{student_id}/attendance',response_class=HTMLResponse)
+def parent_attendance(request:Request,student_id:int,month:str='',day:str=''):
+    parent=require_user(request,'parent')
+    import calendar as _calendar
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        sid=child['id']; current=_class_now().date()
+        attendance=conn.execute("""SELECT a.status,s.session_date,s.subject,s.start_time FROM class_attendance a
+            JOIN class_sessions s ON s.id=a.session_id WHERE a.student_id=? AND s.status='ended'
+            ORDER BY s.session_date DESC,s.start_time DESC,s.id DESC""",(sid,)).fetchall()
+        holiday_rows=conn.execute('SELECT holiday_date,title FROM academy_holidays').fetchall()
+        all_holidays={r['holiday_date']:r['title'] for r in holiday_rows}
+        insights=_attendance_insights(attendance,set(all_holidays),current)
+        try:
+            if not month: month=current.strftime('%Y-%m')
+            if not re.fullmatch(r'\d{4}-\d{2}',month): raise ValueError()
+            selected_month=date.fromisoformat(month+'-01')
+            if not 1900<=selected_month.year<=2100: raise ValueError()
+        except ValueError: raise HTTPException(400,detail='Invalid calendar month.')
+        if day:
+            try:
+                selected_date=date.fromisoformat(day)
+                if selected_date.strftime('%Y-%m')!=month: raise ValueError()
+            except ValueError: raise HTTPException(400,detail='Invalid calendar date.')
+        holidays={d:title for d,title in all_holidays.items() if d.startswith(month)}
+        records_by_day={}
+        for r in attendance: records_by_day.setdefault(r['session_date'],[]).append(r)
+        weeks=[]
+        for week in _calendar.Calendar(firstweekday=0).monthdatescalendar(selected_month.year,selected_month.month):
+            weeks.append([{'date':d.isoformat(),'number':d.day,'in_month':d.month==selected_month.month,
+                'present':any(r['status']=='present' for r in records_by_day.get(d.isoformat(),[])),
+                'absent':any(r['status']=='absent' for r in records_by_day.get(d.isoformat(),[])),
+                'late':any(r['status']=='late' for r in records_by_day.get(d.isoformat(),[])),
+                'excused':any(r['status']=='excused' for r in records_by_day.get(d.isoformat(),[])),
+                'pending':any(r['status'] is None for r in records_by_day.get(d.isoformat(),[])), 'holiday':holidays.get(d.isoformat())} for d in week])
+        options=[]; y,m=selected_month.year,selected_month.month
+        for _ in range(6):
+            options.append({'value':f'{y:04d}-{m:02d}','label':date(y,m,1).strftime('%B %Y')})
+            m-=1
+            if m==0: m=12; y-=1
+        options.reverse()
+        selected_records=records_by_day.get(day,[]) if day else []
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_attendance.html',{'child':child,'children':children,'parent_child_id':sid,
+        'insights':insights,'weeks':weeks,'month':month,'month_options':options,'records':attendance,
+        'selected_day':day,'selected_records':selected_records,'selected_holiday':holidays.get(day),
+        'all_holiday_dates':set(all_holidays)})
+
+@app.get('/parent/children/{student_id}/participation',response_class=HTMLResponse)
+def parent_participation(request:Request,student_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        sid=child['id']; current=_class_now().date()
+        progress=conn.execute("""SELECT r.*,u.full_name teacher_name FROM student_progress_records r JOIN users u ON u.id=r.teacher_id
+            WHERE r.student_id=? AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records newer WHERE newer.replaces_id=r.id AND newer.status='approved') ORDER BY r.record_date DESC,r.id DESC""",(sid,)).fetchall()
+        participation=_participation_insights(progress,current)
+        participation_records=[r for r in progress if r['kind']=='participation']
+        feedback_records=[r for r in progress if r['kind']=='feedback']
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_participation.html',{'child':child,'children':children,'parent_child_id':sid,
+        'participation':participation,'participation_records':participation_records,'feedback_records':feedback_records,
+        'participation_labels':PARTICIPATION_LABELS,'feedback_labels':FEEDBACK_LABELS})
 
 def _teacher_assignments(conn, teacher_id):
     students=_class_students(conn); schedules=_schedules(conn); result={}
@@ -546,8 +635,10 @@ def teaching_record_review(request:Request,record_id:int,decision:str=Form(...),
 
 @app.get('/parent/account',response_class=HTMLResponse)
 def parent_account(request:Request):
-    require_user(request,'parent')
-    return render(request,'parent_account.html')
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_account.html',{'parent_child_id':children[0]['id'] if children else None})
 
 @app.post('/parent/account/password')
 def parent_account_password(request:Request,current_password:str=Form(...),new_password:str=Form(...),confirm_password:str=Form(...)):
@@ -620,7 +711,7 @@ def parent_report(request:Request,student_id:int,period:str='all',term_id:Option
     with connect() as conn:
         student=_parent_child(conn,parent['id'],student_id)
         report=_student_report_data(conn,student,period,term_id)
-    return render(request,'parent_report.html',{'child':student,'report':report,'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS})
+    return render(request,'parent_report.html',{'child':student,'parent_child_id':student_id,'report':report,'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS})
 
 
 @app.get('/parent/children/{student_id}/report.pdf')
