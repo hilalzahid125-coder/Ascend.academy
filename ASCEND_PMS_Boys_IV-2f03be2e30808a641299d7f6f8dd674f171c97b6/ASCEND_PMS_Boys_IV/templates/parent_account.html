@@ -1,3 +1,23 @@
-{% extends "base.html" %}{% block content %}
-<section class="page-head"><div><span class="eyebrow">PARENT PORTAL</span><h1>My account</h1><p>Keep your parent account secure.</p></div></section><section class="fee-section"><h2>Change password</h2><p>Use at least 12 characters, including letters and numbers.</p><form class="fee-form" method="post" action="/parent/account/password"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label><label>New password<input name="new_password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><label>Confirm new password<input name="confirm_password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><button class="btn primary">Change password</button></form></section>
+{% extends "base.html" %}{% block title %}My account · {{ settings.app_name }}{% endblock %}{% block content %}
+<section class="page-head"><div><span class="eyebrow">PARENT PORTAL</span><h1>My account</h1><p>Your parent profile, linked students and account security.</p></div></section>
+<div class="content-grid two-col">
+  <section class="panel parent-account-panel">
+    <div class="panel-head"><div><span class="eyebrow">PROFILE</span><h2>Account details</h2></div></div>
+    <div class="academy-details-grid">
+      <div><span>Parent ID</span><strong>{{ user.admission_no }}</strong></div>
+      <div><span>Name</span><strong>{{ user.full_name }}</strong></div>
+      <div><span>Status</span><strong>{{ 'Active' if user.status=='active' else user.status|title }}</strong></div>
+      <div><span>Account type</span><strong>Parent portal</strong></div>
+    </div>
+    <p class="parent-panel-note">Parent accounts are created by the academy Super Admin and are linked to specific students. Only the academy can change the linked students.</p>
+  </section>
+  <section class="panel parent-account-panel">
+    <div class="panel-head"><div><span class="eyebrow">LINKED STUDENTS</span><h2>Students on this account</h2></div></div>
+    {% if children %}
+    <div class="fee-list">{% for s in children %}<article class="fee-entry"><div class="fee-entry-head"><div><h3>{{ s.full_name }}</h3><p>Admission {{ s.admission_no }} · {{ s.class_name or 'Grade not set' }}{% if s.section_name %} · {{ s.section_name }}{% endif %}</p></div><span class="fee-badge {{ 'approved' if s.status=='active' else 'rejected' }}">{{ 'Active' if s.status=='active' else s.status|title }}</span></div><div class="fee-actions"><a class="btn ghost small" href="/parent?child={{ s.id }}">Open overview</a><a class="btn ghost small" href="/parent/children/{{ s.id }}/fees">Fees</a></div></article>{% endfor %}</div>
+    {% else %}<div class="empty compact"><strong>No students linked yet</strong><p>Ask the academy Super Admin to link your account to your child.</p></div>{% endif %}
+  </section>
+</div>
+<section class="fee-section"><h2>Change password</h2><p>Use at least 12 characters, including letters and numbers.</p>
+<form class="fee-form" method="post" action="/parent/account/password"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label><label>New password<input name="new_password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><label>Confirm new password<input name="confirm_password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><button class="btn primary">Change password</button></form></section>
 {% endblock %}

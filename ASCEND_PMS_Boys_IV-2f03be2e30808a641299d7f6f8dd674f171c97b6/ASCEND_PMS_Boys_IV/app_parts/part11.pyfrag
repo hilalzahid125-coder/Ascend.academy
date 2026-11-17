@@ -638,7 +638,7 @@ def parent_account(request:Request):
     parent=require_user(request,'parent')
     with connect() as conn:
         children=_parent_children(conn,parent['id'])
-    return render(request,'parent_account.html',{'parent_child_id':children[0]['id'] if children else None})
+    return render(request,'parent_account.html',{'parent_child_id':children[0]['id'] if children else None,'children':children})
 
 @app.post('/parent/account/password')
 def parent_account_password(request:Request,current_password:str=Form(...),new_password:str=Form(...),confirm_password:str=Form(...)):
