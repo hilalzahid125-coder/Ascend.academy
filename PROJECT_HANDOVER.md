@@ -2,14 +2,14 @@
 
 **Project:** Delta Academy — the production ASCEND platform for **Peshawar Model School Boys IV** (tagline: *Compete • Achieve • Grow*).
 **Repository:** `https://github.com/hilalzahid125-coder/Ascend.academy.git`
-**Current branch:** `arena/794316a6-ascend-academy`
-**Current tip commit:** `a15bbd1` — "Complete parent portal scope: full account page, clean back links, parent wording"
+**Current branch:** `arena/24938aa0-ascend-academy` (the earlier parent-portal work landed on `arena/794316a6-ascend-academy`)
+**Current tip commit:** `0f6b0d6` — "Give academy staff the same downloadable progress report PDF"
 **App version:** `1.4.0` (see `VERSION`)
-**Live deployment:** Vercel project `delta_academy`, production alias **`deltaacademy-pi.vercel.app`**, latest deployment `dpl_E4eKARzeeeTc7A6ziD8FrroU2Vk8` (READY / PROMOTED), built from commit `a15bbd1`.
+**Live deployment:** Vercel project `delta_academy`, production alias **`deltaacademy-pi.vercel.app`**, latest deployment `dpl_FuemYy2KWsmWe7noMvupE4kcM1Hc` (READY / PROMOTED), built from commit `0f6b0d6`.
 **Database:** Supabase PostgreSQL project `ascend-academy` (ref `ezopvhvxbhdvgaasutfd`, region ap-south-1), private `ascend` schema, migrations 001–017 applied.
 **Owner:** Abdul Hanan Sethi. This document is the single source of project knowledge for the incoming AI developer.
 
-> **Read this first.** Everything below was verified against the actual repository, deployment, and database state at commit `a15bbd1`. No features are invented; anything not confirmed is explicitly labeled. This document is documentation-only — it does not change application code.
+> **Read this first.** Everything below was verified against the actual repository, deployment, and database state at commit `0f6b0d6`. No features are invented; anything not confirmed is explicitly labeled. This document is documentation-only — it does not change application code.
 
 ---
 
@@ -29,7 +29,7 @@
 - **Notifications** (`notifications`) is one shared system for students, parents, and teachers — unread indicators appear in the sidebar bell and topbar for every role.
 - **Achievements & rewards** (`achievements`, `student_achievements`, `rewards`, `reward_claims`) use academy-configured point thresholds; parent achievement pages read the exact same records as the student portal.
 
-**Live test accounts (production DB):** Super Admin `ADMIN-0001` (password from Vercel env var `PMS_ADMIN_PASSWORD`); parent `P-923741` linked to student `T-923741`. (Local test DBs also use disposable accounts `P-UI123`/`ParentStrong123`, `A-UI123`/`StudentStrong123` — these are test-only.)
+**Live test accounts (production DB):** Super Admin `ADMIN-0001` (password held by the owner; the `PMS_ADMIN_PASSWORD` env var was **removed on 2026-11-19**, so the account is never silently recreated); parent `P-923741` linked to student `T-923741`. (Local test DBs also use disposable accounts `P-UI123`/`ParentStrong123`, `A-UI123`/`StudentStrong123` — these are test-only.)
 
 ---
 
@@ -56,6 +56,7 @@ All four dashboards share one app shell: a **sidebar menu** (grouped with sectio
 - **Overview** (`/admin`): quick actions into all admin areas.
 - **Student progress** (`/admin/teaching`, `/admin/teaching/classes`, `/admin/teaching/students/{id}`): review and approve/reject teacher progress records, revise, class session management (start/end/attendance).
 - **Students & points** (`/admin/students`): roster, bulk CSV/XLSX import, activation-code export, per-student points adjustment, status, reset, photo removal, Super-Admin-only permanent deletion.
+- **Student report** (`/admin/students/{id}/report` + `.pdf`): the same consolidated approved-record report guardians download; fee sections appear only for staff whose permissions include fees. Guardians reach the identical PDF at `/parent/children/{id}/report.pdf`.
 - **My Classes** (`/admin/my-classes`): admin-managed class schedules and sessions.
 - **Challenges / Achievements / Rewards / Announcements** (`/admin/challenges`, `/achievements`, `/rewards`, `/announcements`): create, edit, enable/disable; review submissions and reward claims.
 - **Leaderboards** (`/leaderboards` shared), **Activity log** (`/admin/activity`), **Reports** (`/admin/reports` + CSV exports).
@@ -138,8 +139,8 @@ Core tables: `users` (roles: student/teacher/parent/admin; admin_level, admin_pe
 - **GitHub:** repo `hilalzahid125-coder/Ascend.academy`. Work happens on branch `arena/794316a6-ascend-academy` (branched from `main` @ `550ec7c`). Push to this branch, then deploy from it.
 - **Vercel:** single project `delta_academy` (`prj_tJG0Ubdg30E6T68KkPrbOvrSwmEM`), team `team_s51P38wvTjBOe7LnO3eSRh1w`, **root directory = the nested project dir** `ASCEND_PMS_Boys_IV-2f03be2e30808a641299d7f6f8dd674f171c97b6/ASCEND_PMS_Boys_IV`. Entry: `api/index.py` (ASGI). `vercel.json` sets the function `includeFiles` glob `{*.py,app_parts/**,templates/**,static/**,supabase/migrations/**,VERSION}`, `maxDuration: 60`, and a daily cron `0 2 * * *` → `/internal/scheduled-backup`. **One project serves the entire app (admin + student + teacher + parent).**
 - **Supabase:** project `ascend-academy` (ref `ezopvhvxbhdvgaasutfd`), PostgreSQL, private `ascend` schema, `anon`/`authenticated` direct access revoked. Migrations 001–017 are idempotent and are also applied by the app at cold start.
-- **Environment variables (server-side, Vercel):** `PMS_DATABASE_URL` (Supabase PG connection string), `PMS_ADMIN_PASSWORD` (bootstrap Super Admin password, ≥12 chars — **planned for removal after final verification, not yet done**), `CRON_SECRET` (scheduled backup auth), optional `PMS_BACKUP_RETENTION` (default 14), `PMS_BACKUP_INTERVAL_HOURS` (default 24). **Never commit or share these.**
-- **Deployment procedure:** commit + push to `arena/794316a6-ascend-academy`, then create a production deployment from the branch via the Vercel connector (repoId `1450157897`). After verifying, the new deployment is promoted and `deltaacademy-pi.vercel.app` aliases to it.
+- **Environment variables (server-side, Vercel):** `PMS_DATABASE_URL` (Supabase PG connection string), `CRON_SECRET` (scheduled backup auth), optional `PMS_BACKUP_RETENTION` (default 14) and `PMS_BACKUP_INTERVAL_HOURS` (default 24). **Never commit or share these.** `PMS_ADMIN_PASSWORD` was **removed on 2026-11-19**: `api/index.py` bootstraps the Super Admin only while that variable exists, and the live account already does, so deleting the account can no longer be undone by a cold start.
+- **Deployment procedure:** commit + push to your session's working branch, then create a production deployment from the branch via the Vercel connector (repoId `1450157897`). After verifying, the new deployment is promoted and `deltaacademy-pi.vercel.app` aliases to it.
 - **Railway/Docker (alternative, legacy):** `Dockerfile` runs uvicorn on port 8000 with a `/data` volume; SQLite-based. The production deployment is now Vercel + Supabase PG; Railway config remains for reference.
 
 ---
@@ -152,7 +153,7 @@ Core tables: `users` (roles: student/teacher/parent/admin; admin_level, admin_pe
 - **Layout:** 236px sidebar + main content shell; panels (`border-radius:12px`, subtle shadow), stat cards, home sections, badges, progress bars, tables. `.role-admin .sidebar nav a.active` is dark inverted for admins.
 - **Reusable components/classes:** `.panel`, `.home-section`, `.fee-entry`, `.fee-stats`, `.stat-card`, `.progress`, `.btn` (primary/ghost/small/danger), `.badge`, `.notification-row`, `.empty`, `.parent-*` (parent-specific), `.analytics-*` (charts), `.parent-calendar`, `.parent-week-grid` (timetable). Icons are inline SVG referencing `static/icons.svg` sprite (ids: house, book-open, users-round, swords, trophy, gift, megaphone, bell, wallet, award, graduation-cap, sparkles, shield-check, settings, database-backup, user-round, etc.).
 - **Parent-specific CSS:** `static/parent.css` (currently `?v=8`) — sidebar hover accents, overview grid, timetable, attendance calendar, participation, analytics, awards. **When changing `parent.css`, bump the `?v=` in `templates/base.html`.**
-- **Cache-busting:** `templates/base.html` loads `app.js?v=academy-12`, `fees.js?v=4`, `live-classes.js?v=1`, and `parent.css?v=8`. **Bump the version query whenever the corresponding file changes** so browsers fetch the new asset.
+- **Cache-busting:** `templates/base.html` loads `app.js?v=academy-12`, `fees.js?v=4`, `live-classes.js?v=1`, and `parent.css?v=9`. **Bump the version query whenever the corresponding file changes** so browsers fetch the new asset.
 - **Responsive:** sidebar becomes a slide-in drawer under 820px (overlay, swipe gestures, Escape, body scroll lock); mobile bottom nav shows 4 quick actions per role (parents: Home / Fees / Notifications / Account). Reduced-motion supported.
 - **Established decisions that must remain consistent:** green-first palette; Inter; sidebar + topbar shell; SPA navigation with no full reloads; parent overview is a summary hub with sections only in the sidebar; charts/visual indicators preferred over dense numbers on analytics; simple professional wording; parent views must never expose internal/admin-only data (e.g. data-challenge internals were pruned from the parent Challenges page).
 
@@ -171,15 +172,15 @@ Core tables: `users` (roles: student/teacher/parent/admin; admin_level, admin_pe
 | Parent portal — full account page, clean back-links, parent wording | **COMPLETE** (deployed, latest commit `a15bbd1`) |
 | PostgreSQL (Supabase) as production DB | **COMPLETE & deployed** (migrations 011–017 made re-run-safe; 500 bug fixed) |
 | Vercel single-project deployment | **COMPLETE** (`deltaacademy-pi.vercel.app`, user confirmed admin login works) |
-| Regression tests | **COMPLETE** — 99 tests; last run SQLite 90 passed / 9 skipped, PostgreSQL 99 passed |
+| Regression tests | **COMPLETE** — 99 tests; last run SQLite 91 passed / 9 skipped, PostgreSQL 99 passed |
 | Real school roster onboarding | **NOT STARTED** — waiting on school approval / real data |
 | Official school crest | **OPTIONAL / WAITING FOR ASSET** (branding uploadable via Super Admin) |
 | Official custom domain | **DEFERRED** — waiting on school DNS access |
-| `PMS_ADMIN_PASSWORD` removal from Vercel env | **PLANNED, NOT DONE** — verify then remove + redeploy |
-| `academic_terms` seed data | **EMPTY** — Term analytics falls back to last six months until terms are configured |
+| `PMS_ADMIN_PASSWORD` removal from Vercel env | **DONE 2026-11-19** — variable deleted and redeployed (`dpl_FuemYy2KWsmWe7noMvupE4kcM1Hc`); `/health` responds without it, boot no longer recreates accounts |
+| `academic_terms` seed data | **DONE 2026-11-19** — academic session `2026-2027` (2026-04-01 → 2027-03-31) plus First Term, Second Term and Final Term in production; editable in Super Admin → Brand & settings |
 | Day-1 backup archive confirmation (cron) | **NOT VERIFIED** — confirm a scheduled backup was produced |
 
-**Verified working (last validation, commit `a15bbd1`):** SQLite suite 90 passed / 9 skipped; PostgreSQL suite 99 passed; Playwright browser check — all 11 parent sidebar pages navigate via SPA with zero document reloads; admin login confirmed working on the live `deltaacademy-pi.vercel.app` by the owner.
+**Verified working (last validation, commit `0f6b0d6`):** SQLite suite 91 passed / 9 skipped; 40/40 pages across student, teacher, admin, parent and guest roles returned HTTP 200 at `0261122`; PostgreSQL suite 99 passed at `a15bbd1`; Playwright browser check — all 11 parent sidebar pages navigate via SPA with zero document reloads; admin login confirmed working on the live `deltaacademy-pi.vercel.app` by the owner.
 
 **Not verified / cannot confirm from the sandbox:** live HTTP responses from the sandbox to Vercel return HTTP `000` (sandbox limitation — verify via browser/connectors, not curl). The 9 skipped tests are PG-only/restore/environment-gated tests.
 
@@ -224,14 +225,14 @@ Development stopped **at the completion of the Parent Portal scope**, on branch 
 - `templates/parent_leaderboard.html`, `parent_achievements.html`, `parent_challenges_rewards.html`, `parent_fees.html`, `parent_fee_detail.html`, `parent_report.html`, `parent_notifications.html`, `parent_analytics.html` — section pages (back-links cleaned).
 - `templates/base.html` — parent sidebar full menu + mobile bottom nav; `app.js?v=academy-12`.
 - `static/app.js` — SPA navigation; `pages` set includes `/parent/notifications`.
-- `static/parent.css` (v8) — parent styles.
+- `static/parent.css` (v9) — parent styles, including the ≤680 px phone rules for the child switcher and page headers.
 - `app_parts/part11.pyfrag` / `part12.pyfrag` / `part10.pyfrag` — parent routes (all child-scoped render contexts pass `parent_child_id`).
 - `tests/test_core.py` — all parent tests updated to the new routes.
 
 **Immediate next steps (not yet done, deliberately deferred):**
-1. Remove `PMS_ADMIN_PASSWORD` from Vercel env (after final admin verification) and redeploy so a deleted account cannot be silently recreated.
-2. Configure real `academic_terms` so Term analytics is available.
-3. Confirm the day-1 scheduled backup (cron `0 2 * * *`) produced an archive.
+1. ~~Remove `PMS_ADMIN_PASSWORD` from Vercel env and redeploy~~ — **DONE 2026-11-19**.
+2. ~~Configure real `academic_terms`~~ — **DONE 2026-11-19** (session `2026-2027`, three terms).
+3. Confirm the day-1 scheduled backup (cron `0 2 * * *`) produced an archive — still open; archives currently land roughly every two days.
 4. Onboard the real student roster / parents / teachers when the school approves.
 5. No code changes are pending — the app is feature-complete per the current scope.
 
@@ -240,9 +241,9 @@ Development stopped **at the completion of the Parent Portal scope**, on branch 
 ## 8. Future Roadmap (priority order)
 
 **P0 — Operational safety (do first, no code risk):**
-1. Verify admin login + core flows on the live deployment; then **remove `PMS_ADMIN_PASSWORD`** from Vercel and redeploy.
+1. ~~Verify admin login + core flows on the live deployment; then remove `PMS_ADMIN_PASSWORD` from Vercel and redeploy.~~ — **DONE 2026-11-19.**
 2. Confirm scheduled backups are actually produced; download a full archive and keep an off-site copy; verify restore in an isolated DB with `scripts/restore_postgres_backup.py`.
-3. Configure real `academic_terms` and any real fee methods/challenge/achievement/reward configuration in the Super Admin panel.
+3. ~~Configure real `academic_terms`~~ — **DONE 2026-11-19**. Remaining: real fee methods, challenges, achievements and rewards configured in the Super Admin panel.
 
 **P1 — Real-data onboarding (school-dependent):**
 4. Bulk-import the real student roster (CSV/XLSX), distribute activation codes privately, enable registration only during onboarding.
@@ -284,16 +285,16 @@ You are continuing an existing, deployed, working application. **Do not restart,
 
 ## FIRST ACTION FOR THE NEXT AI
 
-**Step 1 — Orient.** Clone/inspect the repo at `hilalzahid125-coder/Ascend.academy`, branch `arena/794316a6-ascend-academy` (tip `a15bbd1`). Read this document, then `README.md`, `app.py`, `db.py`, `app_v14_patch.py`, and skim `app_parts/part*.pyfrag` to see how routes are assembled.
+**Step 1 — Orient.** Clone/inspect the repo at `hilalzahid125-coder/Ascend.academy`, branch `arena/24938aa0-ascend-academy` (tip `0f6b0d6`; earlier parent-portal work is on `arena/794316a6-ascend-academy` at `a15bbd1`). Read this document, then `README.md`, `app.py`, `db.py`, `app_v14_patch.py`, and skim `app_parts/part*.pyfrag` to see how routes are assembled.
 
-**Step 2 — Verify the live baseline (do not change anything yet).** Confirm the production deployment `dpl_E4eKARzeeeTc7A6ziD8FrroU2Vk8` on `deltaacademy-pi.vercel.app` is READY/PROMOTED and that admin login works (Super Admin `ADMIN-0001`; password from Vercel env `PMS_ADMIN_PASSWORD`). Confirm the Supabase `ascend` schema has migrations 001–017 applied.
+**Step 2 — Verify the live baseline (do not change anything yet).** Confirm the production deployment `dpl_FuemYy2KWsmWe7noMvupE4kcM1Hc` on `deltaacademy-pi.vercel.app` is READY/PROMOTED and that admin login works (Super Admin `ADMIN-0001`; the password is held by the owner — the `PMS_ADMIN_PASSWORD` env var no longer exists). Confirm the Supabase `ascend` schema has migrations 001–017 applied.
 
-**Step 3 — Run the safety checks.** From the project dir (`ASCEND_PMS_Boys_IV-2f03be2e30808a641299d7f6f8dd674f171c97b6/ASCEND_PMS_Boys_IV`): `python -m py_compile app.py db.py api/index.py`, then the SQLite suite (`pytest tests/test_core.py` → expect 90 passed / 9 skipped) and the PostgreSQL suite (expect 99 passed). Fix only if these fail.
+**Step 3 — Run the safety checks.** From the project dir (`ASCEND_PMS_Boys_IV-2f03be2e30808a641299d7f6f8dd674f171c97b6/ASCEND_PMS_Boys_IV`): `python -m py_compile app.py db.py api/index.py`, then the SQLite suite (`pytest tests/test_core.py` → expect 91 passed / 9 skipped) and the PostgreSQL suite (expect 99 passed). Fix only if these fail.
 
 **Step 4 — Execute the deferred operational items (P0), in order:**
-1. After final admin verification, **remove `PMS_ADMIN_PASSWORD` from Vercel env and redeploy** (so a deleted account can't be silently recreated).
+1. ~~Remove `PMS_ADMIN_PASSWORD` from Vercel env and redeploy~~ — **DONE 2026-11-19**.
 2. **Confirm the scheduled backup** (cron `0 2 * * *` → `/internal/scheduled-backup`) has produced an archive; if not, investigate `backups.py` and `CRON_SECRET`, then download a full backup off-site.
-3. **Configure real `academic_terms`** in Super Admin → Brand & settings so Term analytics works.
+3. ~~**Configure real `academic_terms`** in Super Admin → Brand & settings~~ — **DONE 2026-11-19**.
 
 **Step 5 — Then continue the roadmap (§8)** in priority order, using the testing requirements there for every change, and keeping all the preservation rules in §9.
 
