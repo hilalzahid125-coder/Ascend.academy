@@ -246,3 +246,21 @@
 .parent-part-chip span{color:#5b7167;font-size:.78rem}
 .parent-part-chip.filled{background:#f2f8f5;border-color:#d3e8df}
 .parent-part-bars{margin-top:6px}
+
+/* Phone layout for the guardian child switcher: on narrow screens the welcome
+   header stacks and the student select fills the width instead of forcing the
+   header wide (multi-child accounts). Filter rows also wrap earlier so long
+   option labels never push a page sideways. */
+@media(max-width:680px){
+  .page-head.parent-welcome{flex-direction:column;align-items:stretch;gap:14px}
+  .page-head.parent-welcome>div{min-width:0}
+  .parent-welcome .fee-period-filter{width:100%;margin:12px 0 0;flex-wrap:wrap;align-items:stretch}
+  .parent-welcome .fee-period-filter label{flex:1 1 100%;min-width:0}
+  .parent-welcome .fee-period-filter select{width:100%;min-width:0}
+  .parent-welcome .fee-period-filter .btn{width:100%;justify-content:center}
+}
+@media(max-width:560px){
+  .fee-period-filter{flex-wrap:wrap;align-items:stretch}
+  .fee-period-filter label{flex:1 1 100%;min-width:0}
+  .fee-period-filter select{width:100%;min-width:0}
+}

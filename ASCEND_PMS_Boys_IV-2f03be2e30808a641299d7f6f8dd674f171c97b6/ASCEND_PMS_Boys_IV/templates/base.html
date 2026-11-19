@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="/static/design-system.css?v=2">
   <link rel="stylesheet" href="/static/banner-design.css?v=1">
   <link rel="stylesheet" href="/static/fees.css?v=3">
-  <link rel="stylesheet" href="/static/parent.css?v=8">
+  <link rel="stylesheet" href="/static/parent.css?v=9">
 </head>
 <body class="{{ 'role-admin' if user and user.role == 'admin' else 'role-student' if user and user.role in ('student','parent','teacher') else 'role-guest' }}{{ ' role-parent' if user and user.role=='parent' else '' }}">
 <a class="skip-link" href="#main-content">Skip to main content</a>
