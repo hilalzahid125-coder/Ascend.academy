@@ -27,7 +27,11 @@ def parent_admin(request: Request):
         students=conn.execute("SELECT id,full_name,admission_no,class_name FROM users WHERE role='student' ORDER BY full_name,id").fetchall()
         links=conn.execute("""SELECT l.parent_id,u.id,u.full_name,u.admission_no FROM parent_student_links l
              JOIN users u ON u.id=l.student_id AND u.role='student' ORDER BY u.full_name""").fetchall()
-    return render(request,'admin_parents.html',{'parents':parents,'students':students,'links':links})
+        # Guardians' own activity (sign-ins, password changes) is recorded in the
+        # existing audit ledger so the Super Admin can monitor parent access.
+        activity=conn.execute("""SELECT action,details,created_at FROM audit_logs
+             WHERE SUBSTR(action,1,7)='parent_' ORDER BY id DESC LIMIT 12""").fetchall()
+    return render(request,'admin_parents.html',{'parents':parents,'students':students,'links':links,'activity':activity})
 
 @app.post('/admin/parents/create')
 def parent_create(request: Request,full_name:str=Form(...),student_id:int=Form(...),password:str=Form(...)):
@@ -658,6 +662,7 @@ def parent_account_password(request:Request,current_password:str=Form(...),new_p
             return flash_redirect('/parent/account','Current password is incorrect.','error')
         conn.execute('UPDATE users SET password_hash=? WHERE id=? AND role=\'parent\'',(hash_password(new_password),parent['id']))
         conn.execute('DELETE FROM sessions WHERE user_id=? AND token_hash!=?',(parent['id'],session_hash))
+        audit(conn,None,'parent_password_changed',f"{parent['admission_no']} · {parent['full_name']}")
     return flash_redirect('/parent/account','Password updated. Other sessions have been signed out.')
 
 def _student_report_data(conn, student, period, term_id):
@@ -713,6 +718,20 @@ def parent_report(request:Request,student_id:int,period:str='all',term_id:Option
         report=_student_report_data(conn,student,period,term_id)
     return render(request,'parent_report.html',{'child':student,'parent_child_id':student_id,'report':report,'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS})
 
+
+@app.get('/admin/students/{student_id}/report',response_class=HTMLResponse)
+def admin_student_report(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):
+    # Academy staff review the same approved records guardians see. Student IDs
+    # are always resolved server-side; the URL alone grants no access.
+    require_admin(request,'students')
+    with connect() as conn:
+        student=conn.execute("SELECT * FROM users WHERE id=? AND role='student'",(student_id,)).fetchone()
+        if not student: raise HTTPException(404)
+        report=_student_report_data(conn,student,period,term_id)
+    return render(request,'parent_report.html',{'child':student,'report':report,
+        'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS,
+        'report_base':f'/admin/students/{student_id}','report_back':'/admin/parents',
+        'report_eyebrow':'ACADEMY RECORDS','report_admin':True})
 
 @app.get('/parent/children/{student_id}/report.pdf')
 def parent_report_pdf(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):

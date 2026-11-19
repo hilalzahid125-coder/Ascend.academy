@@ -3072,3 +3072,52 @@ def test_parent_analytics_superseded_records_are_excluded():
     page=guardian.get(f'/parent/children/{student}/analytics?period=week')
     assert page.status_code==200
     assert '100.0%' in page.text and '83.3' not in page.text
+
+
+def test_parent_activity_monitoring_and_admin_student_report():
+    # Step 14/15: guardian oversight for the academy. Sign-ins and password
+    # changes are recorded in the existing audit ledger (no new tables), and the
+    # Super Admin can open the same approved progress report guardians see.
+    now=iso_now(); today=date.today().isoformat()
+    with connect() as c:
+        child=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,class_name,section_name,claimed,created_at) VALUES ('A-MON101','Monitor Child',?,'student','active','O-Level - Grade 9','A',1,?) RETURNING id",(hash_password('StudentStrong123'),now)).fetchone()['id']
+        parent=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('P-MON101','Monitor Parent',?,'parent','active',1,?) RETURNING id",(hash_password('ParentStrong123'),now)).fetchone()['id']
+        c.execute('INSERT INTO parent_student_links(parent_id,student_id,created_at) VALUES (?,?,?)',(parent,child,now))
+        teacher=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('ADMIN-MONTEACH','Monitor Teacher',?,'teacher','active',1,?) RETURNING id",(hash_password('TeacherStrong123'),now)).fetchone()['id']
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,admin_level,admin_permissions,created_at) VALUES ('ADMIN-MONSTAFF','Monitor Staff',?,'admin','active',1,'staff','[\"students\"]',?)",(hash_password('StaffStrong123'),now))
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,admin_level,admin_permissions,created_at) VALUES ('ADMIN-MONNO','Monitor No Students',?,'admin','active',1,'staff','[\"fees\"]',?)",(hash_password('StaffStrong123'),now))
+        c.execute("INSERT INTO student_progress_records(student_id,teacher_id,kind,subject,title,details,score,score_max,record_date,status,version,created_at) VALUES (?,?,'assessment','Maths','Monitor Test','',90,100,?,'approved',1,?)",(child,teacher,today,now))
+    owner=TestClient(app); guardian=TestClient(app); staff=TestClient(app); nostaff=TestClient(app)
+    teacher_c=TestClient(app); student_c=TestClient(app); guest=TestClient(app)
+    for cl,no,pw,path in [(owner,'ADMIN-0001','StrongAdmin123','/login'),(guardian,'P-MON101','ParentStrong123','/parent/login'),
+                          (staff,'ADMIN-MONSTAFF','StaffStrong123','/login'),(nostaff,'ADMIN-MONNO','StaffStrong123','/login'),
+                          (teacher_c,'ADMIN-MONTEACH','TeacherStrong123','/login'),(student_c,'A-MON101','StudentStrong123','/login')]:
+        csrf(cl,path); post(cl,path,{'admission_no':no,'password':pw})
+    # A successful guardian sign-in is recorded without secrets.
+    with connect() as c:
+        row=c.execute("SELECT details FROM audit_logs WHERE action='parent_signed_in' AND details LIKE 'P-MON101%' ORDER BY id DESC LIMIT 1").fetchone()
+        assert row and 'ParentStrong123' not in row['details']
+    page=owner.get('/admin/parents'); assert page.status_code==200
+    assert 'Parent activity' in page.text and 'P-MON101' in page.text and 'Signed In' in page.text
+    assert f'/admin/students/{child}/report' in page.text
+    # Academy staff can view the consolidated approved-record report.
+    report=owner.get(f'/admin/students/{child}/report'); assert report.status_code==200
+    assert 'Monitor Child' in report.text and 'Subject-wise breakdown' in report.text and 'Monitor Test' in report.text
+    assert 'Download this report' not in report.text and 'Back to parent accounts' in report.text
+    assert staff.get(f'/admin/students/{child}/report').status_code==200
+    for cl in (nostaff,guardian,teacher_c,student_c):
+        assert cl.get(f'/admin/students/{child}/report').status_code==403
+    assert guest.get(f'/admin/students/{child}/report',follow_redirects=False).status_code in (303,401,403)
+    assert owner.get('/admin/students/999999/report').status_code==404
+    # The guardian's own report is unchanged: parent wording and PDF download.
+    pr=guardian.get(f'/parent/children/{child}/report'); assert pr.status_code==200
+    assert 'Download this report' in pr.text and 'Back to child overview' in pr.text and 'PARENT WORKSPACE' in pr.text
+    assert f'action="/parent/children/{child}/report"' in pr.text
+    # Guardian events stay out of the administrator activity trail.
+    assert 'Parent Signed In' not in owner.get('/admin/activity').text
+    # A guardian password change is audited too.
+    csrf(guardian,'/parent/account')
+    changed=post(guardian,'/parent/account/password',{'current_password':'ParentStrong123','new_password':'ParentStrong456','confirm_password':'ParentStrong456'})
+    assert changed.status_code==303
+    with connect() as c:
+        assert c.execute("SELECT COUNT(*) n FROM audit_logs WHERE action='parent_password_changed' AND details LIKE 'P-MON101%'").fetchone()['n']==1

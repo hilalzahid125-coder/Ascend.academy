@@ -100,8 +100,9 @@ def admin_dashboard(request: Request):
         top=conn.execute('''SELECT u.full_name,u.admission_no,u.profile_picture_path,COALESCE(SUM(p.amount),0) points FROM users u
                             LEFT JOIN point_transactions p ON p.user_id=u.id WHERE u.role='student' AND u.status='active'
                             GROUP BY u.id ORDER BY points DESC,u.full_name ASC LIMIT 5''').fetchall()
-        fee_filter='' if is_super_admin(a) or 'fees' in _admin_permissions(a) else " WHERE SUBSTR(action,1,4)!='fee_'"
-        logs=conn.execute('SELECT * FROM audit_logs'+fee_filter+' ORDER BY id DESC LIMIT 8').fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
+        fee_filter='' if is_super_admin(a) or 'fees' in _admin_permissions(a) else " AND SUBSTR(action,1,4)!='fee_'"
+        activity_filter=" WHERE SUBSTR(action,1,7)!='parent_'"+fee_filter
+        logs=conn.execute('SELECT * FROM audit_logs'+activity_filter+' ORDER BY id DESC LIMIT 8').fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
         run_fee_notifications(conn)
         admin_notices=conn.execute("SELECT * FROM notifications WHERE user_id=? AND (?='super' OR title!='Fee receipt submitted') ORDER BY is_read ASC,id DESC LIMIT 5",(a['id'],'super' if is_super_admin(a) else 'staff')).fetchall()
         admin_unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0'+("" if is_super_admin(a) else " AND title!='Fee receipt submitted'"),(a['id'],)).fetchone()['c']

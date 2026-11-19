@@ -226,6 +226,10 @@ def _sign_in(request: Request, admission_no: str, password: str, parent_only: bo
         _clear_failures(conn,key)
         token=new_token(); conn.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)',
             (token_hash(token),u['id'],iso_expiry(),iso_now()))
+        # Guardian sign-ins are recorded for academy oversight (Super Admin).
+        # Only successful sign-ins are logged, and never passwords or tokens.
+        if u['role']=='parent':
+            audit(conn,None,'parent_signed_in',f"{u['admission_no']} · {u['full_name']}")
     r=RedirectResponse('/admin' if u['role']=='admin' else '/parent' if u['role']=='parent' else '/teacher' if u['role']=='teacher' else '/student',303)
     set_app_cookie(r,'pms_session',token,httponly=True)
     return r

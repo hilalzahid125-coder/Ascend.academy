@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Student progress report · {{ settings.app_name }}{% endblock %}
 {% block content %}
-<section class="page-head overview-banner"><div><span class="eyebrow">PARENT WORKSPACE</span><h1>Student progress report</h1><p>{{ child.full_name }} · {{ child.admission_no }} · {{ child.class_name or 'Grade not set' }}{% if child.section_name %} · {{ child.section_name }}{% endif %}</p></div></section>
+<section class="page-head overview-banner"><div><span class="eyebrow">{{ report_eyebrow|default('PARENT WORKSPACE') }}</span><h1>Student progress report</h1><p>{{ child.full_name }} · {{ child.admission_no }} · {{ child.class_name or 'Grade not set' }}{% if child.section_name %} · {{ child.section_name }}{% endif %}</p></div></section>
 <section class="panel parent-section">
   <div class="panel-head"><div><span class="eyebrow">REPORT PERIOD</span><h2>{{ report.label }}</h2><p>{% if report.start %}{{ report.start }} – {{ report.end }}{% else %}All approved records{% endif %}</p></div></div>
-  <form class="fee-period-filter parent-report-filter" method="get" action="/parent/children/{{ child.id }}/report">
+  <form class="fee-period-filter parent-report-filter" method="get" action="{{ report_base|default('/parent/children/' ~ child.id) }}/report">
     <label>Period<select name="period"><option value="all" {{ 'selected' if report.period=='all' }}>All history</option><option value="weekly" {{ 'selected' if report.period=='weekly' }}>Last 7 days</option><option value="monthly" {{ 'selected' if report.period=='monthly' }}>Last 30 days</option><option value="term" {{ 'selected' if report.period=='term' }} {{ 'disabled' if not report.terms }}>Academic term</option></select></label>
     {% if report.terms %}<label>Academic term<select name="term_id">{% for t in report.terms %}<option value="{{ t.id }}" {{ 'selected' if report.term and report.term.id==t.id }}>{{ t.name }} · {{ t.start_date }} – {{ t.end_date }}</option>{% endfor %}</select><small>Used when Academic term is selected.</small></label>{% else %}<p class="muted">No academic terms have been configured yet.</p>{% endif %}
     <button class="btn primary">View report</button>
   </form>
-  <div class="fee-actions"><a class="btn ghost" href="/parent?child={{ child.id }}">Back to child overview</a><a class="btn primary" href="/parent/children/{{ child.id }}/report.pdf?period={{ report.period }}{% if report.term %}&amp;term_id={{ report.term.id }}{% endif %}" download>Download this report</a></div>
+  <div class="fee-actions"><a class="btn ghost" href="{{ report_back|default('/parent?child=' ~ child.id) }}">{{ 'Back to parent accounts' if report_admin else 'Back to child overview' }}</a>{% if not report_admin %}<a class="btn primary" href="/parent/children/{{ child.id }}/report.pdf?period={{ report.period }}{% if report.term %}&amp;term_id={{ report.term.id }}{% endif %}" download>Download this report</a>{% endif %}</div>
 </section>
 <section class="home-section parent-section" aria-labelledby="report-overview"><div class="home-section-head"><div><span class="eyebrow">ACADEMIC PERFORMANCE</span><h2 id="report-overview">Performance overview</h2><p>Approved records in this period. Assessment percentages are equally weighted; different assessments may cover different topics.</p></div></div><div class="fee-stats parent-overview-stats">
   <div><span>Overall academic score</span><strong>{{ (report.overall|string ~ '%') if report.overall is not none else 'Not recorded' }}</strong><small>Average of assessment percentages</small></div>

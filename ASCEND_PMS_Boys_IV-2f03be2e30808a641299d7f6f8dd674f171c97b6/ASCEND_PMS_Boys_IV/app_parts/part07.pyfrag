@@ -86,9 +86,11 @@ def admin_announcement_status(request: Request,announcement_id:int,status:str=Fo
 def admin_activity(request: Request):
     admin=require_admin(request,'activity')
     # Activity permission alone must not disclose fee actions, amounts or payers.
-    fee_filter='' if is_super_admin(admin) or 'fees' in _admin_permissions(admin) else " WHERE SUBSTR(l.action,1,4)!='fee_'"
+    fee_filter='' if is_super_admin(admin) or 'fees' in _admin_permissions(admin) else " AND SUBSTR(l.action,1,4)!='fee_'"
+    # Guardian activity is shown on Parent accounts, not in the administrator trail.
+    activity_filter=" WHERE SUBSTR(l.action,1,7)!='parent_'"+fee_filter
     with connect() as conn:
-        rows=conn.execute('SELECT l.*,u.full_name admin_name FROM audit_logs l LEFT JOIN users u ON u.id=l.admin_id'+fee_filter+' ORDER BY l.id DESC LIMIT 500').fetchall()
+        rows=conn.execute('SELECT l.*,u.full_name admin_name FROM audit_logs l LEFT JOIN users u ON u.id=l.admin_id'+activity_filter+' ORDER BY l.id DESC LIMIT 500').fetchall()
     return render(request,'admin_activity.html',{'logs':rows})
 
 @app.get('/admin/settings', response_class=HTMLResponse)
