@@ -733,19 +733,35 @@ def admin_student_report(request:Request,student_id:int,period:str='all',term_id
         'report_base':f'/admin/students/{student_id}','report_back':'/admin/parents',
         'report_eyebrow':'ACADEMY RECORDS','report_admin':True})
 
-@app.get('/parent/children/{student_id}/report.pdf')
-def parent_report_pdf(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):
+def _report_access(request: Request, student_id: int):
+    """Resolve the report's student for a guardian or an authorised staff member.
+
+    Guardians only reach their explicitly linked children; staff use the
+    existing 'students' permission. Financial sections are returned only when
+    the viewer is also allowed to see fee records.
+    """
+    if request.url.path.startswith('/admin/'):
+        admin=require_admin(request,'students')
+        with connect() as conn:
+            student=conn.execute("SELECT * FROM users WHERE id=? AND role='student'",(student_id,)).fetchone()
+        if not student: raise HTTPException(404)
+        return student, (is_super_admin(admin) or 'fees' in _admin_permissions(admin))
     parent=require_user(request,'parent')
-    # Authorize every report request; a filename or student ID alone grants no access.
     with connect() as conn:
-        student=_parent_child(conn,parent['id'],student_id)
+        return _parent_child(conn,parent['id'],student_id), True
+
+
+def _report_pdf(request: Request, student_id: int, period: str, term_id):
+    # Authorize every report request; a filename or student ID alone grants no access.
+    student, include_finance = _report_access(request, student_id)
+    with connect() as conn:
         report=_student_report_data(conn,student,period,term_id)
         records=report['records']
         attendance=conn.execute("""SELECT a.status,s.session_date,s.subject FROM class_attendance a JOIN class_sessions s ON s.id=a.session_id
             WHERE a.student_id=? AND s.status='ended' AND a.status IS NOT NULL AND s.session_date<=? ORDER BY s.session_date DESC,s.id DESC""",(student_id,_class_now().date().isoformat())).fetchall()
         holiday_dates={r['holiday_date'] for r in conn.execute('SELECT holiday_date FROM academy_holidays').fetchall()}
         points=total_points(conn,student_id)
-        fee_totals=_fee_totals(_fee_rows(conn,student_id))
+        fee_totals=_fee_totals(_fee_rows(conn,student_id)) if include_finance else []
         ranks={'Overall':_parent_rank(conn,student),'Class':_parent_rank(conn,student,class_only=True)}
         challenges=conn.execute("""SELECT c.title,p.status FROM challenge_participations p JOIN challenges c ON c.id=p.challenge_id
             WHERE p.user_id=? ORDER BY p.updated_at DESC,p.id DESC""",(student_id,)).fetchall()
@@ -830,13 +846,26 @@ def parent_report_pdf(request:Request,student_id:int,period:str='all',term_id:Op
     if not challenges: content.append(Paragraph('No challenge participation recorded.',style))
     for claim in claims: content.append(Paragraph(text(f"Reward claim: {claim['name']} · {claim['status'].title()}"),style))
     if not claims: content.append(Paragraph('No reward claims recorded.',style))
-    content.append(Paragraph('Fee overview (all-time)',heading))
-    content.append(Paragraph('Submitted payments remain in the balance until approved. Authorized waivers reduce the balance. No currency conversion is applied.',style))
-    for currency,totals in fee_totals:
-        content.append(Paragraph(text(f"{currency}: assigned {_fee_format(totals['total'])}; approved payments {_fee_format(totals['paid'])}; waived {_fee_format(totals['waived'])}; balance {_fee_format(totals['balance'])}; submitted for verification {_fee_format(totals['submitted'])}"),style))
-    if not fee_totals: content.append(Paragraph('No fees assigned.',style))
+    if include_finance:
+        content.append(Paragraph('Fee overview (all-time)',heading))
+        content.append(Paragraph('Submitted payments remain in the balance until approved. Authorized waivers reduce the balance. No currency conversion is applied.',style))
+        for currency,totals in fee_totals:
+            content.append(Paragraph(text(f"{currency}: assigned {_fee_format(totals['total'])}; approved payments {_fee_format(totals['paid'])}; waived {_fee_format(totals['waived'])}; balance {_fee_format(totals['balance'])}; submitted for verification {_fee_format(totals['submitted'])}"),style))
+        if not fee_totals: content.append(Paragraph('No fees assigned.',style))
     doc.build(content)
     return Response(output.getvalue(),media_type='application/pdf',headers={'Cache-Control':'private, no-store','Content-Disposition':f'attachment; filename="student-report-{student_id}.pdf"'})
+
+
+
+@app.get('/parent/children/{student_id}/report.pdf')
+def parent_report_pdf(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):
+    return _report_pdf(request,student_id,period,term_id)
+
+@app.get('/admin/students/{student_id}/report.pdf')
+def admin_report_pdf(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):
+    # Academy staff download the same approved-record report; fee sections are
+    # included only when the viewer may also see fee records.
+    return _report_pdf(request,student_id,period,term_id)
 
 @app.get('/admin/teachers',response_class=HTMLResponse)
 def teacher_accounts(request:Request):

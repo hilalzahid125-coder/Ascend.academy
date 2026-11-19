@@ -3103,8 +3103,23 @@ def test_parent_activity_monitoring_and_admin_student_report():
     # Academy staff can view the consolidated approved-record report.
     report=owner.get(f'/admin/students/{child}/report'); assert report.status_code==200
     assert 'Monitor Child' in report.text and 'Subject-wise breakdown' in report.text and 'Monitor Test' in report.text
-    assert 'Download this report' not in report.text and 'Back to parent accounts' in report.text
+    assert 'Download this report' in report.text and 'Back to parent accounts' in report.text
+    assert f'{child}/report.pdf' in report.text
     assert staff.get(f'/admin/students/{child}/report').status_code==200
+    # Staff can download the branded PDF exactly as guardians can.
+    pdf=owner.get(f'/admin/students/{child}/report.pdf')
+    assert pdf.status_code==200 and pdf.content.startswith(b'%PDF-') and 'attachment' in pdf.headers['content-disposition'] and 'no-store' in pdf.headers['cache-control']
+    assert staff.get(f'/admin/students/{child}/report.pdf').status_code==200
+    assert guardian.get(f'/admin/students/{child}/report.pdf').status_code==403
+    assert student_c.get(f'/admin/students/{child}/report.pdf').status_code==403
+    # Fee data is withheld from staff who cannot see fees.
+    import importlib.util
+    if importlib.util.find_spec('pypdf'):
+        import io as _io
+        from pypdf import PdfReader
+        def _pdf_text(resp): return ' '.join(pg.extract_text() or '' for pg in PdfReader(_io.BytesIO(resp.content)).pages)
+        assert 'Fee overview' in _pdf_text(pdf)
+        assert 'Fee overview' not in _pdf_text(staff.get(f'/admin/students/{child}/report.pdf'))
     for cl in (nostaff,guardian,teacher_c,student_c):
         assert cl.get(f'/admin/students/{child}/report').status_code==403
     assert guest.get(f'/admin/students/{child}/report',follow_redirects=False).status_code in (303,401,403)
