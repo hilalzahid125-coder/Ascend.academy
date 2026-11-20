@@ -295,3 +295,19 @@
 .bars-legend .bar-key.achieve{background:var(--gold,#d69a00)}
 .compact-list{max-height:330px;overflow:auto}
 @media(max-width:620px){.feedback-thread{padding:14px}.fm.parent,.fm.teacher,.fm.admin{margin-left:0;margin-right:0}.feedback-reply .btn{width:100%}}
+
+/* One-tap parent replies: short, scannable answers instead of open chat. */
+.feedback-ack{margin-top:14px;border:1px solid #d9ebe4;background:#f2f9f6;border-radius:12px;padding:12px 14px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.feedback-ack span{display:block;font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;color:#64748b;font-weight:700}
+.feedback-ack strong{display:block;color:#075c49;font-size:1rem;margin-top:3px}
+.feedback-ack small{color:#64748b;font-size:.78rem}
+.ack-change summary{cursor:pointer;font-size:.8rem;color:#075c49;font-weight:600;white-space:nowrap}
+.ack-change[open] summary{margin-bottom:8px}
+.feedback-ack-form{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.ack-label{width:100%;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:#64748b;font-weight:700}
+.ack-btn{border:1px solid #cfe3da;background:#fff;color:#075c49;border-radius:999px;padding:8px 14px;font:inherit;font-size:.85rem;font-weight:600;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+.ack-btn:hover{background:#e8f4ef;border-color:#9fd0bf}
+.ack-btn:focus-visible{outline:2px solid #087f63;outline-offset:2px}
+.ack-btn.active{background:#075c49;border-color:#075c49;color:#fff}
+.feedback-subhead{margin:18px 0 0;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:#64748b}
+@media(max-width:620px){.ack-btn{flex:1 1 46%}.feedback-ack{padding:11px 12px}}

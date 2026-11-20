@@ -407,6 +407,14 @@ def parent_attendance(request:Request,student_id:int,month:str='',day:str=''):
 # teacher, subject, category and the Super Admin's approval, so no second data
 # store is introduced. Replies live in feedback_messages and never alter the
 # approved record itself.
+# Parents answer with one tap, never free text: staff screens stay short and
+# readable no matter how many families are linked to a class.
+FEEDBACK_ACKS={
+    'thanks':'Thank you — noted',
+    'working':'We will work on it',
+    'done':'Done at home',
+    'contact':'Please contact us'
+}
 FEEDBACK_HELP={
     'general':'A general observation from the teacher',
     'academic':'Classwork, tests and study habits',
@@ -419,13 +427,18 @@ def _decorate_feedback(conn, records):
     threads=[]
     for record in records:
         item=dict(record)
-        item['messages']=[dict(m) for m in conn.execute("""SELECT m.id,m.body,m.created_at,m.author_role,u.full_name author_name
+        messages=[dict(m) for m in conn.execute("""SELECT m.id,m.body,m.created_at,m.author_role,u.full_name author_name
             FROM feedback_messages m JOIN users u ON u.id=m.author_id WHERE m.record_id=? ORDER BY m.id""",(record['id'],)).fetchall()]
-        last=item['messages'][-1] if item['messages'] else None
-        item['awaiting_parent']=bool(last and last['author_role'] in ('teacher','admin'))
-        item['awaiting_staff']=bool(last and last['author_role']=='parent')
-        item['reply_count']=len(item['messages'])
-        item['last_activity']=last['created_at'] if last else record['created_at']
+        item['updates']=[m for m in messages if m['author_role']!='parent']
+        parent_rows=[m for m in messages if m['author_role']=='parent']
+        ack=parent_rows[-1] if parent_rows else None
+        if ack: ack['label']=FEEDBACK_ACKS.get(ack['body'],ack['body'])
+        item['ack']=ack
+        last_update=item['updates'][-1]['created_at'] if item['updates'] else record['created_at']
+        item['awaiting_parent']=not ack or ack['created_at']<last_update
+        item['awaiting_staff']=bool(ack and ack['created_at']>last_update)
+        item['update_count']=len(item['updates'])
+        item['last_activity']=max([last_update]+([ack['created_at']] if ack else []))
         threads.append(item)
     return threads
 
@@ -450,28 +463,31 @@ def parent_feedback(request:Request,student_id:int):
         children=_parent_children(conn,parent['id'])
     return render(request,'parent_feedback.html',{'child':child,'children':children,'parent_child_id':child['id'],
         'threads':threads,'awaiting_replies':sum(t['awaiting_parent'] for t in threads),
-        'teachers':sorted({t['teacher_name'] for t in threads}),'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP})
+        'teachers':sorted({t['teacher_name'] for t in threads}),'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP,
+        'ack_options':FEEDBACK_ACKS})
 
-@app.post('/parent/children/{student_id}/feedback/{record_id}/reply')
-def parent_feedback_reply(request:Request,student_id:int,record_id:int,body:str=Form('')):
+@app.post('/parent/children/{student_id}/feedback/{record_id}/acknowledge')
+def parent_feedback_acknowledge(request:Request,student_id:int,record_id:int,ack:str=Form('')):
     parent=require_user(request,'parent')
     back=f'/parent/children/{student_id}/feedback'
     try:
-        message=_clean_text(body,1200,True)
+        if ack not in FEEDBACK_ACKS: raise ValueError('Choose one of the reply options.')
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             child=_parent_child(conn,parent['id'],student_id)
             record=conn.execute("SELECT * FROM student_progress_records WHERE id=? AND student_id=? AND kind='feedback' AND status='approved'",(record_id,child['id'])).fetchone()
             if not record: raise HTTPException(404)
-            conn.execute('INSERT INTO feedback_messages(record_id,author_id,author_role,body,created_at) VALUES (?,?,?,?,?)',(record_id,parent['id'],'parent',message,iso_now()))
+            # One standing answer per note: a new tap replaces the previous one.
+            conn.execute("DELETE FROM feedback_messages WHERE record_id=? AND author_role='parent'",(record_id,))
+            conn.execute('INSERT INTO feedback_messages(record_id,author_id,author_role,body,created_at) VALUES (?,?,?,?,?)',(record_id,parent['id'],'parent',ack,iso_now()))
             author=conn.execute('SELECT id,role FROM users WHERE id=?',(record['teacher_id'],)).fetchone()
             link=f"/admin/feedback/{record_id}" if author and author['role']=='admin' else f"/teacher/feedback/{record_id}"
             if author:
-                notify(conn,author['id'],'Parent replied to your feedback',
-                    f"{child['full_name']}'s parent replied to your {record['subject']} feedback.",kind='remark',student_id=child['id'],link_path=link)
-            audit(conn,None,'parent_feedback_reply',f'Record {record_id}; parent {parent["id"]}')
+                notify(conn,author['id'],'Parent acknowledged your feedback',
+                    f"{child['full_name']}'s parent answered: {FEEDBACK_ACKS[ack]}.",kind='remark',student_id=child['id'],link_path=link)
+            audit(conn,None,'parent_feedback_acknowledged',f'Record {record_id}; parent {parent["id"]}; {ack}')
     except (ValueError,TypeError) as exc: return flash_redirect(back,str(exc),'error')
-    return flash_redirect(back,'Reply sent. The teacher sees it immediately.')
+    return flash_redirect(back,'Thank you — your reply was sent to the teacher.')
 
 def _staff_feedback_threads(conn, actor, role):
     scope="r.kind='feedback' AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records n WHERE n.replaces_id=r.id AND n.status='approved')"
@@ -534,7 +550,7 @@ def staff_feedback_reply(request:Request,record_id:int,body:str=Form('')):
             # Same answer as the read view: never confirm another teacher's thread exists.
             if role!='admin' and record['teacher_id']!=actor['id']: raise HTTPException(404)
             conn.execute('INSERT INTO feedback_messages(record_id,author_id,author_role,body,created_at) VALUES (?,?,?,?,?)',(record_id,actor['id'],role,message,iso_now()))
-            _notify_feedback_parents(conn,record['student_id'],'New reply from the academy',
+            _notify_feedback_parents(conn,record['student_id'],'New note from the academy',
                 f"A teacher replied about the {record['subject']} feedback for {record['student_name']}.",
                 f"/parent/children/{record['student_id']}/feedback")
             audit(conn,actor['id'] if role=='admin' else None,'staff_feedback_reply',f'Record {record_id}; {role}')

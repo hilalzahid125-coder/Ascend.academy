@@ -24,18 +24,18 @@
 {% endif %}
 
 <section class="fee-section">
-  <div class="panel-head"><div><h2>{{ 'All conversations' if staff_role=='admin' else 'Your conversations' }}</h2><p>{{ threads|length }} note{{ '' if threads|length==1 else 's' }}{% if awaiting %} · {{ awaiting }} awaiting your reply{% endif %}</p></div>
+  <div class="panel-head"><div><h2>{{ 'All feedback notes' if staff_role=='admin' else 'Your feedback notes' }}</h2><p>{{ threads|length }} note{{ '' if threads|length==1 else 's' }}{% if awaiting %} · {{ awaiting }} new parent repl{{ 'y' if awaiting==1 else 'ies' }}{% endif %}</p></div>
   {% if staff_role=='admin' %}<form class="fee-period-filter" method="get" action="/admin/feedback"><label>Student<select name="student" onchange="this.form.submit()"><option value="">All students</option>{% for s in students %}<option value="{{ s.id }}" {{ 'selected' if selected_student==s.id else '' }}>{{ s.full_name }} · {{ s.admission_no }}</option>{% endfor %}</select></label></form>{% endif %}</div>
   <div class="fee-list">
     {% for t in threads %}
     <article class="fee-entry feedback-entry{{ ' awaiting' if t.awaiting_staff }}">
       <div class="fee-entry-head">
         <div><h3>{{ t.title }}</h3><p>{{ t.student_name }} · {{ t.admission_no }}{% if t.class_name %} · {{ t.class_name }}{% endif %} · {{ t.subject }} · {{ t.record_date }}</p></div>
-        <span class="feedback-state {{ 'open' if t.awaiting_staff else 'done' }}">{{ 'Parent replied' if t.awaiting_staff else ('No reply yet' if not t.reply_count else 'Answered') }}</span>
+        <span class="feedback-state {{ 'open' if not t.ack else 'done' }}">{% if t.ack %}{{ t.ack.label }}{% else %}Awaiting parent{% endif %}</span>
       </div>
       <p>{{ feedback_labels.get(t.feedback_type,'General feedback') }} · {{ t.teacher_name }}</p>
       {% if t.details %}<p>{{ t.details }}</p>{% endif %}
-      <div class="feedback-entry-foot"><span>{{ t.reply_count }} repl{{ 'y' if t.reply_count==1 else 'ies' }} · last activity {{ t.last_activity[:10] }}</span><a class="btn ghost" href="{{ feedback_root }}/{{ t.id }}">Open conversation</a></div>
+      <div class="feedback-entry-foot"><span>{{ t.update_count }} note{{ '' if t.update_count==1 else 's' }} · {% if t.ack %}parent replied {{ t.ack.created_at[:10] }}{% else %}no parent reply yet{% endif %}</span><a class="btn ghost" href="{{ feedback_root }}/{{ t.id }}">Open feedback</a></div>
     </article>
     {% else %}<div class="fee-empty">No feedback notes yet.{% if staff_role!='admin' %} Record a teacher feedback note from Student progress and it will appear here once approved.{% endif %}</div>{% endfor %}
   </div>

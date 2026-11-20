@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block title %}Teacher feedback · {{ settings.app_name }}{% endblock %}
 {% block content %}
 <section class="page-head overview-banner">
-  <div><span class="eyebrow">PARENT WORKSPACE</span><h1>{{ child.full_name }}’s teacher feedback</h1><p>Observations from the teachers who assess {{ child.full_name }}, and your conversation with them about each one.</p></div>
+  <div><span class="eyebrow">PARENT WORKSPACE</span><h1>{{ child.full_name }}’s teacher feedback</h1><p>Observations from the teachers who assess {{ child.full_name }}. Reply with one tap so the teacher knows you have seen it.</p></div>
   <a class="btn ghost" href="/parent">Back to overview</a>
 </section>
 {% if children|length > 1 %}<form class="fee-period-filter" method="get" action="/parent/children/{{ child.id }}/feedback"><label>Student<select name="child">{% for s in children %}<option value="{{ s.id }}" {{ 'selected' if s.id==child.id else '' }}>{{ s.full_name }} · {{ s.admission_no }}</option>{% endfor %}</select></label><button class="btn primary">View student</button></form>{% endif %}
@@ -9,10 +9,10 @@
 <section class="fee-section">
   <div class="fee-stats">
     <div><span>Feedback notes</span><strong>{{ threads|length }}</strong><small>Approved by the academy</small></div>
-    <div><span>Awaiting your reply</span><strong class="{{ 'warn' if awaiting_replies }}">{{ awaiting_replies }}</strong><small>Teacher messages without a reply yet</small></div>
+    <div><span>Awaiting your reply</span><strong class="{{ 'warn' if awaiting_replies }}">{{ awaiting_replies }}</strong><small>Notes you have not answered yet</small></div>
     <div><span>Teachers</span><strong>{{ teachers|length }}</strong><small>{% if teachers %}{{ teachers|join(', ') }}{% else %}No feedback yet{% endif %}</small></div>
   </div>
-  <p class="muted">Each note is written by a teacher and approved by the academy before it appears here. Replies are delivered to that teacher inside this app.</p>
+  <p class="muted">Each note is written by a teacher and approved by the academy before it appears here. Your one-tap reply goes straight to that teacher.</p>
 </section>
 
 {% if threads %}
@@ -25,30 +25,42 @@
         <h2>{{ t.title }}</h2>
         <p class="feedback-meta">{{ t.teacher_name }} · {{ t.subject }} · {{ t.record_date }}{% if t.period_start and t.period_end %} · covers {{ t.period_start }} – {{ t.period_end }}{% endif %}</p>
       </div>
-      <span class="feedback-state {{ 'open' if t.awaiting_parent else 'done' }}">{{ 'Reply needed' if t.awaiting_parent else ('You replied' if t.reply_count else 'No replies yet') }}</span>
+      <span class="feedback-state {{ 'open' if t.awaiting_parent else 'done' }}">{{ 'Reply needed' if t.awaiting_parent else ('You replied' if t.ack else 'No reply yet') }}</span>
     </header>
     <p class="feedback-help">{{ feedback_help.get(t.feedback_type,'') }}</p>
     <div class="feedback-body">{{ t.details }}</div>
-    {% if t.messages %}
+    {% if t.updates %}
     <ol class="feedback-messages">
-      {% for m in t.messages %}
+      {% for m in t.updates %}
       <li class="fm {{ m.author_role }}">
-        <div class="fm-head"><strong>{{ m.author_name }}</strong><span>{{ 'You' if m.author_role=='parent' else ('Academy office' if m.author_role=='admin' else 'Teacher') }} · {{ m.created_at[:16]|replace('T',' ') }}</span></div>
+        <div class="fm-head"><strong>{{ m.author_name }}</strong><span>{{ 'Academy office' if m.author_role=='admin' else 'Teacher' }} · {{ m.created_at[:16]|replace('T',' ') }}</span></div>
         <p>{{ m.body }}</p>
       </li>
       {% endfor %}
     </ol>
     {% endif %}
-    <form class="feedback-reply" method="post" action="/parent/children/{{ child.id }}/feedback/{{ t.id }}/reply">
+    {% if t.ack %}
+    <div class="feedback-ack">
+      <div><span>Your reply</span><strong>{{ t.ack.label }}</strong><small>{{ t.ack.created_at[:16]|replace('T',' ') }}</small></div>
+      <details class="ack-change"><summary>Change reply</summary>
+        <form class="feedback-ack-form" method="post" action="/parent/children/{{ child.id }}/feedback/{{ t.id }}/acknowledge">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% for code,label in ack_options.items() %}<button class="ack-btn{{ ' active' if t.ack.body==code }}" name="ack" value="{{ code }}">{{ label }}</button>{% endfor %}
+        </form>
+      </details>
+    </div>
+    {% else %}
+    <form class="feedback-ack-form" method="post" action="/parent/children/{{ child.id }}/feedback/{{ t.id }}/acknowledge">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>Your reply<textarea name="body" rows="3" maxlength="1200" required placeholder="Ask a question, or share how things are going at home…"></textarea></label>
-      <button class="btn primary">Send reply</button>
+      <span class="ack-label">Reply with one tap</span>
+      {% for code,label in ack_options.items() %}<button class="ack-btn" name="ack" value="{{ code }}">{{ label }}</button>{% endfor %}
     </form>
+    {% endif %}
   </article>
   {% endfor %}
 </div>
 {% else %}
 <section class="panel"><div class="empty"><strong>No teacher feedback yet</strong><p>Feedback appears here once a teacher records an observation and the academy approves it.</p></div></section>
 {% endif %}
-<p class="feedback-footnote">Only approved feedback is shown. Your reply goes to the teacher who wrote the note, and their answer appears in this same conversation.</p>
+<p class="feedback-footnote">Only approved feedback is shown. Your reply is a single short answer that the teacher sees immediately — tap another option any time to change it.</p>
 {% endblock %}

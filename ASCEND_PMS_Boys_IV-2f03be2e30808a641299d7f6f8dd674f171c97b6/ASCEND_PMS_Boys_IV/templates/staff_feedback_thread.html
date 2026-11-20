@@ -15,24 +15,31 @@
   <p class="feedback-help">{{ feedback_help.get(thread.feedback_type,'') }}</p>
   <div class="feedback-body">{{ thread.details }}</div>
 
-  {% if thread.messages %}
+  {% if thread.ack %}
+  <div class="feedback-ack">
+    <div><span>The family replied</span><strong>{{ thread.ack.label }}</strong><small>{{ thread.ack.author_name }} · {{ thread.ack.created_at[:16]|replace('T',' ') }}</small></div>
+  </div>
+  {% else %}
+  <p class="muted feedback-waiting">The family has not replied yet. Their one-tap answer appears here.</p>
+  {% endif %}
+
+  {% if thread.updates %}
+  <h3 class="feedback-subhead">Follow-up notes</h3>
   <ol class="feedback-messages">
-    {% for m in thread.messages %}
+    {% for m in thread.updates %}
     <li class="fm {{ m.author_role }}">
-      <div class="fm-head"><strong>{{ m.author_name }}</strong><span>{{ 'Parent' if m.author_role=='parent' else ('Academy office' if m.author_role=='admin' else 'Teacher') }} · {{ m.created_at[:16]|replace('T',' ') }}</span></div>
+      <div class="fm-head"><strong>{{ m.author_name }}</strong><span>{{ 'Academy office' if m.author_role=='admin' else 'Teacher' }} · {{ m.created_at[:16]|replace('T',' ') }}</span></div>
       <p>{{ m.body }}</p>
     </li>
     {% endfor %}
   </ol>
-  {% else %}
-  <p class="muted feedback-waiting">The family has not replied yet. Their reply appears here.</p>
   {% endif %}
 
   <form class="feedback-reply" method="post" action="{{ feedback_root }}/{{ thread.id }}/reply">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>Your reply to the family<textarea name="body" rows="3" maxlength="1200" required placeholder="Answer their question, or add what the teacher should know next…"></textarea></label>
-    <button class="btn primary">Send reply</button>
+    <label>Add a follow-up note<textarea name="body" rows="3" maxlength="1200" required placeholder="Anything more the family should know about this note…"></textarea></label>
+    <button class="btn primary">Send note to family</button>
   </form>
 </section>
-<p class="feedback-footnote">Replies are visible to the linked parents, the teacher who wrote the note and the academy office. The original feedback stays unchanged.</p>
+<p class="feedback-footnote">The family sees this note and can answer with one tap. Notes and answers are visible to the linked parents, the teacher who wrote the original note and the academy office; the original feedback stays unchanged.</p>
 {% endblock %}

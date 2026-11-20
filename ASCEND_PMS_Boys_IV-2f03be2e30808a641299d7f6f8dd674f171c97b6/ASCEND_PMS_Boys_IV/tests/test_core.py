@@ -2323,23 +2323,33 @@ def test_teacher_feedback_conversations_parent_replies_and_privacy():
     assert 'Weekly effort note' not in outsider.get(f'/parent/children/{peer}/feedback').text
     with connect() as c:
         assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND link_path LIKE ?",(pid,f'%/children/{student}/feedback')).fetchone()['n']>=1
-    # The parent replies and the authoring teacher is notified and can answer.
-    assert 'sent' in post(parent,f'/parent/children/{student}/feedback/{rid}/reply',{'body':'Thank you, we will practise at home.'}).headers['location']
+    # Parents answer with one tap only; free text is rejected outright.
+    assert 'Reply with one tap' in page and 'Done at home' in page and 'Please contact us' in page
+    assert '<textarea' not in page
+    assert 'kind=error' in post(parent,f'/parent/children/{student}/feedback/{rid}/acknowledge',{'body':'A long free-text answer'}).headers['location']
+    assert 'kind=error' in post(parent,f'/parent/children/{student}/feedback/{rid}/acknowledge',{'ack':'not-an-option'}).headers['location']
+    with connect() as c: assert c.execute('SELECT COUNT(*) n FROM feedback_messages').fetchone()['n']==0
+    assert 'sent' in post(parent,f'/parent/children/{student}/feedback/{rid}/acknowledge',{'ack':'working'}).headers['location']
     with connect() as c:
-        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title='Parent replied to your feedback'",(teacher,)).fetchone()['n']==1
+        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title='Parent acknowledged your feedback'",(teacher,)).fetchone()['n']==1
     page=parent.get(f'/parent/children/{student}/feedback').text
-    assert 'Thank you, we will practise at home.' in page and 'You replied' in page
+    assert 'We will work on it' in page and 'You replied' in page
     inbox=teacher_client.get('/teacher/feedback').text
-    assert 'Weekly effort note' in inbox and 'Feedback Child' in inbox and 'Parent replied' in inbox
-    assert 'Thank you, we will practise at home.' in teacher_client.get(f'/teacher/feedback/{rid}').text
+    assert 'Weekly effort note' in inbox and 'Feedback Child' in inbox and 'We will work on it' in inbox
+    assert 'We will work on it' in teacher_client.get(f'/teacher/feedback/{rid}').text
+    # Tapping another option replaces the standing answer instead of stacking up.
+    assert 'sent' in post(parent,f'/parent/children/{student}/feedback/{rid}/acknowledge',{'ack':'done'}).headers['location']
+    with connect() as c: assert c.execute("SELECT COUNT(*) n FROM feedback_messages WHERE author_role='parent'").fetchone()['n']==1
+    assert 'Done at home' in teacher_client.get(f'/teacher/feedback/{rid}').text
+    # Staff add a follow-up note, which brings the note back to the family.
     assert 'sent' in post(teacher_client,f'/teacher/feedback/{rid}/reply',{'body':'Thank you — I will share practice sheets.'}).headers['location']
     page=parent.get(f'/parent/children/{student}/feedback').text
-    assert 'I will share practice sheets' in page and 'Reply needed' in page and 'Teacher' in page
+    assert 'I will share practice sheets' in page and 'Reply needed' in page and 'Done at home' in page
     with connect() as c:
-        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title='New reply from the academy'",(pid,)).fetchone()['n']==1
+        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title='New note from the academy'",(pid,)).fetchone()['n']==1
     # Other families and unrelated teachers cannot read or write the conversation.
     assert outsider.get(f'/parent/children/{student}/feedback').status_code==404
-    assert post(outsider,f'/parent/children/{student}/feedback/{rid}/reply',{'body':'Not mine'}).status_code==404
+    assert post(outsider,f'/parent/children/{student}/feedback/{rid}/acknowledge',{'ack':'done'}).status_code==404
     assert other_teacher.get(f'/teacher/feedback/{rid}').status_code==404
     assert post(other_teacher,f'/teacher/feedback/{rid}/reply',{'body':'Not mine'}).status_code==404
     # Academy office can join any conversation and can publish feedback itself.
