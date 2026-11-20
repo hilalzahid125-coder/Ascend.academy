@@ -29,9 +29,6 @@
 .parent-month-trend{border:1px solid #e2ece7;border-radius:10px;padding:14px;min-width:0;display:grid;gap:5px}
 .parent-month-trend strong,.parent-month-trend span{color:#174d3a}.parent-month-trend small{color:#5b7167}.parent-month-trend .progress{margin-top:4px}
 .parent-calendar-day:focus-visible{outline:3px solid #075c49;outline-offset:-3px;position:relative;z-index:1}
-.parent-participation-categories{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:10px}
-.parent-participation-categories>div{display:flex;justify-content:space-between;gap:12px;align-items:center;border:1px solid #e2ece7;border-radius:10px;padding:13px;min-width:0}
-.parent-participation-categories span{font-size:.85rem;color:#536b61}.parent-participation-categories strong{color:#075c49;font-size:1.05rem}
 
 .parent-own-rank{background:#e8f6ef;border-radius:8px;padding:12px}.parent-own-rank strong{color:#075c49}
 
@@ -104,7 +101,10 @@
 .analytics-bar-track{flex:1;width:100%;max-width:52px;display:flex;align-items:flex-end;border-bottom:1px solid #eef1f5}
 .analytics-bar{width:100%;border-radius:8px 8px 0 0;position:relative;min-height:4px;transition:height .4s ease}
 .analytics-bar.attend{background:linear-gradient(180deg,#34d399,var(--green))}
-.analytics-bar.participate{background:linear-gradient(180deg,#fbbf24,var(--gold))}
+.analytics-bar.challenge{background:linear-gradient(180deg,#93b4ff,#3b6fd4)}
+.analytics-bar.achieve{background:linear-gradient(180deg,#fbd071,var(--gold))}
+.analytics-bar-track.dual{gap:5px;max-width:70px}
+.analytics-bar-track.dual .analytics-bar{flex:1;width:auto}
 .analytics-bar.empty{background:repeating-linear-gradient(45deg,#f1f5f9,#f1f5f9 6px,#e8edf3 6px,#e8edf3 12px)}
 .bar-value{position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:.72rem;font-weight:800;color:var(--ink)}
 .bar-label{margin-top:8px;font-size:.7rem;color:var(--muted);font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
@@ -264,3 +264,34 @@
   .fee-period-filter label{flex:1 1 100%;min-width:0}
   .fee-period-filter select{width:100%;min-width:0}
 }
+
+/* Teacher feedback conversations — shared by the parent page and the staff inbox. */
+.feedback-list{display:flex;flex-direction:column;gap:16px}
+.feedback-thread{border:1px solid #e2ece7;border-radius:16px;padding:18px;background:#fff}
+.feedback-thread.awaiting{border-left:4px solid var(--gold,#d69a00)}
+.feedback-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.feedback-head h2{margin:8px 0 4px;font-size:1.05rem;color:#17252b;line-height:1.35}
+.feedback-badge{display:inline-block;font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:#075c49;background:#e8f4ef;border-radius:999px;padding:3px 10px}
+.feedback-meta{margin:0;font-size:.85rem;color:#64748b}
+.feedback-help{margin:10px 0 0;font-size:.8rem;color:#8a9a92}
+.feedback-body{margin:10px 0 0;color:#17252b;line-height:1.55;white-space:pre-line}
+.feedback-state{font-size:.74rem;font-weight:700;border-radius:999px;padding:4px 10px;white-space:nowrap}
+.feedback-state.open{background:#fff4dc;color:#8a5b00}
+.feedback-state.done{background:#e8f4ef;color:#075c49}
+.feedback-messages{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:10px}
+.fm{border:1px solid #e8f0ec;border-radius:12px;padding:10px 12px;background:#f6f9f8}
+.fm.parent{background:#eef7f4;border-color:#d9ebe4;margin-left:min(8%,42px)}
+.fm.teacher,.fm.admin{background:#fbfaf3;border-color:#efe9d6;margin-right:min(8%,42px)}
+.fm-head{display:flex;justify-content:space-between;gap:10px;font-size:.77rem;color:#64748b;margin-bottom:4px;flex-wrap:wrap}
+.fm-head strong{color:#17252b;font-size:.82rem}
+.fm p{margin:0;font-size:.92rem;line-height:1.5;white-space:pre-line}
+.feedback-reply{margin-top:14px;display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+.feedback-reply label,.feedback-reply textarea{width:100%}
+.feedback-footnote,.feedback-waiting{font-size:.82rem;color:#64748b}
+.feedback-entry-foot{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap;font-size:.8rem;color:#64748b}
+.fee-entry.awaiting{border-left:3px solid var(--gold,#d69a00)}
+.bars-legend .bar-key{width:10px;height:10px;border-radius:3px;display:inline-block;margin-right:6px}
+.bars-legend .bar-key.challenge{background:#3b6fd4}
+.bars-legend .bar-key.achieve{background:var(--gold,#d69a00)}
+.compact-list{max-height:330px;overflow:auto}
+@media(max-width:620px){.feedback-thread{padding:14px}.fm.parent,.fm.teacher,.fm.admin{margin-left:0;margin-right:0}.feedback-reply .btn{width:100%}}

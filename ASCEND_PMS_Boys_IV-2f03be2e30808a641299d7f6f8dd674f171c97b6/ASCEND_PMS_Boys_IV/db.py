@@ -113,6 +113,19 @@ CREATE TABLE IF NOT EXISTS academic_terms (
 CREATE INDEX IF NOT EXISTS academic_terms_dates ON academic_terms(start_date,end_date);
 CREATE INDEX IF NOT EXISTS idx_progress_student ON student_progress_records(student_id,status,record_date);
 
+-- Replies attached to an approved teacher-feedback record. The feedback record
+-- stays the single source of the observation; this table only carries the
+-- conversation between the student's teachers and their linked parents.
+CREATE TABLE IF NOT EXISTS feedback_messages (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ record_id INTEGER NOT NULL REFERENCES student_progress_records(id) ON DELETE CASCADE,
+ author_id INTEGER NOT NULL REFERENCES users(id),
+ author_role TEXT NOT NULL CHECK(author_role IN ('parent','teacher','admin')),
+ body TEXT NOT NULL,
+ created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_messages_record ON feedback_messages(record_id,id);
+
 CREATE TABLE IF NOT EXISTS fee_methods (
  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, currency TEXT NOT NULL,
  details TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL

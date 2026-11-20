@@ -1,0 +1,43 @@
+{% extends "base.html" %}{% block title %}Teacher feedback · {{ settings.app_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><span class="eyebrow">{{ 'ACADEMY OFFICE' if staff_role=='admin' else 'TEACHING' }}</span><h1>Teacher feedback</h1>
+  <p>{% if staff_role=='admin' %}Every approved feedback note, and the family's replies.{% else %}Feedback you wrote for your students and the parents' replies.{% endif %}</p></div>
+</section>
+
+{% if staff_role=='admin' %}
+<section class="fee-section">
+  <h2>Give feedback to a family</h2>
+  <p class="muted">Published immediately to that student's linked parents. Only observations that help the family support the student.</p>
+  <form class="fee-form" method="post" action="/admin/feedback/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="fee-form-grid">
+      <label>Student<select name="student_id" required><option value="">Choose a student</option>{% for s in students %}<option value="{{ s.id }}">{{ s.full_name }} · {{ s.admission_no }}{% if s.class_name %} · {{ s.class_name }}{% endif %}</option>{% endfor %}</select></label>
+      <label>Subject<select name="subject" required><option value="">Choose a subject</option>{% for subject in subjects %}<option>{{ subject }}</option>{% endfor %}</select></label>
+      <label>Category<select name="feedback_type">{% for code,label in feedback_labels.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}</select></label>
+      <label>Title<input name="title" maxlength="160" placeholder="e.g. Improvement in mathematics"></label>
+    </div>
+    <label>Feedback<textarea name="details" rows="4" maxlength="2000" required placeholder="Be specific and constructive — the parent will read this."></textarea></label>
+    <button class="btn primary">Publish feedback</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="fee-section">
+  <div class="panel-head"><div><h2>{{ 'All conversations' if staff_role=='admin' else 'Your conversations' }}</h2><p>{{ threads|length }} note{{ '' if threads|length==1 else 's' }}{% if awaiting %} · {{ awaiting }} awaiting your reply{% endif %}</p></div>
+  {% if staff_role=='admin' %}<form class="fee-period-filter" method="get" action="/admin/feedback"><label>Student<select name="student" onchange="this.form.submit()"><option value="">All students</option>{% for s in students %}<option value="{{ s.id }}" {{ 'selected' if selected_student==s.id else '' }}>{{ s.full_name }} · {{ s.admission_no }}</option>{% endfor %}</select></label></form>{% endif %}</div>
+  <div class="fee-list">
+    {% for t in threads %}
+    <article class="fee-entry feedback-entry{{ ' awaiting' if t.awaiting_staff }}">
+      <div class="fee-entry-head">
+        <div><h3>{{ t.title }}</h3><p>{{ t.student_name }} · {{ t.admission_no }}{% if t.class_name %} · {{ t.class_name }}{% endif %} · {{ t.subject }} · {{ t.record_date }}</p></div>
+        <span class="feedback-state {{ 'open' if t.awaiting_staff else 'done' }}">{{ 'Parent replied' if t.awaiting_staff else ('No reply yet' if not t.reply_count else 'Answered') }}</span>
+      </div>
+      <p>{{ feedback_labels.get(t.feedback_type,'General feedback') }} · {{ t.teacher_name }}</p>
+      {% if t.details %}<p>{{ t.details }}</p>{% endif %}
+      <div class="feedback-entry-foot"><span>{{ t.reply_count }} repl{{ 'y' if t.reply_count==1 else 'ies' }} · last activity {{ t.last_activity[:10] }}</span><a class="btn ghost" href="{{ feedback_root }}/{{ t.id }}">Open conversation</a></div>
+    </article>
+    {% else %}<div class="fee-empty">No feedback notes yet.{% if staff_role!='admin' %} Record a teacher feedback note from Student progress and it will appear here once approved.{% endif %}</div>{% endfor %}
+  </div>
+</section>
+{% endblock %}

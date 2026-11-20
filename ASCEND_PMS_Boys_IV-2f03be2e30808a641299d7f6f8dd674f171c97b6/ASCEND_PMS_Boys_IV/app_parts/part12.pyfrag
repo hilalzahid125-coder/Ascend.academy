@@ -382,7 +382,7 @@ def parent_analytics(request:Request,student_id:int,period:str='month',term_id:i
             WHERE a.status='active' ORDER BY a.points_required,a.name""",(sid,)).fetchall()
         scores=point_totals(conn,sid)
         # ---- Bucket series ----
-        academic=[];att_series=[];part_series=[];assign_series=[]
+        academic=[];att_series=[];recognition_series=[];assign_series=[]
         for b in buckets:
             entries=[r for r in progress if r['record_date']<=today.isoformat() and bucket_of(r['record_date'])==b]
             scored=[r for r in entries if r['kind']=='assessment' and r['score'] is not None and r['score_max'] and r['score_max']>0]
@@ -392,10 +392,9 @@ def parent_analytics(request:Request,student_id:int,period:str='month',term_id:i
             att_series.append({'label':bucket_label(b),'total':len(counted),
                 'attended':sum(r['status'] in ('present','late') for r in counted),
                 'rate':round(100*sum(r['status'] in ('present','late') for r in counted)/len(counted)) if counted else None})
-            part=[r for r in entries if r['kind']=='participation']
-            part_scored=[r for r in part if r['score'] is not None and r['score_max'] and r['score_max']>0]
-            part_series.append({'label':bucket_label(b),'count':len(part),
-                'average':round(sum(100*r['score']/r['score_max'] for r in part_scored)/len(part_scored),1) if part_scored else None})
+            recognition_series.append({'label':bucket_label(b),
+                'challenges':sum(1 for c in challenges if c['awarded'] and bucket_of(str(c['updated_at'] or c['created_at'])[:10])==b),
+                'achievements':sum(1 for a in achievements if a['unlocked_at'] and bucket_of(a['unlocked_at'][:10])==b)})
             assigns=[r for r in entries if r['kind']=='assignment']
             assign_series.append({'label':bucket_label(b),'completed':sum(r['outcome']=='completed' for r in assigns),'total':len(assigns)})
         window_progress=[r for r in progress if in_window(r['record_date'])]
@@ -418,8 +417,6 @@ def parent_analytics(request:Request,student_id:int,period:str='month',term_id:i
         academic_now=metric(window_progress,'assessment'); academic_prev=metric(prev_progress,'assessment')
         att_now,att_att,att_counted=att_rate(window_attendance)
         att_prev,_,_=att_rate(prev_attendance)
-        part_records=[r for r in window_progress if r['kind']=='participation']
-        part_prev=[r for r in prev_progress if r['kind']=='participation']
         assign_records=[r for r in window_progress if r['kind']=='assignment']
         assign_prev=[r for r in prev_progress if r['kind']=='assignment']
         assign_now_rate=round(100*sum(r['outcome']=='completed' for r in assign_records)/len(assign_records)) if assign_records else None
@@ -434,12 +431,37 @@ def parent_analytics(request:Request,student_id:int,period:str='month',term_id:i
             if abs(delta)<0.5: return {'direction':'flat','delta':0}
             return {'direction':'up' if delta>0 else 'down','delta':delta}
         earned=[a for a in achievements if a['unlocked_at']]
-        # ---- Subject strengths ----
+        # ---- Academic performance: weighted composite of recorded activity ----
+        # Only areas with real approved records take part, and the weights of the
+        # missing areas are redistributed, so a student is never penalised for an
+        # area the academy has not recorded yet.
+        def _pct(n,d): return round(100*n/d,1) if d else None
+        total_achievements=len(achievements)
+        achieved_now=_pct(len(earned),total_achievements)
+        achieved_prev=_pct(sum(1 for a in achievements if a['unlocked_at'] and str(a['unlocked_at'])[:10]<=prev_end.isoformat()),total_achievements)
+        streak_now=window_insights['current_streak']; streak_prev=prev_insights['current_streak']
+        consistency_now=min(100,round(100*streak_now/10)) if window_insights['total'] else None
+        consistency_prev=min(100,round(100*streak_prev/10)) if prev_insights['total'] else None
+        def _composite(parts):
+            live=[p for p in parts if p[1] is not None]
+            weight=sum(p[2] for p in live)
+            if not weight: return None,[]
+            return round(sum(p[1]*p[2] for p in live)/weight),[
+                {'label':p[0],'value':p[1],'weight':p[2],'share':round(100*p[2]/weight)} for p in live]
+        academic_score,academic_parts=_composite([
+            ('Assessment results',academic_now,35),('Attendance',att_now,20),('Challenge completion',challenge_now,15),
+            ('Assignment completion',assign_now_rate,10),('Learning consistency',consistency_now,10),('Achievements unlocked',achieved_now,10)])
+        academic_score_prev,_=_composite([
+            ('Assessment results',academic_prev,35),('Attendance',att_prev,20),('Challenge completion',challenge_prev,15),
+            ('Assignment completion',assign_prev_rate,10),('Learning consistency',consistency_prev,10),('Achievements unlocked',achieved_prev,10)])
+        feedback_threads=_student_feedback(conn,sid)
+        # ---- Subject strengths: recorded from the student's first result ----
         subject_stats={}
-        for r in window_progress:
+        for r in progress:
             if r['kind']=='assessment' and r['score'] is not None and r['score_max'] and r['score_max']>0:
                 entry=subject_stats.setdefault(r['subject'],[])
                 entry.append(100*r['score']/r['score_max'])
+        journey_start=min((r['record_date'] for r in progress),default=None)
         subject_rows=[{'subject':s,'average':round(sum(v)/len(v),1),'count':len(v)} for s,v in subject_stats.items()]
         subject_rows.sort(key=lambda x:(-x['average'],x['subject']))
         strengths=[s for s in subject_rows if s['average']>=75][:4]
@@ -481,18 +503,19 @@ def parent_analytics(request:Request,student_id:int,period:str='month',term_id:i
         return render(request,'parent_analytics.html',{
             'child':child,'children':_parent_children(conn,parent['id']),'parent_child_id':sid,'period':period,'terms':terms,'term_id':term['id'] if period=='term' else 0,
             'period_label':'Last 7 days' if period=='week' else ('Last 6 months' if period=='month' else term['name']),
-            'academic':academic,'attendance_series':att_series,'participation_series':part_series,'assignment_series':assign_series,
+            'academic':academic,'attendance_series':att_series,'recognition_series':recognition_series,'assignment_series':assign_series,
             'academic_chart':academic_chart,
             'academic_now':academic_now,'academic_prev':academic_prev,'academic_trend':trend(academic_now,academic_prev),
+            'academic_score':academic_score,'academic_score_prev':academic_score_prev,'academic_score_trend':trend(academic_score,academic_score_prev),'academic_parts':academic_parts,
             'att_now':att_now,'att_prev':att_prev,'att_trend':trend(att_now,att_prev),'att_att':att_att,'att_counted':att_counted,
             'streak':window_insights['current_streak'],'best_streak':window_insights['best_streak'],
-            'participation_now':len(part_records),'participation_prev':len(part_prev),'participation_trend':trend(len(part_records),len(part_prev)),
-            'participation_avg':metric(window_progress,'participation'),
+            'feedback_threads':feedback_threads,'feedback_open':sum(t['awaiting_parent'] for t in feedback_threads),
+            'feedback_latest':feedback_threads[0] if feedback_threads else None,
             'challenge_now':challenge_now,'challenge_prev':challenge_prev,'challenge_trend':trend(challenge_now,challenge_prev),
             'challenge_joined':joined_now,'challenge_completed':completed_now,
             'assign_now':assign_now_rate,'assign_prev':assign_prev_rate,'assign_trend':trend(assign_now_rate,assign_prev_rate),
             'assign_completed':sum(r['outcome']=='completed' for r in assign_records),'assign_total':len(assign_records),
             'achievements':achievements,'achievement_earned':len(earned),'achievement_total':len(achievements),
-            'scores':scores,'strengths':strengths,'weaker_subjects':weaker,'improvements':improvements,'heat':heat,
+            'scores':scores,'strengths':strengths,'weaker_subjects':weaker,'improvements':improvements,'heat':heat,'journey_start':journey_start,
             'attendance_note':(f"{att_counted} session(s) recorded this period — holidays and unmarked sessions are excluded from the attendance rate." if att_counted else 'No attended sessions recorded yet for this period.'),
             'attendance_note':'Attended includes present and late; holiday absences and unmarked or excused-only sessions are not counted against the rate.'})

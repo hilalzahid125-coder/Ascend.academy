@@ -1651,7 +1651,7 @@ def test_parent_dashboard_timetable_uses_real_student_membership_and_child_selec
     one=parent.get(f'/parent?child={ids["A-WORK01"]}').text
     assert 'Workspace Child One’s overview' in one and '>37<' in one
     assert 'Individual Teacher' in one and 'General Teacher' not in one and 'Past Teacher' not in one and 'Private Workspace Child' not in one
-    assert all(f'href="/parent/children/{ids["A-WORK01"]}/{part}"' in one for part in ('classes','attendance','report','participation','analytics','leaderboard','achievements','challenges-rewards','fees'))
+    assert all(f'href="/parent/children/{ids["A-WORK01"]}/{part}"' in one for part in ('classes','attendance','report','feedback','analytics','leaderboard','achievements','challenges-rewards','fees'))
     one_classes=parent.get(f'/parent/children/{ids["A-WORK01"]}/classes').text
     assert 'Assigned classes' in one_classes and 'Individual Teacher' in one_classes and '10:00 – 10:40' in one_classes
     assert 'General Teacher' not in one_classes and 'Past Teacher' not in one_classes
@@ -1829,7 +1829,7 @@ def test_parent_overview_real_metrics_and_academic_session():
         return re.findall(r'<strong[^>]*>(.*?)</strong>',match.group(1),re.S)
     page=parent.get(f'/parent?child={child}').text
     assert metric(page,'Academic session')==['Not set for today']
-    assert metric(page,'Overall performance')==['Not recorded'] and metric(page,'Participation score')==['Not recorded']
+    assert metric(page,'Overall performance')==['Not recorded'] and metric(page,'Teacher feedback')==['0 awaiting reply']
     assert metric(page,'Attendance')==['75%'] and metric(page,'Current learning streak')==['2 days']
     assert metric(page,'Total achievements')==['1']
     assert metric(page,'Outstanding fee balance')==['PKR 750.00','USD 50.00']
@@ -1859,29 +1859,30 @@ def test_parent_overview_real_metrics_and_academic_session():
     post(owner,'/admin/settings/academic-session',data)
     # Only approved assessments count, each percentage having equal weight.
     base={'student_id':child,'subject':'Maths','record_date':today.isoformat(),'details':'','outcome':'pending'}
-    for title,kind,score,maxscore in [('Assessment One','assessment','1','2'),('Assessment Two','assessment','9','10'),('Participation One','participation','0','10'),('Participation Two','participation','3','4'),('No score participation','participation','',''),('Outstanding homework','assignment','','')]:
+    for title,kind,score,maxscore in [('Assessment One','assessment','1','2'),('Assessment Two','assessment','9','10'),('Outstanding homework','assignment','','')]:
         result=post(teacher,'/teacher/progress/records',dict(base,title=title,kind=kind,score=score,score_max=maxscore))
         assert 'submitted' in result.headers['location']
         with connect() as c: rid=c.execute('SELECT id FROM student_progress_records WHERE title=? AND student_id=?',(title,child)).fetchone()['id']
         if title!='Assessment Two': review_progress(owner,rid,{'decision':'approved'})
     pending_page=parent.get(f'/parent?child={child}').text
     assert metric(pending_page,'Overall performance')==['50.0%']
-    assert metric(pending_page,'Participation score')==['37.5%'] and metric(pending_page,'Pending assignments')==['1']
+    assert metric(pending_page,'Pending assignments')==['1']
+    assert metric(pending_page,'Teacher feedback')==['0 awaiting reply']
     assert 'Assessment Two' not in pending_page
     with connect() as c: rid=c.execute("SELECT id FROM student_progress_records WHERE title='Assessment Two' AND student_id=?",(child,)).fetchone()['id']
     review_progress(owner,rid,{'decision':'approved'})
     assert metric(parent.get(f'/parent?child={child}').text,'Overall performance')==['70.0%']
-    invalid=post(teacher,'/teacher/progress/records',dict(base,title='Partial score rejected',kind='participation',score='4',score_max=''))
+    invalid=post(teacher,'/teacher/progress/records',dict(base,title='Partial score rejected',kind='assessment',score='4',score_max=''))
     assert 'valid%20score' in invalid.headers['location']
     with connect() as c:
         assert not c.execute("SELECT id FROM student_progress_records WHERE title='Partial score rejected'").fetchone()
-        rid=c.execute("SELECT id FROM student_progress_records WHERE title='Participation Two' AND student_id=?",(child,)).fetchone()['id']
-    revision=post(teacher,f'/teacher/progress/records/{rid}/revise',dict(base,title='Participation corrected',score='1',score_max='4'))
+        rid=c.execute("SELECT id FROM student_progress_records WHERE title='Assessment Two' AND student_id=?",(child,)).fetchone()['id']
+    revision=post(teacher,f'/teacher/progress/records/{rid}/revise',dict(base,title='Assessment corrected',kind='assessment',score='5',score_max='10'))
     assert 'submitted' in revision.headers['location']
-    assert metric(parent.get(f'/parent?child={child}').text,'Participation score')==['37.5%']
-    with connect() as c: revised=c.execute("SELECT id FROM student_progress_records WHERE title='Participation corrected' AND student_id=?",(child,)).fetchone()['id']
+    assert metric(parent.get(f'/parent?child={child}').text,'Overall performance')==['70.0%']
+    with connect() as c: revised=c.execute("SELECT id FROM student_progress_records WHERE title='Assessment corrected' AND student_id=?",(child,)).fetchone()['id']
     review_progress(owner,revised,{'decision':'approved'})
-    assert metric(parent.get(f'/parent?child={child}').text,'Participation score')==['12.5%']
+    assert metric(parent.get(f'/parent?child={child}').text,'Overall performance')==['50.0%']
     assert 'cleared' in post(owner,'/admin/settings/academic-session',{'name':'','start':'','end':''}).headers['location']
 
 
@@ -2081,18 +2082,18 @@ def test_admin_teaching_assigned_profiles_periodic_feedback_and_privacy():
     assert 'Monthly learning feedback' not in guardian.get('/parent').text
     assert 'Feedback for parents' in owner.get('/admin/teaching').text
     review_progress(owner,rid,{'decision':'approved'})
-    parent=guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text
+    parent=guardian.get(f'/parent/children/{students["A-TCH501"]}/feedback').text
     assert 'Monthly learning feedback' in parent and 'Feedback for parents' in parent and record['period_start'] in parent and 'Excellent improvement' in parent
     report=guardian.get(f'/parent/children/{students["A-TCH501"]}/report').text
     assert 'Feedback for parents' in report and 'Excellent improvement' in report
     # Approved feedback is immutable until an approved correction supersedes it.
     revision=post(staff,f'/admin/teaching/records/{rid}/revise',dict(record,title='Corrected classroom observation',feedback_type='behavior',details='Participates respectfully.'))
     assert 'submitted' in revision.headers['location']
-    assert 'Corrected classroom observation' not in guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text
+    assert 'Corrected classroom observation' not in guardian.get(f'/parent/children/{students["A-TCH501"]}/feedback').text
     with connect() as c: revised=c.execute("SELECT id FROM student_progress_records WHERE student_id=? AND title='Corrected classroom observation'",(students['A-TCH501'],)).fetchone()['id']
     review_progress(owner,revised,{'decision':'approved'})
-    assert 'Corrected classroom observation' in guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text and 'Monthly learning feedback' not in guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text
-    assert 'Classroom observation' in guardian.get(f'/parent/children/{students["A-TCH501"]}/participation').text
+    assert 'Corrected classroom observation' in guardian.get(f'/parent/children/{students["A-TCH501"]}/feedback').text and 'Monthly learning feedback' not in guardian.get(f'/parent/children/{students["A-TCH501"]}/feedback').text
+    assert 'Classroom observation' in guardian.get(f'/parent/children/{students["A-TCH501"]}/feedback').text
     # Loss of a teaching assignment immediately denies profile and updates.
     with connect() as c: c.execute("UPDATE class_schedules SET active=0 WHERE student_id=? AND teacher_id=?",(students['A-TCH501'],teachers['ADMIN-TCH501']))
     assert staff.get(f'/admin/teaching/students/{students["A-TCH501"]}').status_code==404
@@ -2289,106 +2290,80 @@ def test_parent_attendance_section_calendar_privacy_and_live_corrections(monkeyp
     assert '<span>Current attendance streak</span><strong>2 days</strong>' in updated
 
 
-def test_participation_trends_count_real_records_and_scores():
-    from datetime import date
-    from app import _participation_insights
-    def row(day,category,score=None,maxscore=None):
-        return {'kind':'participation','record_date':day,'participation_type':category,'score':score,'score_max':maxscore}
-    data=[row('2024-12-29','general',0,10),row('2025-01-10','answers',8,10),
-          row('2025-03-01','group',None,None),row('2025-03-03','group',0,10),
-          row('2025-03-05','events',8,10),row('2025-03-06','homework',9,10)]
-    result=_participation_insights(data,date(2025,3,5))
-    assert result['average']==50.0 and result['scored']==5
-    categories={x['label']:x['count'] for x in result['categories']}
-    assert categories['Group activities']==2 and categories['Special events']==1 and categories['Discussions']==0
-    months={r['month']:r for r in result['months']}
-    assert (months['2024-12']['count'],months['2024-12']['average'])==(1,0.0)
-    assert (months['2025-02']['count'],months['2025-02']['average'])==(0,None)
-    assert (months['2025-03']['count'],months['2025-03']['scored'],months['2025-03']['average'])==(3,2,40.0)
-
-
-def test_participation_teacher_approval_categories_privacy_and_no_points():
-    import json, re
-    from app import _class_now, PARTICIPATION_LABELS
+def test_teacher_feedback_conversations_parent_replies_and_privacy():
+    import json
+    from app import _class_now
     now=iso_now(); today=_class_now().date().isoformat()
-    owner=TestClient(app); staff=TestClient(app); other_teacher=TestClient(app); parent=TestClient(app)
+    owner=TestClient(app); staff=TestClient(app); teacher_client=TestClient(app)
+    other_teacher=TestClient(app); parent=TestClient(app); outsider=TestClient(app)
     with connect() as c:
-        student=c.execute("INSERT INTO users(admission_no,full_name,role,status,claimed,class_name,created_at) VALUES ('A-ACTV01','Activity Child','student','active',1,'O-Level - Grade 9',?) RETURNING id",(now,)).fetchone()['id']
-        private=c.execute("INSERT INTO users(admission_no,full_name,role,status,claimed,class_name,created_at) VALUES ('A-ACTV02','Private Activity Child','student','active',1,'O-Level - Grade 9',?) RETURNING id",(now,)).fetchone()['id']
-        teacher=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,admin_level,admin_permissions,created_at) VALUES ('ADMIN-ACTV01','Activity Teacher',?,'admin','active',1,'staff',?,?) RETURNING id",(hash_password('TeacherStrong123'),'["teaching"]',now)).fetchone()['id']
-        other=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('T-ACTV02','Other Activity Teacher',?,'teacher','active',1,?) RETURNING id",(hash_password('TeacherStrong123'),now)).fetchone()['id']
-        pid=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('P-ACTV01','Activity Parent',?,'parent','active',1,?) RETURNING id",(hash_password('ParentStrong123'),now)).fetchone()['id']
+        student=c.execute("INSERT INTO users(admission_no,full_name,role,status,claimed,class_name,created_at) VALUES ('A-FBK01','Feedback Child','student','active',1,'O-Level - Grade 9',?) RETURNING id",(now,)).fetchone()['id']
+        peer=c.execute("INSERT INTO users(admission_no,full_name,role,status,claimed,class_name,created_at) VALUES ('A-FBK02','Peer Feedback Child','student','active',1,'O-Level - Grade 9',?) RETURNING id",(now,)).fetchone()['id']
+        teacher=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('T-FBK01','Feedback Teacher',?,'teacher','active',1,?) RETURNING id",(hash_password('TeacherStrong123'),now)).fetchone()['id']
+        teacher2=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('T-FBK02','Other Feedback Teacher',?,'teacher','active',1,?) RETURNING id",(hash_password('TeacherStrong123'),now)).fetchone()['id']
+        pid=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('P-FBK01','Feedback Parent',?,'parent','active',1,?) RETURNING id",(hash_password('ParentStrong123'),now)).fetchone()['id']
+        pid2=c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('P-FBK02','Other Feedback Parent',?,'parent','active',1,?) RETURNING id",(hash_password('ParentStrong123'),now)).fetchone()['id']
         c.execute('INSERT INTO parent_student_links(parent_id,student_id,created_at) VALUES (?,?,?)',(pid,student,now))
-        for sid,tid in [(student,teacher),(private,other)]:
+        c.execute('INSERT INTO parent_student_links(parent_id,student_id,created_at) VALUES (?,?,?)',(pid2,peer,now))
+        for sid,tid in [(student,teacher),(peer,teacher2)]:
             c.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?)',(sid,json.dumps({'subjects':['Maths']}),now))
             c.execute("INSERT INTO class_schedules(student_id,grade,subject,teacher_id,recurrence,weekday,start_time,duration_minutes,created_at) VALUES (?,'O-Level - Grade 9','Maths',?,'weekly',0,'09:00',40,?)",(sid,tid,now))
-        admin=c.execute("SELECT id FROM users WHERE admission_no='ADMIN-0001'").fetchone()['id']
-        challenge=c.execute("INSERT INTO challenges(title,description,category,points,status,created_by,created_at) VALUES ('Separate challenge','Existing challenge record','activity',25,'active',?,?) RETURNING id",(admin,now)).fetchone()['id']
-        c.execute("INSERT INTO challenge_participations(challenge_id,user_id,status,created_at,updated_at) VALUES (?,?,'joined',?,?)",(challenge,student,now,now))
-    for client,no,pw,path in [(owner,'ADMIN-0001','StrongAdmin123','/login'),(staff,'ADMIN-ACTV01','TeacherStrong123','/login'),(other_teacher,'T-ACTV02','TeacherStrong123','/login'),(parent,'P-ACTV01','ParentStrong123','/parent/login')]:
+    for client,no,pw,path in [(owner,'ADMIN-0001','StrongAdmin123','/login'),(teacher_client,'T-FBK01','TeacherStrong123','/login'),
+                              (other_teacher,'T-FBK02','TeacherStrong123','/login'),(parent,'P-FBK01','ParentStrong123','/parent/login'),
+                              (outsider,'P-FBK02','ParentStrong123','/parent/login')]:
         csrf(client,path); post(client,path,{'admission_no':no,'password':pw})
-    page=staff.get('/admin/teaching').text
-    for code in PARTICIPATION_LABELS: assert f'value="{code}"' in page
-    base={'student_id':student,'subject':'Maths','kind':'participation','title':'Activity test','record_date':today,'details':'Constructive activity feedback.'}
-    assert post(staff,'/admin/teaching/records',dict(base,student_id=private,participation_type='classroom')).status_code==403
-    assert post(staff,'/admin/teaching/records',dict(base,subject='Computer Science',participation_type='classroom')).status_code==403
-    assert 'kind=error' in post(staff,'/admin/teaching/records',dict(base,participation_type='bogus')).headers['location']
-    assert 'kind=error' in post(staff,'/admin/teaching/records',dict(base,participation_type='classroom',score='1',score_max='')).headers['location']
-    assert staff.get('/admin/fees').status_code==403 and staff.get('/admin/students').status_code==403
-    ids=[]
-    for i,code in enumerate(PARTICIPATION_LABELS):
-        payload=dict(base,title='Activity '+code,participation_type=code)
-        if i==0: payload.update(score='0',score_max='10')
-        if i==1: payload.update(score='8',score_max='10')
-        assert 'submitted' in post(staff,'/admin/teaching/records',payload).headers['location']
-        with connect() as c: rid=c.execute('SELECT id FROM student_progress_records WHERE student_id=? AND title=?',(student,payload['title'])).fetchone()['id']
-        ids.append(rid)
-    before=parent.get('/parent').text
-    assert 'Activity classroom' not in before and 'Constructive activity feedback.' not in before
-    challenges_before=parent.get(f'/parent/children/{student}/challenges-rewards').text
-    assert 'Separate challenge' in challenges_before and 'Joined' in challenges_before
-    assert other_teacher.get(f'/teacher/progress/records/{ids[0]}/edit').status_code==404
-    assert review_progress(staff,ids[0],{'decision':'approved'}).status_code==403
-    assert 'Classroom participation' in owner.get('/admin/teaching').text
-    # Older clients omitting the new field preserve the stored category on edit.
-    edit=post(staff,f'/admin/teaching/records/{ids[0]}/edit',dict(base,title='Activity classroom',score='0',score_max='10'))
-    assert 'submitted' in edit.headers['location']
-    with connect() as c: assert c.execute('SELECT participation_type FROM student_progress_records WHERE id=?',(ids[0],)).fetchone()['participation_type']=='classroom'
-    # Rejected activities remain hidden until a valid edit is resubmitted and approved.
-    assert 'rejected' in review_progress(owner,ids[3],{'decision':'rejected','note':'Please clarify the activity.'}).headers['location']
-    assert 'Please clarify the activity.' in staff.get(f'/admin/teaching/records/{ids[3]}/edit').text
-    assert 'kind=error' in post(staff,f'/admin/teaching/records/{ids[3]}/edit',dict(base,title='Activity group',participation_type='invalid')).headers['location']
-    assert 'submitted' in post(staff,f'/admin/teaching/records/{ids[3]}/edit',dict(base,title='Activity group',participation_type='group')).headers['location']
-    for rid in ids: assert 'approved' in review_progress(owner,rid,{'decision':'approved'}).headers['location']
-    visible=parent.get(f'/parent/children/{student}/participation').text
-    assert 'Activity classroom' in visible and 'Constructive activity feedback.' in visible
-    assert '40.0%' in visible and '2 scored records' in visible
-    assert 'Private Activity Child' not in visible
-    assert 'Separate challenge' in parent.get(f'/parent/children/{student}/challenges-rewards').text
-    assert parent.get(f'/parent?child={private}').status_code==404
-    assert parent.get(f'/parent/children/{private}/report').status_code==404
+    record={'student_id':student,'subject':'Maths','kind':'feedback','title':'Weekly effort note','details':'Needs to focus on algebra practice.','feedback_type':'improvement','record_date':today}
+    assert 'submitted' in post(teacher_client,'/teacher/progress/records',record).headers['location']
+    with connect() as c: rid=c.execute("SELECT id FROM student_progress_records WHERE student_id=? AND title='Weekly effort note'",(student,)).fetchone()['id']
+    # Unapproved feedback is invisible; approval publishes it to the conversation page.
+    assert 'Weekly effort note' not in parent.get(f'/parent/children/{student}/feedback').text
+    review_progress(owner,rid,{'decision':'approved'})
+    page=parent.get(f'/parent/children/{student}/feedback').text
+    assert 'Weekly effort note' in page and 'Needs to focus on algebra practice.' in page and 'Improvement note' in page
+    assert 'Weekly effort note' not in outsider.get(f'/parent/children/{peer}/feedback').text
+    with connect() as c:
+        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND link_path LIKE ?",(pid,f'%/children/{student}/feedback')).fetchone()['n']>=1
+    # The parent replies and the authoring teacher is notified and can answer.
+    assert 'sent' in post(parent,f'/parent/children/{student}/feedback/{rid}/reply',{'body':'Thank you, we will practise at home.'}).headers['location']
+    with connect() as c:
+        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title='Parent replied to your feedback'",(teacher,)).fetchone()['n']==1
+    page=parent.get(f'/parent/children/{student}/feedback').text
+    assert 'Thank you, we will practise at home.' in page and 'You replied' in page
+    inbox=teacher_client.get('/teacher/feedback').text
+    assert 'Weekly effort note' in inbox and 'Feedback Child' in inbox and 'Parent replied' in inbox
+    assert 'Thank you, we will practise at home.' in teacher_client.get(f'/teacher/feedback/{rid}').text
+    assert 'sent' in post(teacher_client,f'/teacher/feedback/{rid}/reply',{'body':'Thank you — I will share practice sheets.'}).headers['location']
+    page=parent.get(f'/parent/children/{student}/feedback').text
+    assert 'I will share practice sheets' in page and 'Reply needed' in page and 'Teacher' in page
+    with connect() as c:
+        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND title='New reply from the academy'",(pid,)).fetchone()['n']==1
+    # Other families and unrelated teachers cannot read or write the conversation.
+    assert outsider.get(f'/parent/children/{student}/feedback').status_code==404
+    assert post(outsider,f'/parent/children/{student}/feedback/{rid}/reply',{'body':'Not mine'}).status_code==404
+    assert other_teacher.get(f'/teacher/feedback/{rid}').status_code==404
+    assert post(other_teacher,f'/teacher/feedback/{rid}/reply',{'body':'Not mine'}).status_code==404
+    # Academy office can join any conversation and can publish feedback itself.
+    assert 'sent' in post(owner,f'/admin/feedback/{rid}/reply',{'body':'Academy office confirms the plan.'}).headers['location']
+    assert 'Academy office confirms the plan.' in parent.get(f'/parent/children/{student}/feedback').text
+    assert 'Weekly effort note' in owner.get('/admin/feedback').text
+    assert 'published' in post(owner,'/admin/feedback/new',{'student_id':peer,'subject':'Maths','feedback_type':'academic','title':'Reading progress','details':'Reading fluency improved this month.'}).headers['location']
+    assert 'Reading progress' in outsider.get(f'/parent/children/{peer}/feedback').text
+    assert 'Reading progress' not in parent.get(f'/parent/children/{student}/feedback').text
+    # Participation is retired everywhere: the page, the record type and the analytics card.
+    assert parent.get(f'/parent/children/{student}/participation').status_code==404
+    assert 'kind=error' in post(teacher_client,'/teacher/progress/records',dict(record,title='No longer allowed',kind='participation')).headers['location']
+    with connect() as c: assert not c.execute("SELECT id FROM student_progress_records WHERE title='No longer allowed'").fetchone()
+    analytics=parent.get(f'/parent/children/{student}/analytics').text
+    assert 'Academic performance' in analytics and 'How this figure is built' in analytics
+    assert 'Teacher feedback' in analytics and 'CHALLENGES &amp; RECOGNITION' in analytics
+    assert 'Participation' not in analytics
     report=parent.get(f'/parent/children/{student}/report').text
-    assert 'Classroom participation' in report and 'Activity classroom' in report
-    # Teacher corrections retain the old approved record until review, including when the category changes.
-    revised=post(staff,f'/admin/teaching/records/{ids[0]}/revise',dict(base,title='Revised participation',participation_type='events',score='6',score_max='10'))
-    assert 'submitted' in revised.headers['location']
-    assert 'Activity classroom' in parent.get(f'/parent/children/{student}/participation').text and 'Revised participation' not in parent.get(f'/parent/children/{student}/participation').text
-    with connect() as c:
-        revision=c.execute("SELECT id,participation_type FROM student_progress_records WHERE student_id=? AND title='Revised participation'",(student,)).fetchone()
-        assert revision['participation_type']=='events'; revision_id=revision['id']
-    assert 'Previous category: Classroom participation' in owner.get('/admin/teaching').text
-    review_progress(owner,revision_id,{'decision':'approved'})
-    revised_page=parent.get(f'/parent/children/{student}/participation').text
-    assert 'Revised participation' in revised_page and 'Activity classroom' not in revised_page
-    assert '70.0%' in revised_page
-    # Neither submission, approval, nor correction creates or changes academy points.
-    with connect() as c:
-        assert c.execute('SELECT COUNT(*) n FROM point_transactions WHERE user_id=?',(student,)).fetchone()['n']==0
-        assert c.execute('SELECT participation_type FROM student_progress_records WHERE id=?',(ids[0],)).fetchone()['participation_type']=='classroom'
-    # Revoking the class assignment immediately removes the teacher's access.
-    with connect() as c: c.execute('UPDATE class_schedules SET active=0 WHERE student_id=? AND teacher_id=?',(student,teacher))
-    assert staff.get(f'/admin/teaching/records/{revision_id}/revise').status_code==404
-    assert post(staff,'/admin/teaching/records',dict(base,participation_type='events')).status_code==403
+    assert 'Weekly effort note' in report and 'Reading progress' not in report
+    pdf=parent.get(f'/parent/children/{student}/report.pdf')
+    assert pdf.status_code==200 and pdf.content.startswith(b'%PDF-')
+    # Revoking the class assignment removes the teacher's conversation access.
+    with connect() as c: c.execute("UPDATE class_schedules SET active=0 WHERE student_id=? AND teacher_id=?",(student,teacher))
+    assert teacher_client.get(f'/teacher/feedback/{rid}').status_code==404
 
 
 def test_sqlite_participation_category_migration_preserves_legacy_data():

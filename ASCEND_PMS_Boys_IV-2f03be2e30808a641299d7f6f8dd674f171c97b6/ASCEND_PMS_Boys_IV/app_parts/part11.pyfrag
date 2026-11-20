@@ -186,34 +186,6 @@ def _attendance_insights(attendance, holiday_dates, today):
                 'percent':round(100*week_attended/len(week)) if week else None},
         'months':months,'rolling':rolling}
 
-PARTICIPATION_LABELS={
-    'classroom':'Classroom participation', 'answers':'Questions answered',
-    'discussions':'Discussions', 'group':'Group activities',
-    'homework':'Homework engagement', 'activities':'Classroom activities',
-    'competitions':'Competitions', 'events':'Special events',
-    'extracurricular':'Extracurricular participation', 'general':'General participation'
-}
-
-
-def _participation_insights(progress,today):
-    # progress contains only approved, current records for this linked student.
-    records=[r for r in progress if r['kind']=='participation']
-    categories=[{'label':label,'count':sum(r['participation_type']==code for r in records)}
-                for code,label in PARTICIPATION_LABELS.items()]
-    months=[]
-    for offset in range(5,-1,-1):
-        month_index=today.year*12+today.month-1-offset
-        year,month=divmod(month_index,12); month+=1
-        key=f'{year:04d}-{month:02d}'
-        entries=[r for r in records if r['record_date'][:7]==key and r['record_date']<=today.isoformat()]
-        scored=[r for r in entries if r['score'] is not None and r['score_max'] and r['score_max']>0]
-        months.append({'month':key,'label':date(year,month,1).strftime('%b %Y'),'count':len(entries),
-            'scored':len(scored),'average':_mean_record_percentage(entries,'participation')})
-    return {'records':records,'categories':categories,'months':months,
-            'average':_mean_record_percentage(records,'participation'),
-            'scored':sum(r['score'] is not None and r['score_max'] is not None and r['score_max']>0 for r in records)}
-
-
 def _mean_record_percentage(records,kind):
     scored=[r for r in records if r['kind']==kind and r['score'] is not None and r['score_max'] is not None and r['score_max']>0]
     return round(sum(100*r['score']/r['score_max'] for r in scored)/len(scored),1) if scored else None
@@ -328,14 +300,13 @@ def parent_dashboard(request: Request,child:Optional[int]=None,month:str='',day:
                 if len(entry)<8: entry.append({'score':r['score'],'max':r['score_max'],
                     'percent':round(100*r['score']/r['score_max']),'date':r['record_date'],'title':r['title']})
         academic_performance=_mean_record_percentage(progress,'assessment')
-        participation_score=_mean_record_percentage(progress,'participation')
-        participation=_participation_insights(progress,current)
+        feedback_threads=_student_feedback(conn,sid)
         learning_streak=insights['current_streak']
         progress_counts={'assessments':sum(r['kind']=='assessment' for r in progress),
             'assignments_completed':sum(r['kind']=='assignment' and r['outcome']=='completed' for r in progress),
             'assignments_pending':sum(r['kind']=='assignment' and r['outcome']=='pending' for r in progress),
-            'participation':sum(r['kind']=='participation' for r in progress),
-            'feedback':sum(r['kind']=='feedback' for r in progress)}
+            'feedback':sum(r['kind']=='feedback' for r in progress),
+            'feedback_open':sum(t['awaiting_parent'] for t in feedback_threads)}
         fees=_fee_rows(conn,sid); history=_fee_history(conn,sid)
         schedules=_schedules(conn); students=_class_students(conn); member=next((s for s in students if s['id']==sid),None)
         assigned=[s for s in schedules if member and member in _members(s,students,schedules)]
@@ -354,7 +325,7 @@ def parent_dashboard(request: Request,child:Optional[int]=None,month:str='',day:
         parent_unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(parent['id'],)).fetchone()['c']
     return render(request,'parent_dashboard.html',{'children':children,'child':student,'parent_child_id':sid,'points':points,'attendance':attendance,'present':present,'missed':missed,
         'attendance_insights':insights,'achievements':achievements,'achievement_options':achievement_options,'challenges':challenges,'rewards':rewards,'fees':fees,'history':history,
-        'totals':_fee_totals(fees),'teachers':teachers,'academic_session':academic_session,'academic_performance':academic_performance,'participation_score':participation_score,'learning_streak':learning_streak,'upcoming_classes':upcoming_classes,'announcements':announcements,'progress':progress,'ranks':ranks,'calendar_weeks':weeks,'calendar_month':month,'selected_day':day,'selected_records':selected_records,'selected_holiday':holidays.get(day),'all_holiday_dates':set(all_holidays),'subject_scores':subject_scores,'progress_counts':progress_counts,'available_challenges':available_challenges,'feedback_labels':FEEDBACK_LABELS,'participation':participation,'participation_labels':PARTICIPATION_LABELS,'parent_notices':parent_notices,'parent_unread':parent_unread})
+        'totals':_fee_totals(fees),'teachers':teachers,'academic_session':academic_session,'academic_performance':academic_performance,'feedback_threads':feedback_threads,'feedback_open':sum(t['awaiting_parent'] for t in feedback_threads),'learning_streak':learning_streak,'upcoming_classes':upcoming_classes,'announcements':announcements,'progress':progress,'ranks':ranks,'calendar_weeks':weeks,'calendar_month':month,'selected_day':day,'selected_records':selected_records,'selected_holiday':holidays.get(day),'all_holiday_dates':set(all_holidays),'subject_scores':subject_scores,'progress_counts':progress_counts,'available_challenges':available_challenges,'feedback_labels':FEEDBACK_LABELS,'parent_notices':parent_notices,'parent_unread':parent_unread})
 
 # Parent detail pages: one focused page per section, all driven by the same
 # recorded academy data as the student portal. The shell navigates between
@@ -429,21 +400,170 @@ def parent_attendance(request:Request,student_id:int,month:str='',day:str=''):
         'selected_day':day,'selected_records':selected_records,'selected_holiday':holidays.get(day),
         'all_holiday_dates':set(all_holidays)})
 
-@app.get('/parent/children/{student_id}/participation',response_class=HTMLResponse)
-def parent_participation(request:Request,student_id:int):
+# ---------------------------------------------------------------------------
+# Teacher feedback conversations (linked parents <-> staff)
+# ---------------------------------------------------------------------------
+# An approved feedback record is the conversation's root: it already carries the
+# teacher, subject, category and the Super Admin's approval, so no second data
+# store is introduced. Replies live in feedback_messages and never alter the
+# approved record itself.
+FEEDBACK_HELP={
+    'general':'A general observation from the teacher',
+    'academic':'Classwork, tests and study habits',
+    'improvement':'A specific area the teacher wants to see improve',
+    'behavior':'Classroom conduct and participation in lessons',
+    'parent_feedback':'A note the teacher wants the family to act on'
+}
+
+def _decorate_feedback(conn, records):
+    threads=[]
+    for record in records:
+        item=dict(record)
+        item['messages']=[dict(m) for m in conn.execute("""SELECT m.id,m.body,m.created_at,m.author_role,u.full_name author_name
+            FROM feedback_messages m JOIN users u ON u.id=m.author_id WHERE m.record_id=? ORDER BY m.id""",(record['id'],)).fetchall()]
+        last=item['messages'][-1] if item['messages'] else None
+        item['awaiting_parent']=bool(last and last['author_role'] in ('teacher','admin'))
+        item['awaiting_staff']=bool(last and last['author_role']=='parent')
+        item['reply_count']=len(item['messages'])
+        item['last_activity']=last['created_at'] if last else record['created_at']
+        threads.append(item)
+    return threads
+
+def _student_feedback(conn, student_id):
+    records=conn.execute("""SELECT r.*,u.full_name teacher_name FROM student_progress_records r JOIN users u ON u.id=r.teacher_id
+        WHERE r.student_id=? AND r.kind='feedback' AND r.status='approved'
+          AND NOT EXISTS (SELECT 1 FROM student_progress_records n WHERE n.replaces_id=r.id AND n.status='approved')
+        ORDER BY r.record_date DESC,r.id DESC""",(student_id,)).fetchall()
+    return _decorate_feedback(conn,records)
+
+def _notify_feedback_parents(conn, student_id, title, body, link_path):
+    for parent in conn.execute("""SELECT u.id FROM parent_student_links l JOIN users u ON u.id=l.parent_id
+        WHERE l.student_id=? AND u.role='parent' AND u.status='active'""",(student_id,)).fetchall():
+        notify(conn,parent['id'],title,body,kind='remark',student_id=student_id,link_path=link_path)
+
+@app.get('/parent/children/{student_id}/feedback',response_class=HTMLResponse)
+def parent_feedback(request:Request,student_id:int):
     parent=require_user(request,'parent')
     with connect() as conn:
         child=_parent_child(conn,parent['id'],student_id)
-        sid=child['id']; current=_class_now().date()
-        progress=conn.execute("""SELECT r.*,u.full_name teacher_name FROM student_progress_records r JOIN users u ON u.id=r.teacher_id
-            WHERE r.student_id=? AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records newer WHERE newer.replaces_id=r.id AND newer.status='approved') ORDER BY r.record_date DESC,r.id DESC""",(sid,)).fetchall()
-        participation=_participation_insights(progress,current)
-        participation_records=[r for r in progress if r['kind']=='participation']
-        feedback_records=[r for r in progress if r['kind']=='feedback']
+        threads=_student_feedback(conn,child['id'])
         children=_parent_children(conn,parent['id'])
-    return render(request,'parent_participation.html',{'child':child,'children':children,'parent_child_id':sid,
-        'participation':participation,'participation_records':participation_records,'feedback_records':feedback_records,
-        'participation_labels':PARTICIPATION_LABELS,'feedback_labels':FEEDBACK_LABELS})
+    return render(request,'parent_feedback.html',{'child':child,'children':children,'parent_child_id':child['id'],
+        'threads':threads,'awaiting_replies':sum(t['awaiting_parent'] for t in threads),
+        'teachers':sorted({t['teacher_name'] for t in threads}),'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP})
+
+@app.post('/parent/children/{student_id}/feedback/{record_id}/reply')
+def parent_feedback_reply(request:Request,student_id:int,record_id:int,body:str=Form('')):
+    parent=require_user(request,'parent')
+    back=f'/parent/children/{student_id}/feedback'
+    try:
+        message=_clean_text(body,1200,True)
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            child=_parent_child(conn,parent['id'],student_id)
+            record=conn.execute("SELECT * FROM student_progress_records WHERE id=? AND student_id=? AND kind='feedback' AND status='approved'",(record_id,child['id'])).fetchone()
+            if not record: raise HTTPException(404)
+            conn.execute('INSERT INTO feedback_messages(record_id,author_id,author_role,body,created_at) VALUES (?,?,?,?,?)',(record_id,parent['id'],'parent',message,iso_now()))
+            author=conn.execute('SELECT id,role FROM users WHERE id=?',(record['teacher_id'],)).fetchone()
+            link=f"/admin/feedback/{record_id}" if author and author['role']=='admin' else f"/teacher/feedback/{record_id}"
+            if author:
+                notify(conn,author['id'],'Parent replied to your feedback',
+                    f"{child['full_name']}'s parent replied to your {record['subject']} feedback.",kind='remark',student_id=child['id'],link_path=link)
+            audit(conn,None,'parent_feedback_reply',f'Record {record_id}; parent {parent["id"]}')
+    except (ValueError,TypeError) as exc: return flash_redirect(back,str(exc),'error')
+    return flash_redirect(back,'Reply sent. The teacher sees it immediately.')
+
+def _staff_feedback_threads(conn, actor, role):
+    scope="r.kind='feedback' AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records n WHERE n.replaces_id=r.id AND n.status='approved')"
+    params=()
+    if role!='admin':
+        scope+=' AND r.teacher_id=?'; params=(actor['id'],)
+    rows=conn.execute(f"""SELECT r.*,s.full_name student_name,s.admission_no,s.class_name,s.section_name,t.full_name teacher_name
+        FROM student_progress_records r JOIN users s ON s.id=r.student_id JOIN users t ON t.id=r.teacher_id
+        WHERE {scope} ORDER BY r.record_date DESC,r.id DESC""",params).fetchall()
+    if role!='admin':
+        # Teaching access follows the current class assignment, exactly like every
+        # other teacher screen: losing the class also closes the conversation.
+        assigned=_teacher_assignments(conn,actor['id'])
+        rows=[r for r in rows if r['student_id'] in assigned and r['subject'] in assigned[r['student_id']]['subjects']]
+    return _decorate_feedback(conn,rows)
+
+def _feedback_staff_view(request):
+    """Resolve the staff side of a feedback screen: admins see every student,
+    teachers see their own feedback only."""
+    if request.url.path.startswith('/admin/'):
+        return require_admin(request,'students'), 'admin', '/admin/feedback'
+    actor,_=_progress_actor(request)
+    return actor, 'teacher', '/teacher/feedback'
+
+@app.get('/teacher/feedback',response_class=HTMLResponse)
+@app.get('/admin/feedback',response_class=HTMLResponse)
+def staff_feedback(request:Request, student:Optional[int]=None):
+    actor,role,root=_feedback_staff_view(request)
+    with connect() as conn:
+        threads=_staff_feedback_threads(conn,actor,role)
+        if student is not None: threads=[t for t in threads if t['student_id']==student]
+        students=[dict(r) for r in conn.execute("""SELECT id,full_name,admission_no,class_name,section_name FROM users
+            WHERE role='student' AND status='active' ORDER BY class_name,section_name,full_name""").fetchall()] if role=='admin' else []
+    return render(request,'staff_feedback.html',{'threads':threads,'awaiting':sum(t['awaiting_staff'] for t in threads),
+        'students':students,'selected_student':student,'feedback_root':root,'staff_role':role,'subjects':ACADEMY_SUBJECTS,
+        'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP,'parent_child_id':None})
+
+@app.get('/teacher/feedback/{record_id}',response_class=HTMLResponse)
+@app.get('/admin/feedback/{record_id}',response_class=HTMLResponse)
+def staff_feedback_thread(request:Request,record_id:int):
+    actor,role,root=_feedback_staff_view(request)
+    with connect() as conn:
+        thread=next((t for t in _staff_feedback_threads(conn,actor,role) if t['id']==record_id),None)
+    if not thread: raise HTTPException(404)
+    return render(request,'staff_feedback_thread.html',{'thread':thread,'feedback_root':root,'staff_role':role,
+        'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP,'parent_child_id':None})
+
+@app.post('/teacher/feedback/{record_id}/reply')
+@app.post('/admin/feedback/{record_id}/reply')
+def staff_feedback_reply(request:Request,record_id:int,body:str=Form('')):
+    actor,role,root=_feedback_staff_view(request)
+    back=f'{root}/{record_id}'
+    try:
+        message=_clean_text(body,1200,True)
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            record=conn.execute("""SELECT r.*,s.full_name student_name FROM student_progress_records r JOIN users s ON s.id=r.student_id
+                WHERE r.id=? AND r.kind='feedback' AND r.status='approved'""",(record_id,)).fetchone()
+            if not record: raise HTTPException(404)
+            # Same answer as the read view: never confirm another teacher's thread exists.
+            if role!='admin' and record['teacher_id']!=actor['id']: raise HTTPException(404)
+            conn.execute('INSERT INTO feedback_messages(record_id,author_id,author_role,body,created_at) VALUES (?,?,?,?,?)',(record_id,actor['id'],role,message,iso_now()))
+            _notify_feedback_parents(conn,record['student_id'],'New reply from the academy',
+                f"A teacher replied about the {record['subject']} feedback for {record['student_name']}.",
+                f"/parent/children/{record['student_id']}/feedback")
+            audit(conn,actor['id'] if role=='admin' else None,'staff_feedback_reply',f'Record {record_id}; {role}')
+    except (ValueError,TypeError) as exc: return flash_redirect(back,str(exc),'error')
+    return flash_redirect(back,'Reply sent to the parent.')
+
+@app.post('/admin/feedback/new')
+def admin_feedback_create(request:Request,student_id:int=Form(...),subject:str=Form(''),feedback_type:str=Form('general'),
+                          title:str=Form(''),details:str=Form('')):
+    admin=require_admin(request,'students')
+    try:
+        message=_clean_text(details,2000,True)
+        heading=_clean_text(title,160,False) or 'Feedback from the academy'
+        if subject not in ACADEMY_SUBJECTS: raise ValueError('Choose a valid subject.')
+        if feedback_type not in FEEDBACK_LABELS: raise ValueError('Choose a valid feedback category.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            student=conn.execute("SELECT id,full_name FROM users WHERE id=? AND role='student' AND status='active'",(student_id,)).fetchone()
+            if not student: raise HTTPException(404)
+            created=conn.execute("""INSERT INTO student_progress_records(student_id,teacher_id,subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,created_at,status,reviewed_by,reviewed_at,review_note,version,participation_type)
+                VALUES (?,?,?,'feedback',?,?,?,NULL,NULL,'','general',?,?,'approved',?,?,'',1,'general') RETURNING id""",
+                (student_id,admin['id'],subject,heading,message,_class_now().date().isoformat(),feedback_type,iso_now(),admin['id'],iso_now())).fetchone()
+            record_id=created['id']
+            _notify_feedback_parents(conn,student_id,'New teacher feedback',
+                f"New {FEEDBACK_LABELS[feedback_type].lower()} for {student['full_name']} in {subject}.",
+                f'/parent/children/{student_id}/feedback')
+            audit(conn,admin['id'],'feedback_published',f'Record {record_id}; student {student_id}')
+    except (ValueError,TypeError) as exc: return flash_redirect('/admin/feedback',str(exc),'error')
+    return flash_redirect('/admin/feedback','Feedback published to the linked parents.')
 
 def _teacher_assignments(conn, teacher_id):
     students=_class_students(conn); schedules=_schedules(conn); result={}
@@ -463,11 +583,11 @@ def teaching_progress(request:Request,student:Optional[int]=None):
         own=conn.execute("""SELECT r.*,u.full_name,u.admission_no,(SELECT newer.status FROM student_progress_records newer WHERE newer.replaces_id=r.id AND newer.status IN ('pending','approved') LIMIT 1) revision_status FROM student_progress_records r JOIN users u ON u.id=r.student_id
             WHERE r.teacher_id=? ORDER BY r.id DESC""",(teacher['id'],)).fetchall()
         pending=conn.execute("""SELECT r.*,u.full_name,u.admission_no,t.full_name teacher_name,
-            old.title previous_title,old.assessment_type previous_assessment_type,old.participation_type previous_participation_type,old.feedback_type previous_feedback_type,old.period_start previous_period_start,old.period_end previous_period_end,old.details previous_details,old.score previous_score,old.score_max previous_score_max,old.outcome previous_outcome,old.record_date previous_date
+            old.title previous_title,old.assessment_type previous_assessment_type,old.feedback_type previous_feedback_type,old.period_start previous_period_start,old.period_end previous_period_end,old.details previous_details,old.score previous_score,old.score_max previous_score_max,old.outcome previous_outcome,old.record_date previous_date
             FROM student_progress_records r JOIN users u ON u.id=r.student_id JOIN users t ON t.id=r.teacher_id
             LEFT JOIN student_progress_records old ON old.id=r.replaces_id WHERE r.status='pending' ORDER BY r.id DESC""").fetchall() if is_super_admin(teacher) else []
     own=[r for r in own if r['student_id'] in assignments and r['subject'] in assignments[r['student_id']]['subjects']]
-    return render(request,'teaching_progress.html',{'assignments':assignments,'records':own,'pending':pending,'subjects':ACADEMY_SUBJECTS,'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS,'teaching_root':'/teacher/progress' if teacher['role']=='teacher' else '/admin/teaching','selected_student':student})
+    return render(request,'teaching_progress.html',{'assignments':assignments,'records':own,'pending':pending,'subjects':ACADEMY_SUBJECTS,'feedback_labels':FEEDBACK_LABELS,'teaching_root':'/teacher/progress' if teacher['role']=='teacher' else '/admin/teaching','selected_student':student})
 
 def _progress_actor(request):
     teacher=require_user(request)
@@ -482,17 +602,17 @@ def _progress_values(form, kind, default_assessment_type="general"):
     title=_fee_text(form,'title',160,True); details=_fee_text(form,'details',2000)
     record_date=_fee_date(form.get('record_date'),True)
     if record_date>_class_now().date().isoformat(): raise ValueError('Record date cannot be in the future.')
-    if kind not in ('assessment','assignment','participation','feedback'): raise ValueError('Choose a valid record type.')
+    if kind not in ('assessment','assignment','feedback'): raise ValueError('Choose a valid record type.')
     outcome=str(form.get('outcome') or '') if kind=='assignment' else ''
     if kind=='assignment' and outcome not in ('pending','completed'): raise ValueError('Choose the assignment status.')
     score=score_max=None
     raw_score=str(form.get('score') or '').strip(); raw_max=str(form.get('score_max') or '').strip()
-    if kind=='assessment' or (kind=='participation' and (raw_score or raw_max)):
+    if kind=='assessment':
         try:
             if not re.fullmatch(r'\d{1,6}',raw_score) or not re.fullmatch(r'\d{1,6}',raw_max): raise ValueError()
             score=int(raw_score); score_max=int(raw_max)
             if score_max<1 or score_max>100000 or score>score_max: raise ValueError()
-        except ValueError: raise ValueError('Enter a valid score and maximum. Participation scores are optional, but both values are required when scoring.')
+        except ValueError: raise ValueError('Enter a valid score and maximum. Both values are required for an assessment.')
     assessment_type=str(form.get('assessment_type') or default_assessment_type) if kind=='assessment' else 'general'
     if assessment_type not in ('general','quiz','test'): raise ValueError('Choose a valid assessment type.')
     return title,details,record_date,score,score_max,outcome,assessment_type
@@ -512,13 +632,6 @@ def _feedback_values(form,kind,record=None):
     if end>_class_now().date().isoformat(): raise ValueError('The feedback period cannot end in the future.')
     return category,start,end
 
-def _participation_type(form,kind,record=None):
-    if kind!='participation': return 'general'
-    value=str(form.get('participation_type') or (record['participation_type'] if record else 'general'))
-    if value not in PARTICIPATION_LABELS: raise ValueError('Choose a valid participation category.')
-    return value
-
-
 def _teacher_owned_progress(conn, teacher, record_id):
     record=conn.execute('SELECT * FROM student_progress_records WHERE id=? AND teacher_id=?',(record_id,teacher['id'])).fetchone()
     if not record: raise HTTPException(404)
@@ -534,13 +647,12 @@ async def teaching_record_create(request:Request):
         student_id=int(f.get('student_id') or 0); subject=_fee_text(f,'subject',80,True); kind=str(f.get('kind') or '')
         title,details,record_date,score,score_max,outcome,assessment_type=_progress_values(f,kind)
         feedback_type,period_start,period_end=_feedback_values(f,kind)
-        participation_type=_participation_type(f,kind)
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             assignment=_teacher_assignments(conn,teacher['id']).get(student_id)
             if not assignment or subject not in assignment['subjects']: raise HTTPException(403)
             conn.execute('''INSERT INTO student_progress_records(student_id,teacher_id,subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,period_start,period_end,participation_type,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(student_id,teacher['id'],subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,period_start,period_end,participation_type,iso_now()))
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(student_id,teacher['id'],subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,period_start,period_end,'general',iso_now()))
             audit(conn,teacher['id'],'progress_record_submitted',f'Student {student_id}; {kind}; {subject}')
     except (ValueError,TypeError) as exc: return flash_redirect(target,str(exc),'error')
     return flash_redirect(target,'Record submitted for Super Admin review.')
@@ -552,7 +664,7 @@ def teaching_record_edit(request:Request,record_id:int):
     with connect() as conn:
         record,assignment=_teacher_owned_progress(conn,teacher,record_id)
     if record['status'] not in ('pending','rejected'): return flash_redirect(target,'Approved records cannot be edited. Submit a new update for review.','error')
-    return render(request,'teaching_record_edit.html',{'record':record,'assignment':assignment,'target':target,'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS})
+    return render(request,'teaching_record_edit.html',{'record':record,'assignment':assignment,'target':target,'feedback_labels':FEEDBACK_LABELS})
 
 @app.post('/teacher/progress/records/{record_id}/edit')
 @app.post('/admin/teaching/records/{record_id}/edit')
@@ -565,9 +677,8 @@ async def teaching_record_update(request:Request,record_id:int):
             if record['status'] not in ('pending','rejected'): raise ValueError('Approved records cannot be edited. Submit a new update for review.')
             values=_progress_values(form,record['kind'],record['assessment_type'])
             feedback_values=_feedback_values(form,record['kind'],record)
-            participation_type=_participation_type(form,record['kind'],record)
-            result=conn.execute("""UPDATE student_progress_records SET title=?,details=?,record_date=?,score=?,score_max=?,outcome=?,assessment_type=?,feedback_type=?,period_start=?,period_end=?,participation_type=?,
-                status='pending',reviewed_by=NULL,reviewed_at=NULL,review_note='',version=version+1 WHERE id=? AND teacher_id=? AND status IN ('pending','rejected')""",(*values,*feedback_values,participation_type,record_id,teacher['id']))
+            result=conn.execute("""UPDATE student_progress_records SET title=?,details=?,record_date=?,score=?,score_max=?,outcome=?,assessment_type=?,feedback_type=?,period_start=?,period_end=?,participation_type='general',
+                status='pending',reviewed_by=NULL,reviewed_at=NULL,review_note='',version=version+1 WHERE id=? AND teacher_id=? AND status IN ('pending','rejected')""",(*values,*feedback_values,record_id,teacher['id']))
             if not result.rowcount: raise ValueError('This record was reviewed concurrently. Refresh and try again.')
             audit(conn,teacher['id'],'progress_record_resubmitted' if record['status']=='rejected' else 'progress_record_updated',f'Record {record_id}; student {record["student_id"]}')
     except (ValueError,TypeError)+INTEGRITY_ERRORS as exc: return flash_redirect(f'{target}/records/{record_id}/edit',str(exc) if isinstance(exc,ValueError) else 'Another correction is already pending or approved.','error')
@@ -581,7 +692,7 @@ def teaching_record_revise(request:Request,record_id:int):
         record,assignment=_teacher_owned_progress(conn,teacher,record_id)
         active=conn.execute("SELECT id FROM student_progress_records WHERE replaces_id=? AND status IN ('pending','approved')",(record_id,)).fetchone()
     if record['status']!='approved' or active: return flash_redirect(target,'A correction is already pending or this record has been superseded.','error')
-    return render(request,'teaching_record_edit.html',{'record':record,'assignment':assignment,'target':target,'revising':True,'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS})
+    return render(request,'teaching_record_edit.html',{'record':record,'assignment':assignment,'target':target,'revising':True,'feedback_labels':FEEDBACK_LABELS})
 
 @app.post('/teacher/progress/records/{record_id}/revise')
 @app.post('/admin/teaching/records/{record_id}/revise')
@@ -594,11 +705,10 @@ async def teaching_record_revision_create(request:Request,record_id:int):
             if record['status']!='approved': raise ValueError('Only approved records can be corrected this way.')
             values=_progress_values(form,record['kind'],record['assessment_type'])
             feedback_values=_feedback_values(form,record['kind'],record)
-            participation_type=_participation_type(form,record['kind'],record)
             if conn.execute("SELECT id FROM student_progress_records WHERE replaces_id=? AND status IN ('pending','approved')",(record_id,)).fetchone():
                 raise ValueError('A correction is already pending or this record has been superseded.')
             result=conn.execute('''INSERT INTO student_progress_records(student_id,teacher_id,subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,period_start,period_end,participation_type,created_at,replaces_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id''', (record['student_id'],teacher['id'],record['subject'],record['kind'],*values,*feedback_values,participation_type,iso_now(),record_id)).fetchone()
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id''', (record['student_id'],teacher['id'],record['subject'],record['kind'],*values,*feedback_values,'general',iso_now(),record_id)).fetchone()
             audit(conn,teacher['id'],'progress_correction_submitted',f'Record {result["id"]}; replaces {record_id}')
     except (ValueError,TypeError)+INTEGRITY_ERRORS as exc: return flash_redirect(target,str(exc) if isinstance(exc,ValueError) else 'A correction is already pending or approved.','error')
     return flash_redirect(target,'Correction submitted for review. The previous record remains visible until approval.')
@@ -619,8 +729,8 @@ def teaching_record_review(request:Request,record_id:int,decision:str=Form(...),
             if not result.rowcount: raise ValueError('This record changed or was already reviewed. Refresh and review the latest version.')
             notify(conn,record['teacher_id'],'Progress record reviewed',f'Your progress record was {decision}. Open Student progress for details.')
             if decision=='approved':
-                record_kind=record['kind'] if record['kind'] in ('assessment','feedback','assignment','participation') else 'feedback'
-                kind_map={'assessment':'assessment','feedback':'remark','assignment':'assignment','participation':'remark'}
+                record_kind=record['kind'] if record['kind'] in ('assessment','feedback','assignment') else 'feedback'
+                kind_map={'assessment':'assessment','feedback':'remark','assignment':'assignment'}
                 kind=kind_map[record_kind]
                 if record_kind=='assessment':
                     title='New assessment result'; student_body=f'A new {record["assessment_type"]} assessment result is available for {record["subject"]}.'
@@ -631,8 +741,9 @@ def teaching_record_review(request:Request,record_id:int,decision:str=Form(...),
                 else:
                     title='New teacher remarks'; student_body=f'New teacher remarks for {record["subject"]} are available in your progress records.'
                     parent_body=f'New teacher remarks for {record["subject"]} are available for {{student_name}}.'
+                parent_link=f"/parent/children/{record['student_id']}/feedback" if record_kind=='feedback' else f"/parent/children/{record['student_id']}/report"
                 notify_student_and_parents(conn,record['student_id'],kind,title,student_body,title,parent_body,
-                    student_link='/teacher/progress',parent_link=f"/parent/children/{record['student_id']}/report")
+                    student_link='/teacher/progress',parent_link=parent_link)
             audit(conn,admin['id'],'progress_record_'+decision,f'Record {record_id}; student {record["student_id"]}')
     except ValueError as exc: return flash_redirect('/admin/teaching',str(exc),'error')
     return flash_redirect('/admin/teaching','Progress record '+decision+'.')
@@ -678,7 +789,7 @@ def _student_report_data(conn, student, period, term_id):
         start=date.fromisoformat(term['start_date']); end=date.fromisoformat(term['end_date']); label=term['name']
     else: label='All recorded history'
     all_records=conn.execute("""SELECT r.*,u.full_name teacher_name FROM student_progress_records r JOIN users u ON u.id=r.teacher_id
-        WHERE r.student_id=? AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records newer WHERE newer.replaces_id=r.id AND newer.status='approved')
+        WHERE r.student_id=? AND r.kind!='participation' AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records newer WHERE newer.replaces_id=r.id AND newer.status='approved')
         ORDER BY r.record_date DESC,r.id DESC""",(student['id'],)).fetchall()
     records=[dict(r) for r in all_records if (not start or start.isoformat()<=r['record_date']<=end.isoformat())]
     profile=academy_profile_from_row(conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(student['id'],)).fetchone())
@@ -716,7 +827,7 @@ def parent_report(request:Request,student_id:int,period:str='all',term_id:Option
     with connect() as conn:
         student=_parent_child(conn,parent['id'],student_id)
         report=_student_report_data(conn,student,period,term_id)
-    return render(request,'parent_report.html',{'child':student,'parent_child_id':student_id,'report':report,'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS})
+    return render(request,'parent_report.html',{'child':student,'parent_child_id':student_id,'report':report,'feedback_labels':FEEDBACK_LABELS})
 
 
 @app.get('/admin/students/{student_id}/report',response_class=HTMLResponse)
@@ -729,7 +840,7 @@ def admin_student_report(request:Request,student_id:int,period:str='all',term_id
         if not student: raise HTTPException(404)
         report=_student_report_data(conn,student,period,term_id)
     return render(request,'parent_report.html',{'child':student,'report':report,
-        'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS,
+        'feedback_labels':FEEDBACK_LABELS,
         'report_base':f'/admin/students/{student_id}','report_back':'/admin/parents',
         'report_eyebrow':'ACADEMY RECORDS','report_admin':True})
 
@@ -830,8 +941,7 @@ def _report_pdf(request: Request, student_id: int, period: str, term_id):
     if not attendance: content.append(Paragraph('No marked completed sessions.',style))
     content.append(Paragraph('Approved teacher records',heading))
     for r in records:
-        metric=f" · {r['score']}/{r['score_max']}" if r['kind'] in ('assessment','participation') and r['score'] is not None else f" · {r['outcome'].title()}" if r['kind']=='assignment' else ''
-        if r['kind']=='participation': metric=' · '+PARTICIPATION_LABELS.get(r['participation_type'],'General participation')+metric
+        metric=f" · {r['score']}/{r['score_max']}" if r['kind']=='assessment' and r['score'] is not None else f" · {r['outcome'].title()}" if r['kind']=='assignment' else ''
         content.append(Paragraph(text(f"{r['record_date']} · {r['subject']} · {(r['assessment_type'].title() if r['kind']=='assessment' else r['kind'].title())} · {r['title']}{metric} · {r['teacher_name']}"),style))
         if r['kind']=='feedback':
             content.append(Paragraph(text(FEEDBACK_LABELS.get(r['feedback_type'],'General feedback') + (f" · Period: {r['period_start']} to {r['period_end']}" if r['period_start'] and r['period_end'] else '')),style))
@@ -840,10 +950,10 @@ def _report_pdf(request: Request, student_id: int, period: str, term_id):
     content.append(Paragraph('Points and achievements (all-time)',heading)); content.append(Paragraph(text(f'{points} total recorded points'),style))
     for a in achievements: content.append(Paragraph(text(f"{a['name']} · earned {a['unlocked_at'][:10]}"),style))
     if not achievements: content.append(Paragraph('No achievements earned yet.',style))
-    content.append(Paragraph('Rankings and participation (all-time)',heading))
+    content.append(Paragraph('Rankings and challenges (all-time)',heading))
     content.append(Paragraph(text('Points leaderboard: '+ '; '.join(f'{label}: #{rank}' if rank else f'{label}: not available' for label,rank in ranks.items())),style))
     for challenge in challenges: content.append(Paragraph(text(f"Challenge: {challenge['title']} · {challenge['status'].title()}"),style))
-    if not challenges: content.append(Paragraph('No challenge participation recorded.',style))
+    if not challenges: content.append(Paragraph('No challenge activity recorded.',style))
     for claim in claims: content.append(Paragraph(text(f"Reward claim: {claim['name']} · {claim['status'].title()}"),style))
     if not claims: content.append(Paragraph('No reward claims recorded.',style))
     if include_finance:
@@ -957,7 +1067,7 @@ def teacher_student_profile(request:Request,student_id:int):
         attendance=[r for r in attendance if r['subject'] in assignment['subjects']]
         records=conn.execute('SELECT * FROM student_progress_records WHERE student_id=? AND teacher_id=? ORDER BY record_date DESC,id DESC',(student_id,teacher['id'])).fetchall()
         records=[r for r in records if r['subject'] in assignment['subjects']]
-    return render(request,'teacher_student.html',{'assignment':assignment,'attendance':attendance,'records':records,'teaching_root':target,'feedback_labels':FEEDBACK_LABELS,'participation_labels':PARTICIPATION_LABELS})
+    return render(request,'teacher_student.html',{'assignment':assignment,'attendance':attendance,'records':records,'teaching_root':target,'feedback_labels':FEEDBACK_LABELS})
 
 @app.get('/teacher/account',response_class=HTMLResponse)
 def teacher_own_account(request:Request):
