@@ -515,6 +515,24 @@ def _migrate_sqlite_staff_permissions(conn):
         conn.execute('UPDATE users SET admin_permissions=? WHERE id=?',(json.dumps(permissions),row['id']))
 
 
+def _migrate_sqlite_staff_feedback_permission(conn):
+    # Teacher feedback used to sit behind the "Students & points" grant. Give
+    # existing staff admins who had that access the new explicit grant once, so
+    # nobody loses a screen they could already open; later edits are respected.
+    if not conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('staff_permissions_feedback_v1','1')").rowcount:
+        return
+    rows=conn.execute("SELECT id,admin_permissions FROM users WHERE role='admin' AND admin_level='staff'").fetchall()
+    for row in rows:
+        try:
+            permissions=json.loads(row['admin_permissions']) if row['admin_permissions'] else []
+            if not isinstance(permissions,list): permissions=[]
+        except (ValueError,TypeError):
+            permissions=[]
+        if 'students' in permissions and 'feedback' not in permissions:
+            permissions.append('feedback')
+            conn.execute('UPDATE users SET admin_permissions=? WHERE id=?',(json.dumps(permissions),row['id']))
+
+
 def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     if DATABASE_URL:
@@ -551,6 +569,7 @@ def init_db():
             _migrate_sqlite_notification_categories(conn)
             _migrate_sqlite_staff_permissions(conn)
             _migrate_sqlite_announcement_audience(conn)
+            _migrate_sqlite_staff_feedback_permission(conn)
         default_values=list(DEFAULT_SETTINGS.items())
         conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES '+','.join('(?,?)' for _ in default_values),
                      [value for pair in default_values for value in pair])

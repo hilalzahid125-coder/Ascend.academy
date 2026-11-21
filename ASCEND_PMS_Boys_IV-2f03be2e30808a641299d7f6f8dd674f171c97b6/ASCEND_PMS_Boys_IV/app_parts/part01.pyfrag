@@ -103,6 +103,7 @@ DEFAULT_STAFF_PERMISSIONS = set(STAFF_PERMISSION_LABELS)
 # Fee access must be explicitly granted to staff, including legacy accounts.
 STAFF_PERMISSION_LABELS['fees'] = 'Fee management'
 STAFF_PERMISSION_LABELS['teaching'] = 'Assigned teaching and attendance'
+STAFF_PERMISSION_LABELS['feedback'] = 'Teacher feedback conversations'
 STAFF_PERMISSION_LABELS['classes'] = 'Academy-wide class management'
 STAFF_PERMISSION_LABELS['leaderboards'] = 'Academy leaderboards'
 MAX_POST_BYTES = 5_000_000

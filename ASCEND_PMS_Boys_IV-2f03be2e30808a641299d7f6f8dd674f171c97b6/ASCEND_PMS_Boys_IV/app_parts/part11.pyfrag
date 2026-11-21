@@ -504,11 +504,17 @@ def _staff_feedback_threads(conn, actor, role):
 
 def _feedback_staff_view(request):
     """Resolve the staff side of a feedback screen: admins see every student,
-    teachers see their own feedback only."""
-    if request.url.path.startswith('/admin/'):
-        return require_admin(request,'students'), 'admin', '/admin/feedback'
-    actor,_=_progress_actor(request)
-    return actor, 'teacher', '/teacher/feedback'
+    teachers see their own feedback only.
+
+    Admins are resolved by role, not by the URL, so a Super Admin (or a staff
+    admin holding the feedback permission) can open either entry point.
+    """
+    actor=require_user(request)
+    if actor['role']=='admin':
+        return require_admin(request,'feedback'), 'admin', '/admin/feedback'
+    if actor['role']=='teacher' and request.url.path.startswith('/teacher/'):
+        return actor, 'teacher', '/teacher/feedback'
+    raise HTTPException(403)
 
 @app.get('/teacher/feedback',response_class=HTMLResponse)
 @app.get('/admin/feedback',response_class=HTMLResponse)
@@ -558,7 +564,7 @@ def staff_feedback_reply(request:Request,record_id:int,body:str=Form('')):
 @app.post('/admin/feedback/new')
 def admin_feedback_create(request:Request,student_id:int=Form(...),subject:str=Form(''),feedback_type:str=Form('general'),
                           title:str=Form(''),details:str=Form('')):
-    admin=require_admin(request,'students')
+    admin=require_admin(request,'feedback')
     try:
         message=_clean_text(details,2000,True)
         heading=_clean_text(title,160,False) or 'Feedback from the academy'

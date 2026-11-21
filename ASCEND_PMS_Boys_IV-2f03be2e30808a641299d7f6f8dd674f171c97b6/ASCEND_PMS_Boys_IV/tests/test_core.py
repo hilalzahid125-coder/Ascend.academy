@@ -2187,6 +2187,46 @@ def test_staff_permissions_are_explicit_scoped_and_revocable():
     assert 'Private fee notice' not in staff.get('/notifications').text
 
 
+def test_teacher_feedback_permission_and_super_admin_access():
+    owner=TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    # The Super Admin always reaches the feedback workspace — and the sidebar no
+    # longer links admins at the teacher-only URL that used to answer 403.
+    assert owner.get('/admin/feedback').status_code==200
+    assert owner.get('/teacher/feedback').status_code==200
+    assert 'href="/teacher/feedback"' not in owner.get('/admin').text
+    assert 'href="/admin/feedback"' in owner.get('/admin').text
+    # Teacher feedback is its own grantable area, listed in Admin team.
+    assert 'Teacher feedback conversations' in owner.get('/admin/admins').text
+    assert post(owner,'/admin/admins/create',{'admin_id':'ADMIN-FB501','full_name':'Feedback Coordinator','password':'StaffAdmin1234','permissions':['students']}).status_code==303
+    with connect() as c: tid=c.execute("SELECT id FROM users WHERE admission_no='ADMIN-FB501'").fetchone()['id']
+    staff=TestClient(app); csrf(staff); post(staff,'/login',{'admission_no':'ADMIN-FB501','password':'StaffAdmin1234'})
+    assert staff.get('/admin/students').status_code==200
+    assert staff.get('/admin/feedback').status_code==403
+    assert staff.get('/teacher/feedback').status_code==403
+    assert 'href="/admin/feedback"' not in staff.get('/admin').text
+    post(owner,f'/admin/admins/{tid}/edit',{'full_name':'Feedback Coordinator','permissions':['students','feedback']})
+    assert staff.get('/admin/feedback').status_code==200
+    assert staff.get('/teacher/feedback').status_code==200
+    assert 'href="/admin/feedback"' in staff.get('/admin').text
+    post(owner,f'/admin/admins/{tid}/edit',{'full_name':'Feedback Coordinator','permissions':['students']})
+    assert staff.get('/admin/feedback').status_code==403
+
+
+def test_sqlite_feedback_permission_backfill_preserves_existing_access():
+    import json
+    from db import _migrate_sqlite_staff_feedback_permission
+    with connect() as c:
+        c.execute("INSERT INTO users(admission_no,full_name,role,status,claimed,admin_level,admin_permissions,created_at) VALUES ('ADMIN-FB601','Legacy Staff','admin','active',1,'staff',?,?)",(json.dumps(['students','announcements']),iso_now()))
+        sid=c.execute("SELECT id FROM users WHERE admission_no='ADMIN-FB601'").fetchone()['id']
+        c.execute("DELETE FROM settings WHERE key='staff_permissions_feedback_v1'")
+        _migrate_sqlite_staff_feedback_permission(c)
+        assert 'feedback' in json.loads(c.execute('SELECT admin_permissions FROM users WHERE id=?',(sid,)).fetchone()['admin_permissions'])
+        # One-time: a later revocation is not silently re-granted.
+        c.execute("UPDATE users SET admin_permissions=? WHERE id=?",(json.dumps(['students']),sid))
+        _migrate_sqlite_staff_feedback_permission(c)
+        assert json.loads(c.execute('SELECT admin_permissions FROM users WHERE id=?',(sid,)).fetchone()['admin_permissions'])==['students']
+
+
 def test_sqlite_staff_permission_migration_is_once_and_preserves_access():
     import json,sqlite3
     from db import _migrate_sqlite_staff_permissions
