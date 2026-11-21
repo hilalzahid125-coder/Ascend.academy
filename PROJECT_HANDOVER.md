@@ -5,11 +5,11 @@
 **Current branch:** `arena/24938aa0-ascend-academy` (the earlier parent-portal work landed on `arena/794316a6-ascend-academy`)
 **Current tip commit:** see `git log -1` — the tip carries the feedback/announcement work (§17, §18, §19) on top of `0f6b0d6`
 **App version:** `1.4.0` (see `VERSION`)
-**Live deployment:** Vercel project `delta_academy`, production alias **`deltaacademy-pi.vercel.app`**, latest deployment `dpl_7a4bTjhHPxMaYoZGjnn6PWZ1UTwV` (READY / PROMOTED), built from commit `3869c30` — it does **not** yet include the §19 announcement work.
-**Database:** Supabase PostgreSQL project `ascend-academy` (ref `ezopvhvxbhdvgaasutfd`, region ap-south-1), private `ascend` schema, migrations 001–018 applied (019 is written and committed but **not yet applied**).
+**Live deployment:** Vercel project `delta_academy`, production alias **`deltaacademy-pi.vercel.app`**, latest deployment `dpl_8GzSrKBtoPTg67JLAskiSmXLNjBW` (production, target `production`), built from commit `0a71413` — includes §17 feedback, §18 one-tap parent answers, §19 role-targeted announcements and the §20 teacher-feedback permission.
+**Database:** Supabase PostgreSQL project `ascend-academy` (ref `ezopvhvxbhdvgaasutfd`, region ap-south-1), private `ascend` schema, migrations 001–020 applied (019 announcements audience, 020 staff feedback permission).
 **Owner:** Abdul Hanan Sethi. This document is the single source of project knowledge for the incoming AI developer.
 
-> **Read this first.** Everything below was verified against the actual repository, deployment, and database state at commit `0f6b0d6`. No features are invented; anything not confirmed is explicitly labeled. This document is documentation-only — it does not change application code.
+> **Read this first.** Historical details below were verified at earlier commits; check current code and the latest status above. No features are invented; anything not confirmed is explicitly labeled. This document is documentation-only — it does not change application code.
 
 ---
 
@@ -173,7 +173,7 @@ Core tables: `users` (roles: student/teacher/parent/admin; admin_level, admin_pe
 | Parent portal — full account page, clean back-links, parent wording | **COMPLETE** (deployed, latest commit `a15bbd1`) |
 | PostgreSQL (Supabase) as production DB | **COMPLETE & deployed** (migrations 011–017 made re-run-safe; 500 bug fixed) |
 | Vercel single-project deployment | **COMPLETE** (`deltaacademy-pi.vercel.app`, user confirmed admin login works) |
-| Regression tests | **COMPLETE** — 99 tests; last run SQLite 91 passed / 9 skipped, PostgreSQL 99 passed |
+| Regression tests | **COMPLETE** — 102 tests; last run SQLite 93 passed / 9 skipped, PostgreSQL 99 passed on an earlier revision |
 | Real school roster onboarding | **NOT STARTED** — waiting on school approval / real data |
 | Official school crest | **OPTIONAL / WAITING FOR ASSET** (branding uploadable via Super Admin) |
 | Official custom domain | **DEFERRED** — waiting on school DNS access |
@@ -182,7 +182,7 @@ Core tables: `users` (roles: student/teacher/parent/admin; admin_level, admin_pe
 | `academic_terms` seed data | **DONE 2026-11-19** — academic session `2026-2027` (2026-04-01 → 2027-03-31) plus First Term, Second Term and Final Term in production; editable in Super Admin → Brand & settings |
 | Day-1 backup archive confirmation (cron) | **NOT VERIFIED** — confirm a scheduled backup was produced |
 
-**Verified working (last validation, commit `0f6b0d6`):** SQLite suite 91 passed / 9 skipped; 40/40 pages across student, teacher, admin, parent and guest roles returned HTTP 200 at `0261122`; PostgreSQL suite 99 passed at `a15bbd1`; Playwright browser check — all 11 parent sidebar pages navigate via SPA with zero document reloads; admin login confirmed working on the live `deltaacademy-pi.vercel.app` by the owner.
+**Verified working:** SQLite suite 93 passed / 9 skipped at `0a71413`; 40/40 pages across student, teacher, admin, parent and guest roles returned HTTP 200 at `0261122`; PostgreSQL suite 99 passed at `a15bbd1`; Playwright browser check — all 11 parent sidebar pages navigate via SPA with zero document reloads; admin login confirmed working on the live `deltaacademy-pi.vercel.app` by the owner.
 
 **Not verified / cannot confirm from the sandbox:** live HTTP responses from the sandbox to Vercel return HTTP `000` (sandbox limitation — verify via browser/connectors, not curl). The 9 skipped tests are PG-only/restore/environment-gated tests.
 
@@ -208,7 +208,17 @@ Announcements are no longer write-only from the admin side. The single `announce
 - **Routes/pages:** `GET /announcements` (admin → `/admin/announcements`, parent → `/parent/announcements`, students/teachers get `templates/announcements.html`), `GET /parent/announcements` (children-aware). Student and parent dashboards now use `visible_announcements` and link "View all".
 - **Admin:** `templates/admin_announcements.html` — role select (Everyone/Students/Parents/Teachers) **plus** the existing scope, per-notice role and scope badges, delivered-recipient count, publish/archive.
 - **Navigation:** Announcements entry with an unread badge (`unread_announcements`, injected by `render()` in `app_v14_patch.py`) for students, parents and teachers; admins keep the existing entry.
-- **Tests:** `test_announcements_role_targeting_and_reader_pages` covers role fan-out, multi-child parents, teacher grade scope, per-role page contents, alert clearing and the admin redirect. SQLite baseline is now **91 passed / 9 skipped**.
+- **Tests:** `test_announcements_role_targeting_and_reader_pages` covers role fan-out, multi-child parents, teacher grade scope, per-role page contents, alert clearing and the admin redirect. SQLite baseline is now **93 passed / 9 skipped**.
+
+### 6b. Staff permissions — teacher feedback (§20)
+
+Teacher feedback used to be gated by the `students` grant, and the admin sidebar's "Teacher feedback" link pointed at the teacher-only `/teacher/feedback`, so a Super Admin clicking it got `403 Access denied`.
+
+- `_feedback_staff_view` (part11) now resolves by **role, not URL**: an admin reaches the feedback workspace from either entry point (guarded by `feedback`), a teacher only from `/teacher/*`.
+- `STAFF_PERMISSION_LABELS['feedback'] = 'Teacher feedback conversations'` (part01), added **after** `DEFAULT_STAFF_PERMISSIONS`, so new staff admins get it only when the Super Admin ticks it. `/admin/feedback`, `/admin/feedback/{id}`, `/admin/feedback/{id}/reply` and `/admin/feedback/new` all require `feedback`.
+- The admin sidebar has **one** "Teacher feedback" entry, rendered only with the `feedback` grant (or Super Admin).
+- Backfill (`db.py` `_migrate_sqlite_staff_feedback_permission`, `supabase/migrations/020_staff_feedback_permission.sql`, applied): staff admins who already had `students` received `feedback` once, so nobody lost a screen; later un-ticking in Admin team is respected and never re-granted.
+- Tests: `test_teacher_feedback_permission_and_super_admin_access`, `test_sqlite_feedback_permission_backfill_preserves_existing_access`.
 
 **Resolved problems:**
 - **500 FUNCTION_INVOCATION_FAILED (cold start):** the cold-start `init_db()` re-ran Supabase-applied migrations; 011/012/014 (bare `ADD CONSTRAINT`) and 017 (bare `ADD COLUMN`) raised duplicate_object/duplicate_column. Fixed by making migrations 011–017 re-run-safe (commit `4712e28`), redeployed, admin login confirmed working.
@@ -299,11 +309,11 @@ You are continuing an existing, deployed, working application. **Do not restart,
 
 ## FIRST ACTION FOR THE NEXT AI
 
-**Step 1 — Orient.** Clone/inspect the repo at `hilalzahid125-coder/Ascend.academy`, branch `arena/24938aa0-ascend-academy` (tip = the announcement work, §19; earlier parent-portal work is on `arena/794316a6-ascend-academy` at `a15bbd1`). Read this document, then `README.md`, `app.py`, `db.py`, `app_v14_patch.py`, and skim `app_parts/part*.pyfrag` to see how routes are assembled.
+**Step 1 — Orient.** Clone/inspect the repo at `hilalzahid125-coder/Ascend.academy`, branch `arena/24938aa0-ascend-academy` (tip = §19 announcements + §20 feedback permission; earlier parent-portal work is on `arena/794316a6-ascend-academy` at `a15bbd1`). Read this document, then `README.md`, `app.py`, `db.py`, `app_v14_patch.py`, and skim `app_parts/part*.pyfrag` to see how routes are assembled.
 
-**Step 2 — Verify the live baseline (do not change anything yet).** Confirm the production deployment `dpl_FuemYy2KWsmWe7noMvupE4kcM1Hc` on `deltaacademy-pi.vercel.app` is READY/PROMOTED and that admin login works (Super Admin `ADMIN-0001`; the password is held by the owner — the `PMS_ADMIN_PASSWORD` env var no longer exists). Confirm the Supabase `ascend` schema has migrations 001–018 applied (apply `019_announcement_audiences.sql` with approval before deploying §19).
+**Step 2 — Verify the live baseline (do not change anything yet).** Confirm the production deployment `dpl_8GzSrKBtoPTg67JLAskiSmXLNjBW` on `deltaacademy-pi.vercel.app` is READY/PROMOTED and that admin login works (Super Admin `ADMIN-0001`; the password is held by the owner — the `PMS_ADMIN_PASSWORD` env var no longer exists). Confirm the Supabase `ascend` schema has migrations 001–020 applied.
 
-**Step 3 — Run the safety checks.** From the project dir (`ASCEND_PMS_Boys_IV-2f03be2e30808a641299d7f6f8dd674f171c97b6/ASCEND_PMS_Boys_IV`): `python -m py_compile app.py db.py api/index.py`, then the SQLite suite (`pytest tests/test_core.py` → expect 91 passed / 9 skipped) and the PostgreSQL suite (expect 99 passed). Fix only if these fail.
+**Step 3 — Run the safety checks.** From the project dir (`ASCEND_PMS_Boys_IV-2f03be2e30808a641299d7f6f8dd674f171c97b6/ASCEND_PMS_Boys_IV`): `python -m py_compile app.py db.py api/index.py`, then the SQLite suite (`pytest tests/test_core.py` → expect 93 passed / 9 skipped) and the PostgreSQL suite (expect 99 passed). Fix only if these fail.
 
 **Step 4 — Execute the deferred operational items (P0), in order:**
 1. ~~Remove `PMS_ADMIN_PASSWORD` from Vercel env and redeploy~~ — **DONE 2026-11-19**.
