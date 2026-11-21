@@ -265,6 +265,7 @@ CREATE TABLE IF NOT EXISTS announcements (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   audience TEXT NOT NULL DEFAULT 'all',
+  audience_role TEXT NOT NULL DEFAULT 'all' CHECK(audience_role IN ('all','students','parents','teachers')),
   class_name TEXT,
   section_name TEXT,
   status TEXT NOT NULL DEFAULT 'published' CHECK(status IN ('draft','published','archived')),
@@ -457,6 +458,12 @@ def _migrate_sqlite_feedback_details(conn):
     if 'period_end' not in columns: conn.execute('ALTER TABLE student_progress_records ADD COLUMN period_end TEXT')
 
 
+def _migrate_sqlite_announcement_audience(conn):
+    columns={r['name'] for r in conn.execute('PRAGMA table_info(announcements)').fetchall()}
+    if 'audience_role' not in columns:
+        conn.execute("ALTER TABLE announcements ADD COLUMN audience_role TEXT NOT NULL DEFAULT 'all' CHECK(audience_role IN ('all','students','parents','teachers'))")
+
+
 def _migrate_sqlite_participation_type(conn):
     columns={r['name'] for r in conn.execute('PRAGMA table_info(student_progress_records)').fetchall()}
     if 'participation_type' not in columns:
@@ -543,6 +550,7 @@ def init_db():
             _migrate_sqlite_subject_point_metadata(conn)
             _migrate_sqlite_notification_categories(conn)
             _migrate_sqlite_staff_permissions(conn)
+            _migrate_sqlite_announcement_audience(conn)
         default_values=list(DEFAULT_SETTINGS.items())
         conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES '+','.join('(?,?)' for _ in default_values),
                      [value for pair in default_values for value in pair])

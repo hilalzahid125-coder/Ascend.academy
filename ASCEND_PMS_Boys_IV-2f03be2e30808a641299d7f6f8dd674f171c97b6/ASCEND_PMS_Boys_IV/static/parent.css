@@ -311,3 +311,21 @@
 .ack-btn.active{background:#075c49;border-color:#075c49;color:#fff}
 .feedback-subhead{margin:18px 0 0;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:#64748b}
 @media(max-width:620px){.ack-btn{flex:1 1 46%}.feedback-ack{padding:11px 12px}}
+
+/* Announcements — shared by the academy office page and every reader page. */
+.announcement-list{display:flex;flex-direction:column;gap:14px}
+.announcement-card{border:1px solid #e2ece7;border-radius:16px;padding:18px 20px;background:#fff}
+.announcement-card.fresh{border-left:4px solid var(--green,#087f63)}
+.announcement-head{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+.announcement-tags{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.notice-role{font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;font-weight:700;border-radius:999px;padding:3px 10px;background:#e8f4ef;color:#075c49}
+.notice-role.students{background:#e8effb;color:#2a4d8f}
+.notice-role.parents{background:#fdf1e3;color:#8a5b00}
+.notice-role.teachers{background:#efeafd;color:#4b3a8f}
+.notice-scope{font-size:.75rem;color:#64748b;border:1px solid #e2ece7;border-radius:999px;padding:3px 10px}
+.notice-new{font-size:.7rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#fff;background:var(--green,#087f63);border-radius:999px;padding:3px 9px}
+.announcement-head time{font-size:.78rem;color:#64748b;white-space:nowrap}
+.announcement-card h2{margin:12px 0 8px;font-size:1.08rem;color:#17252b;line-height:1.35}
+.announcement-body{margin:0;color:#334155;line-height:1.6;white-space:pre-line}
+.notice-meta{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid #eef2f0;font-size:.78rem;color:#64748b}
+@media(max-width:620px){.announcement-card{padding:15px}.announcement-head{align-items:flex-start;gap:8px}.announcement-card h2{margin-top:10px}}

@@ -65,6 +65,7 @@
   <section class="panel parent-announce-panel" aria-labelledby="parent-announce-heading">
     <div class="panel-head">
       <div><span class="eyebrow">ACADEMY UPDATES</span><h2 id="parent-announce-heading">Announcements</h2></div>
+      <a class="btn tiny ghost" href="/parent/announcements">View all</a>
     </div>
     {% for a in announcements %}<article class="notice"><strong>{{ a.title }}</strong><p>{{ a.body }}</p><small>{{ a.created_at[:10] }}</small></article>{% else %}<div class="empty compact">No announcements at this time.</div>{% endfor %}
   </section>

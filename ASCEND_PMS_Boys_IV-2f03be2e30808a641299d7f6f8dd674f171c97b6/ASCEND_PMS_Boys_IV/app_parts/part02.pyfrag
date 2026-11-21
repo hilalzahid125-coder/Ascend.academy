@@ -91,23 +91,112 @@ def notify_student_and_parents(conn, student_id, kind, student_title, student_bo
         if not _already_notified(conn,parent['id'],kind,student_id,parent_title,body):
             notify(conn,parent['id'],parent_title,body,kind=kind,student_id=student_id,link_path=parent_link)
 
+ANNOUNCEMENT_ROLES={'all':'Everyone','students':'Students','parents':'Parents','teachers':'Teachers'}
+
+def announcement_scope_text(announcement):
+    """Human wording for where a notice applies."""
+    audience=announcement['audience'] if 'audience' in announcement.keys() else 'all'
+    class_name=announcement['class_name'] if 'class_name' in announcement.keys() else None
+    section_name=announcement['section_name'] if 'section_name' in announcement.keys() else None
+    if audience in ('class','section') and class_name:
+        label=str(class_name)
+        if audience=='section' and section_name: label+=' · Section '+str(section_name)
+        return label
+    return 'Whole academy'
+
+
+def _announcement_cards(rows, today=None):
+    """Decorate raw announcement rows for the read-only pages."""
+    from datetime import date as _date, timedelta as _td
+    today=today or _class_now().date()
+    fresh_after=(today-_td(days=6)).isoformat()
+    cards=[]
+    for r in rows:
+        card={k:r[k] for k in r.keys()}
+        card['role_label']=ANNOUNCEMENT_ROLES.get(card.get('audience_role') or 'all','Everyone')
+        card['scope_label']=announcement_scope_text(r)
+        card['fresh']=str(card.get('created_at') or '')[:10]>=fresh_after
+        cards.append(card)
+    return cards
+
+
+def visible_announcements(conn, user, limit=None):
+    """Published announcements a signed-in person may see, newest first.
+
+    Role targeting and class/section scoping are both applied here so the
+    dashboards, the dedicated pages and the notifications can never disagree.
+    """
+    role=user['role']
+    sql="SELECT a.* FROM announcements a WHERE a.status='published'"
+    params=[]
+    if role=='student': sql+=" AND a.audience_role IN ('all','students')"
+    elif role=='parent': sql+=" AND a.audience_role IN ('all','parents')"
+    elif role=='teacher': sql+=" AND a.audience_role IN ('all','teachers')"
+    if role=='student':
+        sql+=" AND (a.audience='all' OR (a.audience='class' AND a.class_name=?) OR (a.audience='section' AND a.class_name=? AND COALESCE(a.section_name,'')=COALESCE(?,'')))"
+        params=[user['class_name'],user['class_name'],user['section_name']]
+    elif role=='parent':
+        # Any linked child can qualify the notice, not just the first one.
+        sql+=""" AND (a.audience='all'
+            OR (a.audience='class' AND a.class_name IN (SELECT s.class_name FROM parent_student_links l JOIN users s ON s.id=l.student_id WHERE l.parent_id=?))
+            OR (a.audience='section' AND EXISTS (SELECT 1 FROM parent_student_links l JOIN users s ON s.id=l.student_id
+                 WHERE l.parent_id=? AND s.class_name=a.class_name AND COALESCE(s.section_name,'')=COALESCE(a.section_name,''))))"""
+        params=[user['id'],user['id']]
+    elif role=='teacher':
+        # Teachers also see notices aimed at a grade they actually teach.
+        sql+=" AND (a.audience='all' OR a.class_name IN (SELECT DISTINCT s.grade FROM class_schedules s WHERE s.teacher_id=? AND s.active=1))"
+        params=[user['id']]
+    sql+=' ORDER BY a.id DESC'
+    if limit: sql+=' LIMIT '+str(int(limit))
+    return conn.execute(sql,tuple(params)).fetchall()
+
+
+def mark_announcement_alerts_read(conn, user_id):
+    """Opening the announcements page clears the related alerts for that person."""
+    conn.execute("UPDATE notifications SET is_read=1,read_at=? WHERE user_id=? AND is_read=0 AND kind='announcement'",(iso_now(),user_id))
+
+
 def deliver_announcement(conn, announcement):
-    """Publish an academy announcement as a notification for every parent it
-    reaches. Students keep seeing announcements on their dashboards."""
+    """Fan a published notice out to exactly the people it targets.
+
+    Everything still goes through the existing notification centre; only the
+    recipient list and the deep link differ per role.
+    """
+    role=announcement.get('audience_role') or 'all'
+    scope=announcement.get('audience') or 'all'
+    class_name=announcement.get('class_name'); section_name=announcement.get('section_name')
     title='Academy announcement: '+announcement['title']
     body=announcement['body']
-    audience=announcement['audience']
-    if audience=='all':
-        parents=conn.execute("SELECT id FROM users WHERE role='parent' AND status='active'").fetchall()
-    else:
-        parents=conn.execute("""SELECT DISTINCT u.id FROM parent_student_links l JOIN users u ON u.id=l.parent_id
-            WHERE u.role='parent' AND u.status='active'
-            AND ((?='class' AND l.student_id IN (SELECT id FROM users WHERE role='student' AND class_name=?))
-              OR (?='section' AND l.student_id IN (SELECT id FROM users WHERE role='student' AND class_name=? AND section_name=?)))""",
-            (audience,announcement.get('class_name'),audience,announcement.get('class_name'),announcement.get('section_name'))).fetchall()
-    for parent in parents:
-        if not _already_notified(conn,parent['id'],'announcement',None,title,body):
-            notify(conn,parent['id'],title,body,kind='announcement',student_id=None,link_path='/parent')
+    targets=[]
+    student_scope="role='student' AND status='active'"
+    if scope=='class': student_scope+=' AND class_name=?'; scope_params=(class_name,)
+    elif scope=='section': student_scope+=" AND class_name=? AND COALESCE(section_name,'')=COALESCE(?,'')"; scope_params=(class_name,section_name)
+    else: scope_params=()
+    if role in ('all','students'):
+        for row in conn.execute(f'SELECT id FROM users WHERE {student_scope}',scope_params).fetchall():
+            targets.append((row['id'],'/announcements'))
+    if role in ('all','parents'):
+        parent_where="u.role='parent' AND u.status='active'"
+        if scope=='class': parent_where+=' AND s.class_name=?'; parent_params=(class_name,)
+        elif scope=='section': parent_where+=" AND s.class_name=? AND COALESCE(s.section_name,'')=COALESCE(?,'')"; parent_params=(class_name,section_name)
+        else: parent_params=()
+        parent_rows=conn.execute(f"""SELECT DISTINCT u.id FROM parent_student_links l JOIN users u ON u.id=l.parent_id
+            JOIN users s ON s.id=l.student_id WHERE {parent_where}""",parent_params).fetchall()
+        for row in parent_rows:
+            targets.append((row['id'],'/parent/announcements'))
+    if role in ('all','teachers'):
+        if scope=='all':
+            teacher_rows=conn.execute("SELECT id FROM users WHERE role='teacher' AND status='active'").fetchall()
+        elif class_name:
+            teacher_rows=conn.execute("""SELECT DISTINCT u.id FROM users u JOIN class_schedules s ON s.teacher_id=u.id
+                WHERE u.role='teacher' AND u.status='active' AND s.active=1 AND s.grade=?""",(class_name,)).fetchall()
+        else: teacher_rows=[]
+        for row in teacher_rows:
+            targets.append((row['id'],'/announcements'))
+    for user_id,link in targets:
+        if not _already_notified(conn,user_id,'announcement',None,title,body):
+            notify(conn,user_id,title,body,kind='announcement',student_id=None,link_path=link)
+
 
 def run_fee_notifications(conn, today=None):
     """Regenerate fee reminder and overdue notifications from the current fee

@@ -2865,6 +2865,52 @@ def test_announcement_delivery_to_parents():
         assert c.execute("SELECT COUNT(*) n FROM notifications WHERE title LIKE 'Academy announcement: Grade 10%' AND user_id=?",(parent,)).fetchone()['n']==0
         assert c.execute("SELECT COUNT(*) n FROM notifications WHERE title LIKE 'Academy announcement: Grade 10%' AND user_id=?",(parent10,)).fetchone()['n']==1
 
+def test_announcements_role_targeting_and_reader_pages():
+    student9,parent9=_step12_parent_student('A-N1210')
+    student10,_=_step12_parent_student('A-N1211',class_name='O-Level - Grade 10',parent_no='P-MULTI')
+    with connect() as c:
+        multi=c.execute("SELECT id FROM users WHERE admission_no='P-MULTI'").fetchone()['id']
+        c.execute('INSERT INTO parent_student_links(parent_id,student_id,created_at) VALUES (?,?,?)',(multi,student9,iso_now()))
+        c.execute('''INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at)
+            VALUES ('T-ANN01','Announcement Tutor',?,'teacher','active',1,?)''',(hash_password('TeacherStrong123'),iso_now()))
+        teacher=c.execute("SELECT id FROM users WHERE admission_no='T-ANN01'").fetchone()['id']
+        c.execute("INSERT INTO class_schedules(grade,subject,teacher_id,recurrence,weekday,start_time,duration_minutes,created_at) VALUES ('O-Level - Grade 10','Maths',?,'weekly',0,'09:00',40,?)",(teacher,iso_now()))
+    owner=TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    def publish(title,role,audience='all',class_name=''):
+        assert post(owner,'/admin/announcements/create',{'title':title,'body':title+' body.','audience_role':role,'audience':audience,'class_name':class_name}).status_code==303
+    publish('Students only','students')
+    publish('Parents only','parents')
+    publish('Teachers only','teachers')
+    publish('Grade 10 everyone','all','class','O-Level - Grade 10')
+    with connect() as c:
+        def notices(uid):
+            return {r['title'].replace('Academy announcement: ','') for r in c.execute("SELECT title FROM notifications WHERE user_id=? AND kind='announcement'",(uid,))}
+        assert 'Students only' in notices(student9) and 'Parents only' not in notices(student9) and 'Teachers only' not in notices(student9)
+        assert notices(parent9)=={'Parents only'}
+        assert {'Parents only','Grade 10 everyone'} <= notices(multi)
+        assert 'Teachers only' not in notices(multi)
+        assert {'Teachers only','Grade 10 everyone'} <= notices(teacher)
+        assert 'Parents only' not in notices(teacher)
+        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND kind='announcement' AND read_at IS NULL",(multi,)).fetchone()['n']>=1
+    # Student reader page shows only their audience.
+    stu=TestClient(app); csrf(stu); post(stu,'/login',{'admission_no':'A-N1210','password':'StudentStrong123'})
+    page=stu.get('/announcements')
+    assert page.status_code==200 and 'Students only' in page.text and 'Parents only' not in page.text and 'Teachers only' not in page.text
+    # Parent reader page includes every linked child's notices and clears the alerts.
+    par=TestClient(app); csrf(par); post(par,'/login',{'admission_no':'P-MULTI','password':'ParentStrong123'})
+    page=par.get('/parent/announcements')
+    assert page.status_code==200 and 'Parents only' in page.text and 'Grade 10 everyone' in page.text and 'Teachers only' not in page.text
+    with connect() as c:
+        assert c.execute("SELECT COUNT(*) n FROM notifications WHERE user_id=? AND kind='announcement' AND read_at IS NULL",(multi,)).fetchone()['n']==0
+    # Teacher reader page.
+    tea=TestClient(app); csrf(tea); post(tea,'/login',{'admission_no':'T-ANN01','password':'TeacherStrong123'})
+    page=tea.get('/announcements')
+    assert page.status_code==200 and 'Teachers only' in page.text and 'Parents only' not in page.text
+    # Admin keeps the management page and is redirected away from the reader page.
+    assert owner.get('/announcements',follow_redirects=False).status_code in (302,303)
+    admin_page=owner.get('/admin/announcements')
+    assert admin_page.status_code==200 and 'Send to' in admin_page.text and 'Students only' in admin_page.text
+
 def test_fee_reminder_and_overdue_notifications_are_idempotent():
     student,parent=_step12_parent_student('A-N1205')
     from datetime import date as _date, timedelta as _td

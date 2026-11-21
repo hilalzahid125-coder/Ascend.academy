@@ -1,0 +1,30 @@
+{% extends "base.html" %}{% block title %}Announcements · {{ settings.app_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><span class="eyebrow">{{ workspace_label }}</span><h1>Announcements</h1>
+  <p>Notices published by the academy office. Only the ones meant for you are shown, and opening this page clears their alerts.</p></div>
+  <a class="btn ghost" href="{{ notifications_link }}">Notifications{% if unread_notifications %} ({{ unread_notifications }}){% endif %}</a>
+</section>
+
+{% if announcements %}
+<div class="announcement-list">
+  {% for a in announcements %}
+  <article class="announcement-card{{ ' fresh' if a.fresh }}">
+    <header class="announcement-head">
+      <div class="announcement-tags">
+        <span class="notice-role {{ a.audience_role }}">{{ a.role_label }}</span>
+        <span class="notice-scope">{{ a.scope_label }}</span>
+        {% if a.fresh %}<span class="notice-new">New</span>{% endif %}
+      </div>
+      <time datetime="{{ a.created_at[:10] }}">{{ a.created_at[:10] }}</time>
+    </header>
+    <h2>{{ a.title }}</h2>
+    <p class="announcement-body">{{ a.body }}</p>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="panel"><div class="empty"><strong>No announcements yet</strong><p>When the academy publishes a notice for you or your class, it appears here and in your notifications.</p></div></section>
+{% endif %}
+<p class="feedback-footnote">Announcements are written and published by the academy office; they cannot be edited from this page.</p>
+{% endblock %}

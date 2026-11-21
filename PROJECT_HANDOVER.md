@@ -3,10 +3,10 @@
 **Project:** Delta Academy — the production ASCEND platform for **Peshawar Model School Boys IV** (tagline: *Compete • Achieve • Grow*).
 **Repository:** `https://github.com/hilalzahid125-coder/Ascend.academy.git`
 **Current branch:** `arena/24938aa0-ascend-academy` (the earlier parent-portal work landed on `arena/794316a6-ascend-academy`)
-**Current tip commit:** `0f6b0d6` — "Give academy staff the same downloadable progress report PDF"
+**Current tip commit:** see `git log -1` — the tip carries the feedback/announcement work (§17, §18, §19) on top of `0f6b0d6`
 **App version:** `1.4.0` (see `VERSION`)
-**Live deployment:** Vercel project `delta_academy`, production alias **`deltaacademy-pi.vercel.app`**, latest deployment `dpl_FuemYy2KWsmWe7noMvupE4kcM1Hc` (READY / PROMOTED), built from commit `0f6b0d6`.
-**Database:** Supabase PostgreSQL project `ascend-academy` (ref `ezopvhvxbhdvgaasutfd`, region ap-south-1), private `ascend` schema, migrations 001–017 applied.
+**Live deployment:** Vercel project `delta_academy`, production alias **`deltaacademy-pi.vercel.app`**, latest deployment `dpl_7a4bTjhHPxMaYoZGjnn6PWZ1UTwV` (READY / PROMOTED), built from commit `3869c30` — it does **not** yet include the §19 announcement work.
+**Database:** Supabase PostgreSQL project `ascend-academy` (ref `ezopvhvxbhdvgaasutfd`, region ap-south-1), private `ascend` schema, migrations 001–018 applied (019 is written and committed but **not yet applied**).
 **Owner:** Abdul Hanan Sethi. This document is the single source of project knowledge for the incoming AI developer.
 
 > **Read this first.** Everything below was verified against the actual repository, deployment, and database state at commit `0f6b0d6`. No features are invented; anything not confirmed is explicitly labeled. This document is documentation-only — it does not change application code.
@@ -153,8 +153,8 @@ Core tables: `users` (roles: student/teacher/parent/admin; admin_level, admin_pe
 - **Typography:** Inter (self-hosted woff2 in `static/fonts/`), system fallback. Eyebrow labels (uppercase, letter-spaced), tight heading letter-spacing (`-0.025em`).
 - **Layout:** 236px sidebar + main content shell; panels (`border-radius:12px`, subtle shadow), stat cards, home sections, badges, progress bars, tables. `.role-admin .sidebar nav a.active` is dark inverted for admins.
 - **Reusable components/classes:** `.panel`, `.home-section`, `.fee-entry`, `.fee-stats`, `.stat-card`, `.progress`, `.btn` (primary/ghost/small/danger), `.badge`, `.notification-row`, `.empty`, `.parent-*` (parent-specific), `.analytics-*` (charts), `.parent-calendar`, `.parent-week-grid` (timetable). Icons are inline SVG referencing `static/icons.svg` sprite (ids: house, book-open, users-round, swords, trophy, gift, megaphone, bell, wallet, award, graduation-cap, sparkles, shield-check, settings, database-backup, user-round, etc.).
-- **Parent-specific CSS:** `static/parent.css` (currently `?v=10`) — sidebar hover accents, overview grid, timetable, attendance calendar, analytics, awards, feedback conversations. **When changing `parent.css`, bump the `?v=` in `templates/base.html`.**
-- **Cache-busting:** `templates/base.html` loads `app.js?v=academy-12`, `fees.js?v=4`, `live-classes.js?v=1`, and `parent.css?v=9`. **Bump the version query whenever the corresponding file changes** so browsers fetch the new asset.
+- **Parent-specific CSS:** `static/parent.css` (currently `?v=12`) — sidebar hover accents, overview grid, timetable, attendance calendar, analytics, awards, feedback conversations. **When changing `parent.css`, bump the `?v=` in `templates/base.html`.**
+- **Cache-busting:** `templates/base.html` loads `app.js?v=academy-13`, `fees.js?v=4`, `live-classes.js?v=1`, and `parent.css?v=12`. **Bump the version query whenever the corresponding file changes** so browsers fetch the new asset.
 - **Responsive:** sidebar becomes a slide-in drawer under 820px (overlay, swipe gestures, Escape, body scroll lock); mobile bottom nav shows 4 quick actions per role (parents: Home / Fees / Notifications / Account). Reduced-motion supported.
 - **Established decisions that must remain consistent:** green-first palette; Inter; sidebar + topbar shell; SPA navigation with no full reloads; parent overview is a summary hub with sections only in the sidebar; charts/visual indicators preferred over dense numbers on analytics; simple professional wording; parent views must never expose internal/admin-only data (e.g. data-challenge internals were pruned from the parent Challenges page).
 
@@ -198,6 +198,18 @@ Core tables: `users` (roles: student/teacher/parent/admin; admin_level, admin_pe
 - Parent views are read-only over shared records (no separate fee/challenge/achievement databases), reusing the existing student challenge/reward/fee systems.
 - Parent portal restructured (latest): all parent pages in the sidebar, overview as a summary hub, instant SPA navigation, green hover accents, parent-unnecessary internals pruned.
 
+### 6a. Announcements (§19) — role targeting and a reader page on every side
+
+Announcements are no longer write-only from the admin side. The single `announcements` row is the source of truth for all four portals; there is no per-role copy of anything.
+
+- **Data:** `announcements` gained `audience_role TEXT NOT NULL DEFAULT 'all' CHECK(audience_role IN ('all','students','parents','teachers'))` (sqlite migration `_migrate_sqlite_announcement_audience` in `db.py`; `supabase/migrations/019_announcement_audiences.sql`, additive, indexed). Scope columns (`audience` all/class/section, `class_name`, `section_name`) are unchanged and combine with the role.
+- **Delivery:** `deliver_announcement` (part02) now fans out to exactly the targeted people through the existing `notifications` feed — students by class/section, parents through `parent_student_links`, teachers through `class_schedules.grade` — with deep links `/announcements` (student/teacher) and `/parent/announcements` (parent). Still idempotent via `_already_notified`.
+- **Reading:** `visible_announcements(conn,user,limit=None)` applies role targeting **and** scope in one place, so dashboards, pages and notifications can never disagree. Parents match on *any* linked child. Helpers: `_announcement_cards` (role/scope labels, `fresh` ≤6 days), `mark_announcement_alerts_read` (opening a page clears that user's unread `kind='announcement'` alerts), `announcement_scope_text`.
+- **Routes/pages:** `GET /announcements` (admin → `/admin/announcements`, parent → `/parent/announcements`, students/teachers get `templates/announcements.html`), `GET /parent/announcements` (children-aware). Student and parent dashboards now use `visible_announcements` and link "View all".
+- **Admin:** `templates/admin_announcements.html` — role select (Everyone/Students/Parents/Teachers) **plus** the existing scope, per-notice role and scope badges, delivered-recipient count, publish/archive.
+- **Navigation:** Announcements entry with an unread badge (`unread_announcements`, injected by `render()` in `app_v14_patch.py`) for students, parents and teachers; admins keep the existing entry.
+- **Tests:** `test_announcements_role_targeting_and_reader_pages` covers role fan-out, multi-child parents, teacher grade scope, per-role page contents, alert clearing and the admin redirect. SQLite baseline is now **91 passed / 9 skipped**.
+
 **Resolved problems:**
 - **500 FUNCTION_INVOCATION_FAILED (cold start):** the cold-start `init_db()` re-ran Supabase-applied migrations; 011/012/014 (bare `ADD CONSTRAINT`) and 017 (bare `ADD COLUMN`) raised duplicate_object/duplicate_column. Fixed by making migrations 011–017 re-run-safe (commit `4712e28`), redeployed, admin login confirmed working.
 - **12 failing SQLite tests after the parent restructure:** tests asserted the old stacked-overview markup for functionality moved to dedicated section pages. Fixed by repointing assertions to the new routes/markup while preserving test intent (attendance section ported to its own route/page; fee/challenge/participation/admin-teaching/overview assertions updated). Final: 90 passed / 9 skipped.
@@ -225,7 +237,7 @@ Development stopped **at the completion of the Parent Portal scope**, on branch 
 - `templates/parent_account.html` — full account page (profile details, linked students, password change).
 - `templates/parent_classes.html`, `parent_attendance.html`, `parent_feedback.html` — section pages (`parent_participation.html` was deleted with the feature).
 - `templates/parent_leaderboard.html`, `parent_achievements.html`, `parent_challenges_rewards.html`, `parent_fees.html`, `parent_fee_detail.html`, `parent_report.html`, `parent_notifications.html`, `parent_analytics.html` — section pages (back-links cleaned).
-- `templates/base.html` — parent sidebar full menu + mobile bottom nav; `app.js?v=academy-12`.
+- `templates/base.html` — parent sidebar full menu + mobile bottom nav; `app.js?v=academy-13`.
 - `static/app.js` — SPA navigation; `pages` set includes `/parent/notifications`.
 - `static/parent.css` (v9) — parent styles, including the ≤680 px phone rules for the child switcher and page headers.
 - `app_parts/part11.pyfrag` / `part12.pyfrag` / `part10.pyfrag` — parent routes (all child-scoped render contexts pass `parent_child_id`).
@@ -287,9 +299,9 @@ You are continuing an existing, deployed, working application. **Do not restart,
 
 ## FIRST ACTION FOR THE NEXT AI
 
-**Step 1 — Orient.** Clone/inspect the repo at `hilalzahid125-coder/Ascend.academy`, branch `arena/24938aa0-ascend-academy` (tip `0f6b0d6`; earlier parent-portal work is on `arena/794316a6-ascend-academy` at `a15bbd1`). Read this document, then `README.md`, `app.py`, `db.py`, `app_v14_patch.py`, and skim `app_parts/part*.pyfrag` to see how routes are assembled.
+**Step 1 — Orient.** Clone/inspect the repo at `hilalzahid125-coder/Ascend.academy`, branch `arena/24938aa0-ascend-academy` (tip = the announcement work, §19; earlier parent-portal work is on `arena/794316a6-ascend-academy` at `a15bbd1`). Read this document, then `README.md`, `app.py`, `db.py`, `app_v14_patch.py`, and skim `app_parts/part*.pyfrag` to see how routes are assembled.
 
-**Step 2 — Verify the live baseline (do not change anything yet).** Confirm the production deployment `dpl_FuemYy2KWsmWe7noMvupE4kcM1Hc` on `deltaacademy-pi.vercel.app` is READY/PROMOTED and that admin login works (Super Admin `ADMIN-0001`; the password is held by the owner — the `PMS_ADMIN_PASSWORD` env var no longer exists). Confirm the Supabase `ascend` schema has migrations 001–017 applied.
+**Step 2 — Verify the live baseline (do not change anything yet).** Confirm the production deployment `dpl_FuemYy2KWsmWe7noMvupE4kcM1Hc` on `deltaacademy-pi.vercel.app` is READY/PROMOTED and that admin login works (Super Admin `ADMIN-0001`; the password is held by the owner — the `PMS_ADMIN_PASSWORD` env var no longer exists). Confirm the Supabase `ascend` schema has migrations 001–018 applied (apply `019_announcement_audiences.sql` with approval before deploying §19).
 
 **Step 3 — Run the safety checks.** From the project dir (`ASCEND_PMS_Boys_IV-2f03be2e30808a641299d7f6f8dd674f171c97b6/ASCEND_PMS_Boys_IV`): `python -m py_compile app.py db.py api/index.py`, then the SQLite suite (`pytest tests/test_core.py` → expect 91 passed / 9 skipped) and the PostgreSQL suite (expect 99 passed). Fix only if these fail.
 

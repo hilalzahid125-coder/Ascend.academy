@@ -37,7 +37,7 @@
     <text x="6" y="28" class="axis">100%</text><text x="6" y="131" class="axis">50%</text><text x="6" y="234" class="axis">0%</text>
     <path d="{{ academic_chart.area }}" class="area"/><path d="{{ academic_chart.path }}" class="line"/>
     {% for point in academic_chart.points.split(' ') %}<circle cx="{{ point.split(',')[0] }}" cy="{{ point.split(',')[1] }}" r="4.5" class="dot"/>{% endfor %}
-    {% for b in academic %}<text x="{{ (loop.index0*(academic_chart.width-20)/(academic|length-1)+10)|round }}" y="{{ academic_chart.height-8 }}" class="axis label">{{ b.label }}</text>{% endfor %}
+    {% for b in academic %}<text x="{{ (loop.index0*(academic_chart.width-20)/((academic|length-1) or 1)+10)|round }}" y="{{ academic_chart.height-8 }}" class="axis label">{{ b.label }}</text>{% endfor %}
   </svg>
   <div class="analytics-legend">{% for b in academic %}<span><b>{{ b.label }}</b>{{ (b.average|string ~ '%') if b.average is not none else '—' }}{% if b.count %} · {{ b.count }} result{{ '' if b.count==1 else 's' }}{% endif %}</span>{% endfor %}</div>
   {% else %}<div class="empty"><strong>No assessment results in this period</strong><p>Results appear here once approved assessment records are recorded for {{ child.full_name }}.</p></div>{% endif %}

@@ -6,9 +6,7 @@
                                    AND (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections') OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,''))))
                                    ORDER BY c.status='active' DESC,c.end_date LIMIT 6''',(u['id'],u['class_name'],u['section_name'])).fetchall()
         tx=conn.execute('SELECT * FROM point_transactions WHERE user_id=? ORDER BY id DESC LIMIT 6',(u['id'],)).fetchall()
-        announcements=conn.execute('''SELECT * FROM announcements WHERE status='published' AND
-                                      (audience='all' OR (audience='class' AND class_name=?) OR (audience='section' AND class_name=? AND section_name=?))
-                                      ORDER BY id DESC LIMIT 4''',(u['class_name'],u['class_name'],u['section_name'])).fetchall()
+        announcements=visible_announcements(conn,u,limit=4)
         notices=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 5',(u['id'],)).fetchall()
     return render(request,'student_dashboard.html',{'points':points,'rank':rank,'challenges':challenges,'transactions':tx,'announcements':announcements,'notifications':notices})
 
@@ -84,6 +82,19 @@ def leaderboards(request: Request, category: str='overall', period: str='all', c
         sections=[r['section_name'] for r in conn.execute('SELECT DISTINCT section_name FROM users WHERE role="student" AND section_name IS NOT NULL AND section_name!="" ORDER BY section_name').fetchall()]
         challenge_options=conn.execute('SELECT id,title FROM challenges WHERE status!="draft" AND status!="archived" ORDER BY id DESC').fetchall()
     return render(request,'leaderboards.html',{'rows':rows,'category':category,'period':period,'class_name':class_name,'section_name':section_name,'challenge_id':challenge_id,'classes':classes,'sections':sections,'challenge_options':challenge_options})
+
+@app.get('/announcements', response_class=HTMLResponse)
+def announcements_page(request: Request):
+    u=require_user(request)
+    if u['role']=='admin': return RedirectResponse('/admin/announcements',status_code=303)
+    if u['role']=='parent': return RedirectResponse('/parent/announcements',status_code=303)
+    with connect() as conn:
+        rows=visible_announcements(conn,u)
+        mark_announcement_alerts_read(conn,u['id'])
+    return render(request,'announcements.html',{'announcements':_announcement_cards(rows),
+        'audience_roles':ANNOUNCEMENT_ROLES,'notifications_link':'/notifications',
+        'workspace_label':'TEACHING' if u['role']=='teacher' else 'STUDENT WORKSPACE'})
+
 
 @app.get('/notifications', response_class=HTMLResponse)
 def notifications_page(request: Request):

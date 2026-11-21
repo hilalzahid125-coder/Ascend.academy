@@ -315,9 +315,7 @@ def parent_dashboard(request: Request,child:Optional[int]=None,month:str='',day:
         upcoming_classes=[dict(s,day_label=_day_label(s),end_time=_end_time(s)) for s in assigned
             if s['recurrence']=='weekly' or s['class_date']>=current.isoformat()]
         teachers=sorted({s['teacher_name'] for s in upcoming_classes})
-        announcements=conn.execute("""SELECT title,body,created_at FROM announcements WHERE status='published' AND
-            (audience='all' OR (audience='class' AND class_name=?) OR (audience='section' AND class_name=? AND section_name=?))
-            ORDER BY id DESC LIMIT 10""",(student['class_name'],student['class_name'],student['section_name'])).fetchall()
+        announcements=visible_announcements(conn,parent,limit=10)
         # Opening the dashboard refreshes fee reminder/overdue alerts from the
         # current fee records, then shows the parent's latest notifications.
         run_fee_notifications(conn)

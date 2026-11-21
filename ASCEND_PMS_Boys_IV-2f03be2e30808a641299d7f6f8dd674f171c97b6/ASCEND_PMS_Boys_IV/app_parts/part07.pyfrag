@@ -58,19 +58,26 @@ def admin_reward_claim(request: Request,claim_id:int,status:str=Form(...)):
 @app.get('/admin/announcements', response_class=HTMLResponse)
 def admin_announcements(request: Request):
     require_admin(request,'announcements')
-    with connect() as conn: rows=conn.execute('SELECT * FROM announcements ORDER BY id DESC').fetchall()
-    return render(request,'admin_announcements.html',{'announcements':rows})
+    with connect() as conn:
+        rows=conn.execute("SELECT * FROM announcements ORDER BY (status='published') DESC,id DESC").fetchall()
+        cards=_announcement_cards(rows)
+        counts={r['id']:conn.execute('SELECT COUNT(*) c FROM notifications WHERE kind=? AND title=?',('announcement','Academy announcement: '+r['title'])).fetchone()['c'] for r in rows}
+    for card in cards: card['delivered']=counts.get(card['id'],0)
+    return render(request,'admin_announcements.html',{'announcements':cards,'audience_roles':ANNOUNCEMENT_ROLES})
 
 @app.post('/admin/announcements/create')
-def admin_announcement_create(request: Request,title:str=Form(...),body:str=Form(...),audience:str=Form('all'),class_name:str=Form(''),section_name:str=Form('')):
+def admin_announcement_create(request: Request,title:str=Form(...),body:str=Form(...),audience:str=Form('all'),class_name:str=Form(''),section_name:str=Form(''),audience_role:str=Form('all')):
     a=require_admin(request,'announcements'); audience=audience if audience in {'all','class','section'} else 'all'
+    audience_role=audience_role if audience_role in ANNOUNCEMENT_ROLES else 'all'
     try:
         title=_clean_text(title,160); body=_clean_text(body,5000); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
         if class_name and class_name not in ACADEMY_GRADES: raise ValueError('Choose a valid academy grade.')
+        if audience == 'all': class_name = ''; section_name = ''
+        elif audience == 'class': section_name = ''
     except ValueError as exc: return flash_redirect('/admin/announcements',str(exc),'error')
     with connect() as conn:
-        conn.execute('INSERT INTO announcements(title,body,audience,class_name,section_name,status,created_by,created_at) VALUES (?,?,?,?,?,"published",?,?)',(title.strip(),body.strip(),audience,class_name or None,section_name or None,a['id'],iso_now())); audit(conn,a['id'],'announcement_published',title.strip())
-        deliver_announcement(conn,{'title':title.strip(),'body':body.strip(),'audience':audience,'class_name':class_name or None,'section_name':section_name or None})
+        conn.execute('INSERT INTO announcements(title,body,audience,audience_role,class_name,section_name,status,created_by,created_at) VALUES (?,?,?,?,?,?,"published",?,?)',(title.strip(),body.strip(),audience,audience_role,class_name or None,section_name or None,a['id'],iso_now())); audit(conn,a['id'],'announcement_published',title.strip())
+        deliver_announcement(conn,{'title':title.strip(),'body':body.strip(),'audience':audience,'audience_role':audience_role,'class_name':class_name or None,'section_name':section_name or None})
     return flash_redirect('/admin/announcements','Announcement published.')
 
 

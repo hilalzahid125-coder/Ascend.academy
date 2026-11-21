@@ -278,6 +278,18 @@ async def admin_fee_waiver_reverse(request:Request,fee_id:int):
     except ValueError as exc: return flash_redirect('/admin/fees',str(exc),'error')
     return flash_redirect('/admin/fees','Waiver reversed; the outstanding balance has been restored.')
 
+@app.get('/parent/announcements',response_class=HTMLResponse)
+def parent_announcements(request:Request):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        children=_parent_children(conn,parent['id'])
+        rows=visible_announcements(conn,parent)
+        mark_announcement_alerts_read(conn,parent['id'])
+    return render(request,'announcements.html',{'announcements':_announcement_cards(rows),
+        'audience_roles':ANNOUNCEMENT_ROLES,'notifications_link':'/parent/notifications',
+        'workspace_label':'PARENT WORKSPACE','children':children,
+        'parent_child_id':children[0]['id'] if children else None})
+
 @app.get('/parent/notifications',response_class=HTMLResponse)
 def parent_notifications(request:Request,filter:str='all'):
     parent=require_user(request,'parent')

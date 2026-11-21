@@ -6,13 +6,14 @@ def render(request: Request, name: str, context=None, status_code=200):
     context = context or {}
     csrf = request.cookies.get('pms_csrf') or new_token(24)
     user = current_user(request)
-    unread=0
+    unread=0; unread_announcements=0
     if user is not None:
         try:
             with connect() as conn:
                 unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(user['id'],)).fetchone()['c']
+                unread_announcements=conn.execute("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0 AND kind='announcement'",(user['id'],)).fetchone()['c']
         except Exception:
-            unread=0
+            unread=0; unread_announcements=0
     context.update({'request':request,'settings':getattr(request.state,'display_settings',None) or settings(),'user':user,
                     'msg':request.query_params.get('msg'),'kind':request.query_params.get('kind','success'),
                     'csrf_token':csrf,
@@ -20,7 +21,7 @@ def render(request: Request, name: str, context=None, status_code=200):
                     'admin_permissions':_admin_permissions(user),
                     'staff_permission_labels':STAFF_PERMISSION_LABELS,
                     'app_version':APP_VERSION,'academy_grades':ACADEMY_GRADES,'academy_subjects':ACADEMY_SUBJECTS,
-                    'unread_notifications':unread})
+                    'unread_notifications':unread,'unread_announcements':unread_announcements})
     response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
     if not request.cookies.get('pms_csrf'):
         set_app_cookie(response,'pms_csrf',csrf)

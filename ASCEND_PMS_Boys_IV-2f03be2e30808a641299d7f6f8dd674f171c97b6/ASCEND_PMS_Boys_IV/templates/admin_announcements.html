@@ -1,3 +1,26 @@
 {% extends "base.html" %}
-{% block content %}<section class="page-head"><div><span class="eyebrow">COMMUNICATIONS</span><h1>Announcements</h1><p>Publish academy-wide, class or section notices directly to student dashboards.</p></div><button class="btn primary" onclick="openModal('announcementModal')">New announcement</button></section><div class="announcement-grid">{% for a in announcements %}<article class="panel notice-card"><div class="row-gap"><span class="badge">{{ a.audience }}</span><small>{{ a.created_at[:10] }}</small></div><h2>{{ a.title }}</h2><p>{{ a.body }}</p>{% if a.class_name %}<small>Target: Grade {{ a.class_name }}{% if a.section_name %}, Section {{ a.section_name }}{% endif %}</small>{% endif %}<form method="post" action="/admin/announcements/{{ a.id }}/status" class="action-row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn tiny ghost" name="status" value="{{ "archived" if a.status=="published" else "published" }}">{{ "Archive" if a.status=="published" else "Publish" }}</button></form></article>{% else %}<div class="empty full">No announcements yet.</div>{% endfor %}</div>
-<div class="modal" id="announcementModal"><div class="modal-card"><button class="close" onclick="closeModal('announcementModal')">×</button><span class="eyebrow">PUBLISH NOTICE</span><h2>New announcement</h2><form method="post" action="/admin/announcements/create" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Title<input name="title" required></label><label>Message<textarea name="body" required></textarea></label><label>Audience<select name="audience"><option value="all">All students</option><option value="class">A grade</option><option value="section">A section</option></select></label><div class="two-col"><label>Grade<select name="class_name"><option value="">All grades</option>{% for grade in academy_grades %}<option value="{{ grade }}">{{ grade }}</option>{% endfor %}</select></label><label>Section<input name="section_name"></label></div><button class="btn primary wide">Publish announcement</button></form></div></div>{% endblock %}
+{% block content %}
+<section class="page-head"><div><span class="eyebrow">COMMUNICATIONS</span><h1>Announcements</h1><p>Publish a notice to everyone, to one audience or to one class. It appears on their announcements page and in their notifications.</p></div><button class="btn primary" onclick="openModal('announcementModal')">New announcement</button></section>
+<div class="announcement-grid">
+  {% for a in announcements %}
+  <article class="panel notice-card">
+    <div class="row-gap"><span class="notice-role {{ a.audience_role }}">{{ a.role_label }}</span><span class="badge">{{ a.status }}</span><small>{{ a.created_at[:10] }}</small></div>
+    <h2>{{ a.title }}</h2>
+    <p>{{ a.body }}</p>
+    <div class="notice-meta"><span>{{ a.scope_label }}</span><span>{{ a.delivered }} recipient{{ '' if a.delivered==1 else 's' }}</span></div>
+    <form method="post" action="/admin/announcements/{{ a.id }}/status" class="action-row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn tiny ghost" name="status" value="{{ 'archived' if a.status=='published' else 'published' }}">{{ 'Archive' if a.status=='published' else 'Publish' }}</button></form>
+  </article>
+  {% else %}<div class="empty full">No announcements yet.</div>{% endfor %}
+</div>
+<div class="modal" id="announcementModal"><div class="modal-card"><button class="close" onclick="closeModal('announcementModal')">×</button><span class="eyebrow">PUBLISH NOTICE</span><h2>New announcement</h2>
+  <form method="post" action="/admin/announcements/create" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Title<input name="title" maxlength="160" required></label>
+    <label>Message<textarea name="body" rows="5" maxlength="5000" required placeholder="Write the notice exactly as it should read on the page."></textarea></label>
+    <label>Send to<select name="audience_role">{% for code,label in audience_roles.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}</select><small>Everyone also includes teachers and students of the chosen grade.</small></label>
+    <label>Scope<select name="audience"><option value="all">Whole academy</option><option value="class">A grade</option><option value="section">A section</option></select></label>
+    <div class="two-col"><label>Grade<select name="class_name"><option value="">All grades</option>{% for grade in academy_grades %}<option value="{{ grade }}">{{ grade }}</option>{% endfor %}</select></label><label>Section<input name="section_name" maxlength="40" placeholder="e.g. A"></label></div>
+    <button class="btn primary wide">Publish announcement</button>
+  </form>
+</div></div>
+{% endblock %}
