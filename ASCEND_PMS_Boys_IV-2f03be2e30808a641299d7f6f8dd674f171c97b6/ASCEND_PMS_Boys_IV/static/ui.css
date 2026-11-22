@@ -911,3 +911,40 @@ label:has(> input[type=checkbox]):hover input,label:has(> input[type=checkbox]) 
 .overview-banner button:not(.btn),.parent-welcome button:not(.btn),.class-hero button:not(.btn){color:#f2fbf7}
 .overview-banner a:not(.btn),.class-hero a:not(.btn),.parent-welcome a:not(.btn){color:#d7f0e6}
 .overview-banner a:not(.btn):hover,.class-hero a:not(.btn):hover{color:#fff}
+
+/* Inputs sit on the mint tint; keep placeholders and small hints readable. */
+input:not([type=checkbox]):not([type=radio]):not([type=file]):hover:placeholder-shown{background:var(--mint-50)}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
+select:invalid,.panel table td select{color:var(--ink)}
+
+/* ==========================================================================
+   Student directory: the roster needs real horizontal room, not a clipped panel.
+   ========================================================================== */
+.student-directory{overflow:hidden}
+.student-directory .student-table-scroll{
+  overflow-x:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;
+  border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--card);
+}
+.student-directory .student-table-scroll:focus-visible{outline:3px solid rgba(15,154,115,.4);outline-offset:2px}
+.student-directory #studentsTable{width:100%;min-width:1120px;border-collapse:collapse;margin:0}
+.student-directory #studentsTable th{
+  position:sticky;top:0;z-index:2;text-align:left;white-space:nowrap;
+  font-family:var(--font-mono);font-size:.62rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);background:var(--mint-50);border-bottom:1px solid var(--line);padding:.7rem .75rem;
+}
+.student-directory #studentsTable td{padding:.65rem .75rem;border-bottom:1px solid var(--line);font-size:.86rem;vertical-align:middle}
+.student-directory #studentsTable tbody tr:hover{background:var(--mint-50)}
+.student-directory #studentsTable td:first-child{min-width:190px}
+.student-directory #studentsTable .mini-avatar{width:34px;height:34px;flex:none;object-fit:cover;font-size:.78rem}
+.student-directory #studentsTable td:last-child,.student-directory #studentsTable th:last-child{
+  position:sticky;right:0;z-index:2;background:var(--card);box-shadow:-10px 0 14px -14px rgba(3,38,28,.55)
+}
+.student-directory #studentsTable th:last-child{z-index:3;background:var(--mint-50)}
+.student-directory #studentsTable tbody tr:hover td:last-child{background:var(--mint-50)}
+.student-directory .student-row-actions{display:flex;gap:.35rem;flex-wrap:nowrap}
+.student-directory .directory-scroll-hint{font-size:.78rem;color:var(--muted);margin:-.3rem 0 .75rem}
+.student-directory .table-search{max-width:280px}
+@media (max-width:650px){
+  .student-directory #studentsTable{min-width:980px}
+  .student-directory .table-search{max-width:none;width:100%}
+}
