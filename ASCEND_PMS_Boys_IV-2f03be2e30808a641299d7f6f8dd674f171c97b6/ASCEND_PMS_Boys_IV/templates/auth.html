@@ -44,10 +44,10 @@
         <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
         <button class="btn primary wide">Sign in</button>
       </form>
-      <p class="switch-copy">First time here? <a href="/register">Activate your account</a></p>
+      <p class="switch-copy">First time here? <a href="/register">Apply to join the academy</a></p>
       <p class="switch-copy">Parent or guardian? <a href="/parent/login">Parent sign in</a></p>
       {% endif %}
-      <div class="auth-help">{{ 'Need a parent account or help signing in? Contact your academy administrator.' if mode=='parent_login' else 'Need help? Ask your academy administrator to reset your account or issue a new activation code.' }}</div>
+      <div class="auth-help">{{ 'Need a parent account or help signing in? Contact your academy administrator.' if mode=='parent_login' else 'Need help? Ask your academy administrator to help with your account.' }}</div>
       <div class="auth-links"><a href="/">Home</a><a href="/about">About</a><a href="/privacy">Privacy</a><span>v{{ app_version }}</span></div>
     </div>
   </section>

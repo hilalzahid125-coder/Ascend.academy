@@ -1,0 +1,83 @@
+
+# Self-registration creates an isolated applicant, never an active student.
+@app.post('/admission/register')
+def submit_admission(request: Request, full_name:str=Form(...), email:str=Form(...), phone:str=Form(...),
+                     grade:str=Form(...), subject:str=Form(...), guardian_name:str=Form(''),
+                     guardian_phone:str=Form(''), password:str=Form(...), confirm_password:str=Form(...),
+                     terms:str=Form('')):
+    if settings().get('registration_enabled')!='1':
+        return flash_redirect('/register','Student registration is currently closed.','error')
+    try:
+        full_name=_clean_text(full_name,120); email=_clean_text(email,200); phone=_clean_text(phone,40)
+        guardian_name=_clean_text(guardian_name,120,False); guardian_phone=_clean_text(guardian_phone,40,False)
+        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email): raise ValueError('Enter a valid email address.')
+        if grade not in ACADEMY_GRADES or subject not in ACADEMY_SUBJECTS: raise ValueError('Choose a valid grade and subject.')
+        if len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password): raise ValueError('Password must be 8–128 characters and include letters and numbers.')
+        if password!=confirm_password: raise ValueError('Passwords do not match.')
+        if terms!='yes': raise ValueError('Please accept the privacy policy.')
+    except ValueError as exc:
+        return flash_redirect('/register',str(exc),'error')
+    key=_attempt_key('admission-register-ip',request,'*')
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if _rate_limited(conn,key,5,60): return flash_redirect('/register','Too many registrations. Please try again later.','error')
+        _record_failure(conn,key)
+        temporary_id='TMP-'+secrets.token_hex(8).upper()
+        uid=conn.execute("""INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,class_name,created_at)
+          VALUES (?,?,?,'student','pending',1,?,?) RETURNING id""",(temporary_id,full_name,hash_password(password),grade,iso_now())).fetchone()['id']
+        conn.execute('INSERT INTO student_admissions(user_id,temporary_id,email,phone,guardian_name,guardian_phone,subject,created_at) VALUES (?,?,?,?,?,?,?,?)',
+                     (uid,temporary_id,email,phone,guardian_name,guardian_phone,subject,iso_now()))
+        profile={'fullName':full_name,'email':email,'phone':phone,'guardianName':guardian_name,'guardianPhone':guardian_phone,'grade':grade,'subjects':[subject]}
+        conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?)',(uid,json.dumps(profile),iso_now()))
+        for admin in conn.execute("SELECT * FROM users WHERE role='admin' AND status='active'").fetchall():
+            if is_super_admin(admin) or 'students' in _admin_permissions(admin):
+                notify(conn,admin['id'],'New student application',f'{full_name} submitted an application.','admission',link_path='/admin/admissions')
+        token=new_token(); conn.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)',(token_hash(token),uid,iso_expiry(),iso_now()))
+    response=RedirectResponse('/admission/status',303); set_app_cookie(response,'pms_session',token,httponly=True); return response
+
+@app.get('/admission/status',response_class=HTMLResponse)
+def admission_status(request: Request):
+    user=current_user(request)
+    if not user or user['role']!='student': raise HTTPException(401)
+    with connect() as conn:
+        admission=conn.execute('SELECT * FROM student_admissions WHERE user_id=?',(user['id'],)).fetchone()
+    if not admission: raise HTTPException(404)
+    return render(request,'admission_status.html',{'admission':admission})
+
+@app.get('/admin/admissions',response_class=HTMLResponse)
+def admin_admissions(request: Request):
+    require_admin(request,'students')
+    with connect() as conn:
+        rows=conn.execute('''SELECT a.*,u.full_name,u.class_name,u.admission_no,u.status AS user_status FROM student_admissions a JOIN users u ON u.id=a.user_id ORDER BY CASE WHEN a.status='pending' THEN 0 ELSE 1 END,a.created_at DESC''').fetchall()
+    return render(request,'admin_admissions.html',{'admissions':rows})
+
+@app.post('/admin/admissions/{user_id}/review')
+def admin_admission_review(request: Request,user_id:int,decision:str=Form(...),note:str=Form('')):
+    admin=require_admin(request,'students')
+    if decision not in {'approve','reject'}: raise HTTPException(400)
+    try: note=_clean_text(note,500,False)
+    except ValueError as exc: return flash_redirect('/admin/admissions',str(exc),'error')
+    try:
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row=conn.execute("SELECT a.*,u.status AS user_status FROM student_admissions a JOIN users u ON u.id=a.user_id WHERE a.user_id=?",(user_id,)).fetchone()
+            if not row or row['status']!='pending' or row['user_status']!='pending': return flash_redirect('/admin/admissions','Application is no longer pending.','error')
+            if decision=='approve':
+                numbers=[]
+                for item in conn.execute("SELECT admission_no FROM users WHERE admission_no LIKE 'A-%'").fetchall():
+                    match=re.fullmatch(r'A-(\d{3,6})',item['admission_no'])
+                    if match: numbers.append(int(match.group(1)))
+                next_number=max(numbers,default=0)+1
+                if next_number>999999: raise ValueError('No student IDs remain. Contact the system administrator.')
+                permanent_id='A-'+str(next_number).zfill(3)
+                conn.execute("UPDATE users SET admission_no=?,status='active' WHERE id=? AND status='pending'",(permanent_id,user_id))
+                conn.execute("UPDATE student_admissions SET status='approved',reviewed_at=?,reviewed_by=?,review_note=? WHERE user_id=? AND status='pending'",(iso_now(),admin['id'],note,user_id))
+                notify(conn,user_id,'Application approved',f'Your student ID is {permanent_id}. Welcome to the academy.','admission',link_path='/admission/status')
+            else:
+                conn.execute("UPDATE student_admissions SET status='rejected',reviewed_at=?,reviewed_by=?,review_note=? WHERE user_id=? AND status='pending'",(iso_now(),admin['id'],note,user_id))
+                conn.execute("UPDATE users SET status='disabled' WHERE id=?",(user_id,))
+                conn.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
+            audit(conn,admin['id'],'student_admission_'+decision,f'user {user_id}')
+    except (ValueError, *INTEGRITY_ERRORS) as exc:
+        return flash_redirect('/admin/admissions','Could not complete this review. Please try again or contact support.','error')
+    return flash_redirect('/admin/admissions','Application '+('approved; student ID assigned.' if decision=='approve' else 'rejected.'))

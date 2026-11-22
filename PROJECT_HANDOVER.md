@@ -1,5 +1,7 @@
 # PROJECT HANDOVER — Delta Academy (ASCEND PMS Boys IV)
 
+> **Unreleased admission/demo work:** The current working tree adds `/explore`, student self-registration with a temporary ID, isolated pending access, and admin approval with permanent ID allocation. Migration `021_student_admissions.sql` has **not** been applied to production; this work has not been deployed. The demo is a set of interactive sample views, not a complete replica of every app feature. Existing school-issued activation remains available at `/register/legacy` for previously created unclaimed accounts. Existing fees are unchanged. Verify PostgreSQL migrations, isolation, and a browser end-to-end before release; check the `registration_enabled` setting before opening applications. SQLite suite: 101 passed / 9 skipped; full PostgreSQL suite: 110 passed on an isolated PostgreSQL 18 instance. Latest fixes: admin-created students now receive a working password, student password reset sets a usable password, sign-in explains missing passwords and O/0 ID typos.
+
 **Project:** Delta Academy — the production ASCEND platform for **Peshawar Model School Boys IV** (tagline: *Compete • Achieve • Grow*).
 **Repository:** `https://github.com/hilalzahid125-coder/Ascend.academy.git`
 **Current branch:** `arena/24938aa0-ascend-academy` (the earlier parent-portal work landed on `arena/794316a6-ascend-academy`)

@@ -336,7 +336,7 @@ def test_academy_signup_connects_real_dashboard():
         c.execute('''INSERT INTO users(admission_no,full_name,role,status,class_name,section_name,activation_code,claimed,created_at)
                      VALUES ('A-9981','School Record','student','unclaimed','10','A','CODE81',0,?)''', (iso_now(),))
     with TestClient(app) as client:
-        page = client.get('/register')
+        page = client.get('/register/legacy')
         assert page.status_code == 200 and '/static/academy-signup/signup.js' in page.text
         assert client.get('/static/academy-signup/signup.js').status_code == 200
         bad = post(client, '/register/academy', {'profile': json.dumps(academy_profile(activationCode='WRONG'))})
@@ -362,7 +362,7 @@ def test_academy_signup_respects_csrf_and_registration_setting():
         with connect() as c:
             c.execute("UPDATE settings SET value='0' WHERE key='registration_enabled'")
         try:
-            page = client.get('/register')
+            page = client.get('/register/legacy')
             assert 'data-registration-enabled="0"' in page.text
             assert post(client, '/register/academy', {'profile': json.dumps(academy_profile())}).status_code == 400
         finally:
@@ -411,7 +411,7 @@ def test_end_to_end_academy_and_role_workflow():
             record = c.execute("SELECT id,activation_code FROM users WHERE admission_no='A-9901'").fetchone()
             student_id, code = record['id'], record['activation_code']
 
-        page = student.get('/register')
+        page = student.get('/register/legacy')
         assert page.status_code == 200 and 'data-registration-enabled="1"' in page.text
         data = academy_profile(admissionNo='A-9901', activationCode=code, fullName='Flow Student')
         # Match the browser's multipart FormData request, rather than only urlencoded requests.
@@ -3207,3 +3207,183 @@ def test_parent_activity_monitoring_and_admin_student_report():
     assert changed.status_code==303
     with connect() as c:
         assert c.execute("SELECT COUNT(*) n FROM audit_logs WHERE action='parent_password_changed' AND details LIKE 'P-MON101%'").fetchone()['n']==1
+
+
+def test_explore_demo_is_public_and_contains_only_example_content():
+    guest = TestClient(app)
+    page = guest.get('/explore')
+    assert page.status_code == 200
+    assert "You're exploring a demo" in page.text
+    assert 'Demo Student' in page.text and 'data-demo-answer="right"' in page.text
+    assert 'data-demo-panel="family"' in page.text
+    assert '/static/explore-demo.js?v=1' in page.text
+    assert 'href="/explore"' in guest.get('/').text
+    assert guest.get('/student', follow_redirects=False).status_code in (303, 401)
+    assert guest.get('/uploads/profile_1.webp', follow_redirects=False).status_code == 404
+    # The demo remains accessible inside the existing authenticated shell.
+    owner = TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    assert 'Demo Student' in owner.get('/explore').text
+
+
+def test_self_registration_demo_isolation_and_admin_activation():
+    from db import init_db
+    init_db()
+    with connect() as c:
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        import re
+        numbers=[int(m.group(1)) for r in c.execute("SELECT admission_no FROM users WHERE admission_no LIKE 'A-%'").fetchall() if (m:=re.fullmatch(r'A-(\d{3,6})',r['admission_no']))]
+        expected='A-'+str(max(numbers, default=0)+1).zfill(3)
+    applicant=TestClient(app); csrf(applicant, '/register')
+    data={'full_name':'Demo Applicant','email':'applicant@example.com','phone':'1234567','grade':'O-Level - Grade 9','subject':'Maths','password':'StudentPass123','confirm_password':'StudentPass123','terms':'yes'}
+    r=post(applicant,'/admission/register',data); assert r.status_code==303 and r.headers['location']=='/admission/status'
+    page=applicant.get('/admission/status'); assert page.status_code==200 and 'Your temporary sign-in ID' in page.text
+    with connect() as c:
+        row=c.execute("SELECT u.id,u.admission_no,u.status FROM users u WHERE u.full_name='Demo Applicant'").fetchone(); uid=row['id']; temp=row['admission_no']
+        assert row['status']=='pending' and temp.startswith('TMP-')
+        assert c.execute('SELECT status FROM student_admissions WHERE user_id=?',(uid,)).fetchone()['status']=='pending'
+    assert applicant.get('/explore').status_code==200
+    for url in ['/student','/fees','/notifications','/profile','/my-classes','/parent','/uploads/school_logo.png']:
+        res=applicant.get(url,follow_redirects=False); assert res.status_code==303 and res.headers['location']=='/admission/status',url
+    assert post(applicant,'/profile/photo/remove').status_code==403
+    owner=TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    assert 'Demo Applicant' in owner.get('/admin/admissions').text
+    assert post(owner,f'/admin/admissions/{uid}/review',{'decision':'approve'}).status_code==303
+    with connect() as c:
+        row=c.execute('SELECT admission_no,status FROM users WHERE id=?',(uid,)).fetchone(); assert row['admission_no']==expected and row['status']=='active'
+    assert expected in applicant.get('/admission/status').text
+    assert applicant.get('/student').status_code==200
+    # Retrying review is harmless, and the temporary ID can recover the permanent ID.
+    post(owner,f'/admin/admissions/{uid}/review',{'decision':'approve'})
+    returning=TestClient(app); csrf(returning); result=post(returning,'/login',{'admission_no':temp,'password':'StudentPass123'})
+    assert result.headers['location']=='/admission/status'
+    assert expected in returning.get('/admission/status').text
+
+
+def test_admission_rejection_permission_and_pending_account_safeguards():
+    with connect() as c:
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        c.execute('DELETE FROM auth_attempts')
+    applicant=TestClient(app); csrf(applicant,'/register')
+    data={'full_name':'Rejected applicant','email':'rejected@example.com','phone':'1234567','grade':'O-Level - Grade 9','subject':'Maths','password':'StudentPass123','confirm_password':'StudentPass123','terms':'yes'}
+    assert post(applicant,'/admission/register',data).status_code==303
+    with connect() as c:
+        row=c.execute("SELECT id,admission_no FROM users WHERE full_name='Rejected applicant'").fetchone(); uid=row['id']; temp=row['admission_no']
+    owner=TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    assert 'Rejected applicant' not in owner.get('/admin/students').text
+    post(owner,f'/admin/students/{uid}/status',{'status':'active'})
+    post(owner,f'/admin/students/{uid}/reset')
+    with connect() as c: assert c.execute('SELECT status FROM users WHERE id=?',(uid,)).fetchone()['status']=='pending'
+    # Student managers may review; no unrelated user can review an application.
+    with connect() as c:
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('A-987654','Other student',?,'student','active',1,?)",(hash_password('StudentPass123'),iso_now()))
+    student=TestClient(app); csrf(student); post(student,'/login',{'admission_no':'A-987654','password':'StudentPass123'})
+    assert student.get('/admin/admissions').status_code==403
+    assert post(student,f'/admin/admissions/{uid}/review',{'decision':'approve'}).status_code==403
+    assert post(owner,f'/admin/admissions/{uid}/review',{'decision':'reject','note':'Please contact the academy'}).status_code==303
+    with connect() as c:
+        assert c.execute('SELECT status FROM student_admissions WHERE user_id=?',(uid,)).fetchone()['status']=='rejected'
+        assert c.execute('SELECT status FROM users WHERE id=?',(uid,)).fetchone()['status']=='disabled'
+        assert c.execute('SELECT COUNT(*) n FROM sessions WHERE user_id=?',(uid,)).fetchone()['n']==0
+    again=TestClient(app); csrf(again); assert 'not%20active' in post(again,'/login',{'admission_no':temp,'password':'StudentPass123'}).headers['location']
+
+
+def test_admission_approval_is_serialized_and_preserves_fee_records():
+    from concurrent.futures import ThreadPoolExecutor
+    with connect() as c:
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        c.execute('DELETE FROM auth_attempts')
+        fees_before=c.execute('SELECT COUNT(*) n FROM fee_assignments').fetchone()['n']
+    ids=[]
+    for index in (1,2):
+        applicant=TestClient(app); csrf(applicant,'/register')
+        response=post(applicant,'/admission/register',{'full_name':f'Concurrent Applicant {index}','email':f'concurrent{index}@example.com','phone':'1234567','grade':'O-Level - Grade 9','subject':'Maths','password':'StudentPass123','confirm_password':'StudentPass123','terms':'yes'})
+        assert response.status_code==303 and response.headers['location']=='/admission/status'
+        with connect() as c: ids.append(c.execute('SELECT id FROM users WHERE full_name=?',(f'Concurrent Applicant {index}',)).fetchone()['id'])
+    owners=[]
+    for _ in ids:
+        owner=TestClient(app); csrf(owner); assert post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'}).status_code==303; owners.append(owner)
+    def approve(i): return post(owners[i],f'/admin/admissions/{ids[i]}/review',{'decision':'approve'})
+    with ThreadPoolExecutor(max_workers=2) as executor: responses=list(executor.map(approve,range(2)))
+    assert all('approved' in r.headers['location'] for r in responses)
+    with connect() as c:
+        rows=[c.execute('SELECT admission_no,status FROM users WHERE id=?',(uid,)).fetchone() for uid in ids]
+        assert len({r['admission_no'] for r in rows})==2 and all(r['status']=='active' for r in rows)
+        assert c.execute('SELECT COUNT(*) n FROM fee_assignments').fetchone()['n']==fees_before
+
+
+def test_admission_registration_closed_validation_and_csrf():
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+        c.execute("UPDATE settings SET value='0' WHERE key='registration_enabled'")
+    guest=TestClient(app); csrf(guest,'/register')
+    data={'full_name':'Closed applicant','email':'closed@example.com','phone':'1234','grade':'O-Level - Grade 9','subject':'Maths','password':'StudentPass123','confirm_password':'StudentPass123','terms':'yes'}
+    assert guest.post('/admission/register',data=data,follow_redirects=False).status_code==403
+    response=post(guest,'/admission/register',data)
+    assert 'closed' in response.headers['location']
+    with connect() as c:
+        assert c.execute("SELECT COUNT(*) n FROM users WHERE full_name='Closed applicant'").fetchone()['n']==0
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+    response=post(guest,'/admission/register',{**data,'email':'invalid'})
+    assert 'valid%20email' in response.headers['location']
+    with connect() as c: assert c.execute("SELECT COUNT(*) n FROM users WHERE full_name='Closed applicant'").fetchone()['n']==0
+
+
+def test_created_accounts_can_sign_in_and_reject_wrong_passwords():
+    with connect() as c: c.execute('DELETE FROM auth_attempts')
+    owner=TestClient(app); csrf(owner)
+    assert post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'}).headers['location']=='/admin'
+    # The admin-created student is immediately usable; no activation code is required.
+    created=post(owner,'/admin/students/create',{'admission_no':'A-543218','full_name':'Real Login Student','class_name':'O-Level - Grade 9','password':'StudentPass987'})
+    assert 'Student%20account%20created' in created.headers['location']
+    with connect() as c:
+        row=c.execute("SELECT id,status,claimed,activation_code FROM users WHERE admission_no='A-543218'").fetchone()
+        assert row['status']=='active' and row['claimed']==1 and row['activation_code'] is None
+        student_id=row['id']
+    post(owner,'/admin/parents/create',{'full_name':'Real Login Parent','student_id':student_id,'password':'ParentPass9876'})
+    post(owner,'/admin/admins/create',{'admin_id':'ADMIN-LOGIN1','full_name':'Real Login Admin','password':'AdminPass98765','permissions':['students']})
+    post(owner,'/admin/teachers/create',{'teacher_id':'T-LOGIN1','full_name':'Real Login Teacher','password':'TeacherPass987'})
+    for identity,password,destination in [('a-543218','StudentPass987','/student'),('p-543218','ParentPass9876','/parent'),('admin-login1','AdminPass98765','/admin'),('t-login1','TeacherPass987','/teacher')]:
+        client=TestClient(app); csrf(client)
+        bad=post(client,'/login',{'admission_no':identity,'password':password+'wrong'})
+        assert 'Incorrect' in bad.headers['location']
+        good=post(client,'/login',{'admission_no':identity,'password':password})
+        assert good.status_code==303 and good.headers['location']==destination
+        assert client.get(destination).status_code==200
+    parent=TestClient(app); csrf(parent,'/parent/login')
+    assert post(parent,'/parent/login',{'admission_no':'p-543218','password':'ParentPass9876'}).headers['location']=='/parent'
+    invalid=post(owner,'/admin/students/create',{'admission_no':'A-543219','full_name':'Bad Password','password':'short'})
+    assert 'password' in invalid.headers['location'].lower()
+    with connect() as c: assert not c.execute("SELECT id FROM users WHERE admission_no='A-543219'").fetchone()
+
+
+def test_admin_student_password_reset_creates_working_credentials():
+    with connect() as c: c.execute('DELETE FROM auth_attempts')
+    owner=TestClient(app); csrf(owner)
+    post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    post(owner,'/admin/students/create',{'admission_no':'A-654321','full_name':'Reset Flow Student','class_name':'O-Level - Grade 10','password':'OriginalPass123'})
+    with connect() as c: sid=c.execute("SELECT id FROM users WHERE admission_no='A-654321'").fetchone()['id']
+    student=TestClient(app); csrf(student)
+    assert post(student,'/login',{'admission_no':'A-654321','password':'OriginalPass123'}).headers['location']=='/student'
+    # Existing session is revoked, and the old password stops working.
+    assert post(owner,f'/admin/students/{sid}/reset',{'password':'ChangedPass456'}).headers['location'].startswith('/admin/students')
+    assert student.get('/student',follow_redirects=False).status_code==303
+    fresh=TestClient(app); csrf(fresh)
+    assert 'Incorrect' in post(fresh,'/login',{'admission_no':'A-654321','password':'OriginalPass123'}).headers['location']
+    with connect() as c: c.execute('DELETE FROM auth_attempts')
+    assert post(fresh,'/login',{'admission_no':'A-654321','password':'ChangedPass456'}).headers['location']=='/student'
+
+
+def test_sign_in_guidance_for_missing_password_and_o_zero_typo():
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+        c.execute("INSERT INTO users(admission_no,full_name,role,status,claimed,created_at) VALUES ('A-710001','Awaiting Password','student','unclaimed',0,?)",(iso_now(),))
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('ADMIN-OO1','O Letter Admin',?,'admin','active',1,?)",(hash_password('LetterOAdmin123'),iso_now()))
+    client=TestClient(app); csrf(client)
+    # A record without a password must explain the real reason, not say wrong password.
+    r=post(client,'/login',{'admission_no':'A-710001','password':'Anything123'})
+    assert 'no%20password' in r.headers['location'].lower()
+    # Typing zeros for O must point to the stored spelling.
+    with connect() as c: c.execute('DELETE FROM auth_attempts')
+    r=post(client,'/login',{'admission_no':'ADMIN-001','password':'LetterOAdmin123'})
+    assert 'Did%20you%20mean%20ADMIN-OO1' in r.headers['location']
+    assert 'Incorrect' not in r.headers['location']

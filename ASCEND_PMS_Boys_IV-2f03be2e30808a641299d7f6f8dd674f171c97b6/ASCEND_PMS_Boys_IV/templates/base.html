@@ -20,7 +20,7 @@
 </head>
 <body class="{{ 'role-admin' if user and user.role == 'admin' else 'role-student' if user and user.role in ('student','parent','teacher') else 'role-guest' }}{{ ' role-parent' if user and user.role=='parent' else '' }}">
 <a class="skip-link" href="#main-content">Skip to main content</a>
-{% if user %}
+{% if user and user.status == 'active' %}
 <div class="app-shell">
   <aside class="sidebar" id="sidebar">
     <button class="sidebar-close" type="button" onclick="closeSidebar()" aria-label="Close navigation"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#x"></use></svg></button>
@@ -37,6 +37,7 @@
       <a href="/admin/teaching/classes" class="{{ 'active' if request.url.path.startswith('/admin/teaching/classes') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#book-open"></use></svg><span>Assigned classes</span></a>{% endif %}
       {% if is_super_admin or 'feedback' in admin_permissions %}<a href="/admin/feedback" class="{{ 'active' if request.url.path.startswith('/admin/feedback') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#message-square"></use></svg><span>Teacher feedback</span></a>{% endif %}
       {% if is_super_admin or 'classes' in admin_permissions %}<a href="/admin/my-classes" class="{{ 'active' if request.url.path.startswith('/admin/my-classes') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#book-open"></use></svg><span>My Classes</span></a>{% endif %}
+      {% if is_super_admin or 'students' in admin_permissions %}<a href="/admin/admissions"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#users-round"></use></svg><span>Student applications</span></a>{% endif %}
       {% if is_super_admin or 'students' in admin_permissions %}<a href="/admin/students" class="{{ 'active' if request.url.path.startswith('/admin/students') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#users-round"></use></svg><span>Students & points</span></a>
       {% endif %}
       {% if is_super_admin or 'challenges' in admin_permissions %}<a href="/admin/challenges" class="{{ 'active' if request.url.path.startswith('/admin/challenges') else '' }}"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#swords"></use></svg><span>Challenges</span></a>{% endif %}
@@ -120,6 +121,6 @@
 </div>
 {% else %}{% block auth_content %}{% endblock %}{% endif %}
 <script src="/static/live-classes.js?v=1" defer></script>
-<script src="/static/app.js?v=academy-13" defer></script>
+<script src="/static/app.js?v=academy-14" defer></script>
 <script src="/static/fees.js?v=4" defer></script>
 </body></html>

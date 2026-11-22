@@ -229,6 +229,23 @@ async def security_middleware(request: Request, call_next):
             length=0
         if length > MAX_POST_BYTES:
             return JSONResponse({'detail':'Request too large.'}, status_code=413)
+    # Pending applicants may use only the isolated demo and account status.
+    # Enforce this before routing, including APIs, files and unsafe methods.
+    path=request.url.path
+    # The school logo remains public; student profile images require a signed-in,
+    # active account. Applicants cannot bypass the demo gate by signing out.
+    if path.startswith('/uploads/profile_'):
+        viewer=current_user(request)
+        if not viewer or viewer['status']!='active':
+            return Response(status_code=404)
+    if request.cookies.get('pms_session') and not (path.startswith('/static/') or path in {'/health','/logout','/explore','/admission/status'}):
+        user=current_user(request)
+        if user and user['role']=='student':
+            with connect() as conn:
+                admission=conn.execute('SELECT status FROM student_admissions WHERE user_id=?',(user['id'],)).fetchone()
+            if admission and admission['status']!='approved':
+                if request.method in {'GET','HEAD'}: return RedirectResponse('/admission/status',303)
+                return JSONResponse({'detail':'Your application is awaiting review.'},status_code=403)
     response = await call_next(request)
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['X-Frame-Options']='DENY'
@@ -262,6 +279,11 @@ def home(request: Request):
         return RedirectResponse('/admin' if u['role']=='admin' else '/parent' if u['role']=='parent' else '/teacher' if u['role']=='teacher' else '/student',303)
     return render(request,'landing.html')
 
+@app.get('/explore', response_class=HTMLResponse)
+def explore_page(request: Request):
+    # A standalone demonstration: no student data or live writes are loaded.
+    return render(request,'explore.html')
+
 @app.get('/about', response_class=HTMLResponse)
 def about_page(request: Request):
     return render(request,'about.html')
@@ -284,7 +306,12 @@ def parent_login_page(request: Request):
     return render(request,'auth.html',{'mode':'parent_login'})
 
 @app.get('/register', response_class=HTMLResponse)
-def register_page(request: Request): return render(request,'academy_signup.html')
+def register_page(request: Request): return render(request,'admission_register.html')
+
+@app.get('/register/legacy', response_class=HTMLResponse)
+def legacy_register_page(request: Request):
+    # Existing school-issued, unclaimed records can still be securely claimed.
+    return render(request,'academy_signup.html')
 
 @app.post('/login')
 def login(request: Request, admission_no: str=Form(...), password: str=Form(...)):
@@ -306,10 +333,23 @@ def _sign_in(request: Request, admission_no: str, password: str, parent_only: bo
         if _rate_limited(conn,key,8,15) or _rate_limited(conn,ip_key,30,15):
             return flash_redirect(login_path,'Too many sign-in attempts. Please wait 15 minutes and try again.','error')
         u=conn.execute('SELECT * FROM users WHERE admission_no=?',(admission_no,)).fetchone()
-        if not u or not u['password_hash'] or not verify_password(password,u['password_hash']) or (parent_only and (u['role']!='parent' or not admission_no.startswith('P-'))):
+        if not u and admission_no.startswith('TMP-'):
+            u=conn.execute('SELECT u.* FROM users u JOIN student_admissions a ON a.user_id=u.id WHERE a.temporary_id=?',(admission_no,)).fetchone()
+        no_password=bool(u and not u['password_hash'])
+        if no_password or not u or not verify_password(password,u['password_hash'] or '') or (parent_only and (u['role']!='parent' or not admission_no.startswith('P-'))):
             _record_failure(conn,key); _record_failure(conn,ip_key)
+            if no_password:
+                return flash_redirect(login_path,'This account has no password yet. Ask the academy office to set one for you.','error')
+            if not u:
+                # Zero and the letter O look alike on printed IDs. Point to the
+                # stored spelling instead of leaving a confusing password error.
+                swapped=admission_no.translate(str.maketrans('O0','0O'))
+                if swapped!=admission_no:
+                    near=conn.execute('SELECT admission_no FROM users WHERE admission_no=?',(swapped,)).fetchone()
+                    if near: return flash_redirect(login_path,f'No account matches that ID. Did you mean {near["admission_no"]}?','error')
             return flash_redirect(login_path,'Incorrect parent ID or password.' if parent_only else 'Incorrect admission number or password.','error')
-        if u['status']!='active':
+        pending_admission=conn.execute("SELECT status FROM student_admissions WHERE user_id=?",(u['id'],)).fetchone() if u['role']=='student' else None
+        if u['status']!='active' and not (u['status']=='pending' and pending_admission and pending_admission['status']=='pending'):
             _record_failure(conn,key); _record_failure(conn,ip_key)
             return flash_redirect(login_path,'This account is not active. Please contact the academy office.','error')
         _clear_failures(conn,key)
@@ -319,7 +359,8 @@ def _sign_in(request: Request, admission_no: str, password: str, parent_only: bo
         # Only successful sign-ins are logged, and never passwords or tokens.
         if u['role']=='parent':
             audit(conn,None,'parent_signed_in',f"{u['admission_no']} · {u['full_name']}")
-    r=RedirectResponse('/admin' if u['role']=='admin' else '/parent' if u['role']=='parent' else '/teacher' if u['role']=='teacher' else '/student',303)
+    destination='/admission/status' if pending_admission and (pending_admission['status']=='pending' or admission_no.startswith('TMP-')) else ('/admin' if u['role']=='admin' else '/parent' if u['role']=='parent' else '/teacher' if u['role']=='teacher' else '/student')
+    r=RedirectResponse(destination,303)
     set_app_cookie(r,'pms_session',token,httponly=True)
     return r
 

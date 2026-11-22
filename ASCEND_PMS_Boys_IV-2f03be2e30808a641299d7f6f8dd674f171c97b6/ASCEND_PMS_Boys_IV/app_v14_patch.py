@@ -94,7 +94,7 @@ def admin_dashboard(request: Request):
     a=require_admin(request)
     with connect() as conn:
         stats=conn.execute('''SELECT
-          (SELECT COUNT(*) FROM users WHERE role='student') students,
+          (SELECT COUNT(*) FROM users u WHERE u.role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved')) students,
           (SELECT COUNT(*) FROM challenges WHERE status='active') active_challenges,
           (SELECT COUNT(*) FROM challenge_participations WHERE status='pending') pending,
           (SELECT COALESCE(SUM(amount),0) FROM point_transactions) points''').fetchone()

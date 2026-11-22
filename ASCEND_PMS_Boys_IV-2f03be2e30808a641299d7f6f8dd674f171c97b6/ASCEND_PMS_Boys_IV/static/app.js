@@ -66,7 +66,7 @@ function openAdminPassword(id,name){document.getElementById('adminPasswordForm')
   if(!document.querySelector('.app-shell')) return;
   const pages=new Set(['/student','/my-classes','/challenges','/leaderboards','/achievements','/rewards','/notifications','/profile',
     '/admin','/admin/my-classes','/admin/students','/admin/challenges','/admin/achievements','/admin/rewards','/admin/announcements',
-    '/parent','/parent/account','/parent/notifications','/parent/announcements','/announcements','/admin/parents','/admin/teaching','/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/admin/fees','/fees','/about','/privacy']);
+    '/parent','/parent/account','/parent/notifications','/admin/admissions','/parent/announcements','/announcements','/admin/parents','/admin/teaching','/admin/activity','/admin/reports','/admin/admins','/admin/settings','/admin/launch','/admin/account','/admin/fees','/fees','/about','/privacy']);
   const isPage = path => pages.has(path) || /^\/fees\/\d+\/pay$/.test(path) || /^\/parent\/children\/\d+(\/[\w\-]+)*$/.test(path);
   let controller=null, serial=0, saving=false, pendingPop=null, shownUrl=location.href;
   function loading(on, message='Opening…'){

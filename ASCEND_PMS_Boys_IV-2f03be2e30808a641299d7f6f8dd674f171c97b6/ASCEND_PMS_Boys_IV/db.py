@@ -167,6 +167,15 @@ CREATE TABLE IF NOT EXISTS academy_signup_profiles (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS student_admissions (
+ user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+ temporary_id TEXT NOT NULL UNIQUE,
+ email TEXT NOT NULL, phone TEXT NOT NULL, guardian_name TEXT NOT NULL, guardian_phone TEXT NOT NULL,
+ subject TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+ created_at TEXT NOT NULL, reviewed_at TEXT, reviewed_by INTEGER REFERENCES users(id), review_note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS student_admissions_status_idx ON student_admissions(status,created_at);
+
 CREATE TABLE IF NOT EXISTS sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash TEXT UNIQUE NOT NULL,

@@ -24,7 +24,7 @@ def parent_admin(request: Request):
     require_admin(request,super_only=True)
     with connect() as conn:
         parents=conn.execute("SELECT id,admission_no,full_name,status,created_at FROM users WHERE role='parent' ORDER BY full_name,id").fetchall()
-        students=conn.execute("SELECT id,full_name,admission_no,class_name FROM users WHERE role='student' ORDER BY full_name,id").fetchall()
+        students=conn.execute("SELECT id,full_name,admission_no,class_name FROM users u WHERE role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved') ORDER BY full_name,id").fetchall()
         links=conn.execute("""SELECT l.parent_id,u.id,u.full_name,u.admission_no FROM parent_student_links l
              JOIN users u ON u.id=l.student_id AND u.role='student' ORDER BY u.full_name""").fetchall()
         # Guardians' own activity (sign-ins, password changes) is recorded in the
@@ -41,7 +41,7 @@ def parent_create(request: Request,full_name:str=Form(...),student_id:int=Form(.
         if not _validate_password_strength(password): raise ValueError('Password must be 12–128 characters and include letters and numbers.')
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
-            student=conn.execute("SELECT id,admission_no FROM users WHERE id=? AND role='student'",(student_id,)).fetchone()
+            student=conn.execute("SELECT id,admission_no FROM users u WHERE id=? AND role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved')",(student_id,)).fetchone()
             if not student: raise ValueError('Choose an existing student.')
             parent_no=_parent_identifier(conn,student['admission_no'])
             row=conn.execute("""INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at)
@@ -57,7 +57,7 @@ def parent_link(request: Request,parent_id:int,student_id:int=Form(...)):
     admin=require_admin(request,super_only=True)
     with connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        if not conn.execute("SELECT id FROM users WHERE id=? AND role='parent'",(parent_id,)).fetchone() or not conn.execute("SELECT id FROM users WHERE id=? AND role='student'",(student_id,)).fetchone(): raise HTTPException(404)
+        if not conn.execute("SELECT id FROM users WHERE id=? AND role='parent'",(parent_id,)).fetchone() or not conn.execute("SELECT id FROM users u WHERE id=? AND role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved')",(student_id,)).fetchone(): raise HTTPException(404)
         result=conn.execute('INSERT OR IGNORE INTO parent_student_links(parent_id,student_id,created_by,created_at) VALUES (?,?,?,?)',(parent_id,student_id,admin['id'],iso_now()))
         if result.rowcount: audit(conn,admin['id'],'parent_student_linked',f'Parent {parent_id}; student {student_id}')
     return flash_redirect('/admin/parents','Student link saved.')

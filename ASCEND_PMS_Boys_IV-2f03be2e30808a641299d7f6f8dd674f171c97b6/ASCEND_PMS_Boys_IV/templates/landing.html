@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ settings.app_name }} · {{ settings.school_name }}{% endblock %}
 {% block auth_content %}
+<link rel="stylesheet" href="/static/landing-journey.css?v=1">
 <div class="public-shell" id="main-content">
   <header class="public-nav">
     <a class="public-brand" href="/"><img src="/static/app-logo.svg?v=green-1" alt="{{ settings.app_name }} logo"><span><strong>{{ settings.app_name }}</strong><small>{{ settings.school_name }}</small></span></a>
-    <nav aria-label="Public navigation"><a href="/about">About</a><a href="/privacy">Privacy</a><a class="btn ghost small" href="/login">Sign in</a></nav>
+    <nav aria-label="Public navigation"><a href="#how-it-works">How it works</a><a href="/explore">Explore</a><a href="/about">About</a><a class="btn ghost small" href="/login">Sign in</a></nav>
   </header>
   <main>
     <section class="landing-hero">
@@ -12,13 +13,22 @@
         <span class="eyebrow">{{ settings.school_name }}</span>
         <h1>Turn effort into <em>achievement.</em></h1>
         <p>{{ settings.app_name }} brings academy challenges, recognition, rewards and leaderboards into one focused student experience.</p>
-        <div class="landing-actions"><a class="btn primary" href="/login">Student & admin sign in</a><a class="btn ghost" href="/parent/login">Parent sign in</a><a class="btn ghost" href="/register">Activate student account</a></div>
+        <div class="landing-actions"><a class="btn primary" href="/register">Join the academy</a><a class="btn ghost" href="/explore">Explore the demo</a></div><p class="journey-login">Already have an account? <a href="/login">Sign in</a> <span aria-hidden="true">·</span> <a href="/parent/login">Parent sign in</a></p>
         <div class="trust-row"><span>✓ Academy-controlled accounts</span><span>✓ Auditable points</span><span>✓ Protected admin access</span></div>
       </div>
       <aside class="landing-showcase" aria-label="ASCEND platform highlights">
         <div class="showcase-card showcase-main"><span class="eyebrow light">ASCEND</span><strong>Compete • Achieve • Grow</strong><p>One place for academic, sports, character and activity progress.</p></div>
         <div class="showcase-grid"><div><b>01</b><span>Challenges</span></div><div><b>02</b><span>Leaderboards</span></div><div><b>03</b><span>Achievements</span></div><div><b>04</b><span>Rewards</span></div></div>
       </aside>
+    </section>
+    <section class="journey-section" id="how-it-works" aria-labelledby="journey-title">
+      <div class="journey-heading"><div><span class="eyebrow">A SIMPLE START</span><h2 id="journey-title">Your journey starts here.</h2></div><p>Discover the academy first, then join your real workspace when the academy approves your application.</p></div>
+      <div class="journey-grid">
+        <article><span class="journey-number">01</span><h3>Explore</h3><p>Try sample lessons, challenges and progress views. Demo activity never changes real records.</p><a href="/explore">Open the demo <span aria-hidden="true">↗</span></a></article>
+        <article><span class="journey-number">02</span><h3>Register</h3><p>New students submit an application and receive a temporary ID to sign in while they wait.</p><a href="/register">Start registration <span aria-hidden="true">↗</span></a></article>
+        <article><span class="journey-number">03</span><h3>Get approved</h3><p>The academy reviews each application and assigns the student a permanent ID upon approval.</p></article>
+        <article><span class="journey-number">04</span><h3>Grow</h3><p>Use your own student workspace for classes, challenges, feedback and recognition.</p><a href="/login">Go to sign in <span aria-hidden="true">↗</span></a></article>
+      </div>
     </section>
     <section class="landing-section">
       <div class="section-heading"><span class="eyebrow">BUILT FOR POSITIVE COMPETITION</span><h2>Progress students can actually see.</h2><p>ASCEND keeps the experience simple for students and gives trusted staff no-code tools to run competitions safely.</p></div>
@@ -34,6 +44,7 @@
       <div><span class="eyebrow">FOR ACADEMY STAFF</span><h2>Everything managed without code.</h2><p>Authorized admins can manage students, challenges, points, announcements and reports from protected controls. The Super Admin keeps ownership of sensitive settings.</p></div>
     </section>
   </main>
+  <section class="landing-section legacy-note"><div class="section-heading"><span class="eyebrow">HAVE A SCHOOL-ISSUED CODE?</span><h2>Claim an existing student record.</h2><p>Students who were given an admission number and activation code by the academy office can claim that record securely.</p><a class="btn ghost" href="/register/legacy">Claim with an activation code</a></div></section>
   <footer class="public-footer"><div><strong>{{ settings.app_name }}</strong><span>{{ settings.tagline }}</span></div><div><a href="/about">About</a><a href="/privacy">Privacy</a><a href="/login">Sign in</a></div><small>{{ settings.creator_credit }} · v{{ app_version }}</small></footer>
 </div>
 {% endblock %}

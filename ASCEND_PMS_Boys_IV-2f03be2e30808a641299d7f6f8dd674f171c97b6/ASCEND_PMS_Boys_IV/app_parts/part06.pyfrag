@@ -1,8 +1,3 @@
-('UPDATE users SET password_hash=NULL,claimed=0,status="unclaimed",activation_code=?,activation_code_expires_at=? WHERE id=? AND role="student"',(code,activation_expiry(),student_id))
-        conn.execute('DELETE FROM sessions WHERE user_id=?',(student_id,))
-        audit(conn,a['id'],'student_password_reset',f'student_id={student_id}')
-    return flash_redirect('/admin/students',f'Account reset. New activation code: {code}')
-
 @app.post('/admin/students/{student_id}/points')
 def admin_points(request: Request, student_id:int, amount:int=Form(...), category:str=Form('general'), reason:str=Form(...), subject:str=Form('')):
     a=require_admin(request,'students'); category=category if category in ALLOWED_CATEGORIES else 'general'
