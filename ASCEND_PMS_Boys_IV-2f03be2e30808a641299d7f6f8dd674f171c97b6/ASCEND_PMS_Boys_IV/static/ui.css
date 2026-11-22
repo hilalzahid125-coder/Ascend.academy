@@ -948,3 +948,7 @@ select:invalid,.panel table td select{color:var(--ink)}
   .student-directory #studentsTable{min-width:980px}
   .student-directory .table-search{max-width:none;width:100%}
 }
+
+/* Legal pages: keep the footer credit as plain text, not a stranded line. */
+.legal-shell .public-footer{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-top:2.5rem;border-radius:0}
+.legal-shell .public-footer small{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.04em;color:#bfe9d8}
