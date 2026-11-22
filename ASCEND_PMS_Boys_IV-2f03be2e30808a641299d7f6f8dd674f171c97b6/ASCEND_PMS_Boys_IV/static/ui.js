@@ -28,17 +28,18 @@
 
   /* ---------------------------------------------------------------- motion */
   var Motion = {
-    enabled: store(STORE) !== 'off',
-    listeners: [],
+    // `pref` is the explicit user choice ('on' / 'off'), or null when unset.
+    // Unset: follow the operating system. Explicit "on" is an override so that
+    // people who ask for motion still get it under a reduced-motion OS default.
+    pref: store(STORE),
     subscribers: [],
-    get effective() { return this.enabled && !reduceOS ? true : this.enabled && reduceOS ? false : false; },
     onChange: function (fn) { this.subscribers.push(fn); fn(this.isOn()); return fn; },
-    isOn: function () { return this.enabled && !reduceOS; },
+    isOn: function () { return this.pref === 'on' ? true : this.pref === 'off' ? false : !reduceOS; },
     set: function (on, opts) {
-      this.enabled = !!on;
-      try { localStorage.setItem(STORE, on ? 'on' : 'off'); } catch (_) {}
-      root.classList.toggle('ui-motion-off', !this.enabled || reduceOS);
-      document.body && document.body.classList.toggle('ui-motion-off', !this.enabled || reduceOS);
+      this.pref = on ? 'on' : 'off';
+      try { localStorage.setItem(STORE, this.pref); } catch (_) {}
+      root.classList.toggle('ui-motion-off', !this.isOn());
+      document.body && document.body.classList.toggle('ui-motion-off', !this.isOn());
       this.subscribers.forEach(function (fn) { try { fn(this.isOn()); } catch (_) {} }, this);
       var toggle = document.querySelector('[data-motion-toggle]');
       if (toggle) {

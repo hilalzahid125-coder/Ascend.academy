@@ -52,19 +52,11 @@
   --shadow:var(--shadow-soft);
 }
 
+/* The signed-in workspace is a light surface by design: the legacy stylesheets
+   hardcode white panels, so dark OS settings must not half-apply. Guests get a
+   dark, richer login showcase that is legible either way. */
 @media (prefers-color-scheme:dark){
-  :root{
-    --ink:#e8f5ef;
-    --muted:#9db6ad;
-    --line:#1d3b31;
-    --bg:#061612;
-    --card:#0a241c;
-    --mint-50:#0c2a21;
-    --mint-100:#113529;
-    --mint-200:#174534;
-    --shadow-soft:0 10px 30px -18px rgba(0,0,0,.7),0 2px 6px rgba(0,0,0,.3);
-    --shadow-lift:0 26px 60px -28px rgba(0,0,0,.8),0 6px 18px -10px rgba(0,0,0,.45);
-  }
+  html{color-scheme:light}
 }
 
 /* ===== UI BASE + TYPOGRAPHY ===== */
