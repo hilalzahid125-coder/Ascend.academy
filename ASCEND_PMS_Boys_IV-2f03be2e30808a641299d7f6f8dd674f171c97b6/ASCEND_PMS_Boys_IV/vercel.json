@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "{*.py,app_parts/**,templates/**,static/**,supabase/migrations/**,VERSION}",
+      "maxDuration": 60
+    }
+  },
+  "crons": [{ "path": "/internal/scheduled-backup", "schedule": "0 2 * * *" }]
+}

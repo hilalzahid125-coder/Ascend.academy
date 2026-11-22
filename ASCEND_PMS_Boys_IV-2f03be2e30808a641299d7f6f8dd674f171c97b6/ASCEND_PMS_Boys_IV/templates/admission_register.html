@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Join the academy · {{ settings.app_name }}{% endblock %}
+{% block auth_content %}
+<div class="legal-shell" id="main-content"><header class="legal-top"><a class="public-brand" href="/"><img src="/static/app-logo.svg" alt="ASCEND"><strong>{{ settings.app_name }}</strong></a><a href="/login">Sign in</a></header>
+<section class="panel auth-card" style="max-width:760px;margin:2rem auto"><span class="eyebrow">STUDENT APPLICATION</span><h1>Start your academy journey</h1><p>Register to explore a safe demo. An academy administrator will review your application before you can access the real student workspace.</p>
+{% if msg %}<div role="alert" class="toast {{ 'danger' if kind=='error' else '' }}">{{ msg }}</div>{% endif %}
+{% if settings.registration_enabled == '1' %}
+<form method="post" action="/admission/register" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<label>Full name<input name="full_name" maxlength="120" required autocomplete="name"></label>
+<div class="two-col"><label>Email<input name="email" type="email" maxlength="200" required autocomplete="email"></label><label>Phone<input name="phone" maxlength="40" required autocomplete="tel"></label></div>
+<div class="two-col"><label>Grade<select name="grade" required><option value="">Choose a grade</option>{% for grade in academy_grades %}<option value="{{ grade }}">{{ grade }}</option>{% endfor %}</select></label><label>Subject<select name="subject" required><option value="">Choose a subject</option>{% for subject in academy_subjects %}<option value="{{ subject }}">{{ subject }}</option>{% endfor %}</select></label></div>
+<div class="two-col"><label>Parent or guardian name (optional)<input name="guardian_name" maxlength="120"></label><label>Parent or guardian phone (optional)<input name="guardian_phone" maxlength="40"></label></div>
+<div class="two-col"><label>Password<input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label><label>Confirm password<input type="password" name="confirm_password" minlength="8" maxlength="128" required autocomplete="new-password"></label></div><small>Use 8–128 characters, including letters and numbers.</small>
+<label class="terms-check"><input type="checkbox" name="terms" value="yes" required><span>I accept the <a href="/privacy">privacy policy</a>.</span></label><button class="btn primary">Register and explore</button></form>
+{% else %}<p>Registration is currently closed. Please contact the academy office.</p>{% endif %}
+<p>Already received a school-issued activation code? <a href="/register/legacy">Claim your existing student record</a>.</p><p><a href="/explore">Explore the demo without registering</a> · <a href="/login">Already registered? Sign in</a></p></section></div>
+{% endblock %}

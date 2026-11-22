@@ -2,9 +2,10 @@
 def profile(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
+        profile=academy_profile_from_row(conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(u['id'],)).fetchone())
         points=total_points(conn,u['id'])
         tx=conn.execute('SELECT * FROM point_transactions WHERE user_id=? ORDER BY id DESC LIMIT 50',(u['id'],)).fetchall()
-    return render(request,'profile.html',{'points':points,'transactions':tx})
+    return render(request,'profile.html',{'points':points,'transactions':tx,'academy_profile':profile})
 
 @app.post('/profile/photo')
 async def profile_photo_upload(request: Request, photo: UploadFile=File(...)):
@@ -23,10 +24,7 @@ async def profile_photo_upload(request: Request, photo: UploadFile=File(...)):
 @app.post('/profile/photo/remove')
 def profile_photo_remove(request: Request):
     u=require_user(request,'student')
-    path=UPLOAD_DIR/f'profile_{u["id"]}.webp'
-    if path.exists():
-        try: path.unlink()
-        except OSError: pass
+    delete_upload(f'profile_{u["id"]}.webp')
     with connect() as conn:
         conn.execute('UPDATE users SET profile_picture_path=NULL WHERE id=?',(u['id'],))
     return flash_redirect('/profile','Profile picture removed.')
@@ -45,7 +43,7 @@ def admin_dashboard(request: Request):
         top=conn.execute('''SELECT u.full_name,u.admission_no,u.profile_picture_path,COALESCE(SUM(p.amount),0) points FROM users u
                             LEFT JOIN point_transactions p ON p.user_id=u.id WHERE u.role='student'
                             GROUP BY u.id ORDER BY points DESC LIMIT 5''').fetchall()
-        logs=conn.execute('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 8').fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
+        logs=conn.execute("SELECT * FROM audit_logs WHERE SUBSTR(action,1,7)!='parent_' ORDER BY id DESC LIMIT 8").fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
     return render(request,'admin_dashboard.html',{'stats':stats,'top':top,'logs':logs})
 
 @app.get('/admin/admins', response_class=HTMLResponse)
@@ -72,7 +70,7 @@ def admin_team_create(request: Request, admin_id:str=Form(...), full_name:str=Fo
                             VALUES (?,?,?,"admin","active",1,"staff",?,?)''',(admin_id,full_name,hash_password(password),json.dumps(allowed),iso_now()))
             audit(conn,owner['id'],'staff_admin_created',f'{admin_id}: {full_name}')
         return flash_redirect('/admin/admins','Staff admin created successfully.')
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
         return flash_redirect('/admin/admins','That admin ID already exists.','error')
 
 @app.post('/admin/admins/{admin_id}/edit')
@@ -85,7 +83,7 @@ def admin_team_edit(request: Request, admin_id:int, full_name:str=Form(...), per
         target=conn.execute('SELECT * FROM users WHERE id=? AND role="admin" AND admin_level="staff"',(admin_id,)).fetchone()
         if not target: return flash_redirect('/admin/admins','Staff admin not found or protected.','error')
         conn.execute('UPDATE users SET full_name=?,admin_permissions=? WHERE id=?',(full_name,json.dumps(allowed),admin_id))
-        audit(conn,owner['id'],'staff_admin_updated',target['admission_no'])
+        audit(conn,owner['id'],'staff_admin_updated',f"{target['admission_no']}: {', '.join(sorted(set(allowed))) or 'no operational permissions'}")
     return flash_redirect('/admin/admins','Staff admin permissions updated.')
 
 @app.post('/admin/admins/{admin_id}/status')

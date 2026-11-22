@@ -3,12 +3,10 @@
                                    LEFT JOIN challenge_participations cp ON cp.challenge_id=c.id AND cp.user_id=?
                                    WHERE c.status IN ('active','scheduled')
                                    AND (c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?)
-                                   AND (c.eligibility_section IS NULL OR c.eligibility_section='' OR c.eligibility_section=?)
+                                   AND (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections') OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,''))))
                                    ORDER BY c.status='active' DESC,c.end_date LIMIT 6''',(u['id'],u['class_name'],u['section_name'])).fetchall()
         tx=conn.execute('SELECT * FROM point_transactions WHERE user_id=? ORDER BY id DESC LIMIT 6',(u['id'],)).fetchall()
-        announcements=conn.execute('''SELECT * FROM announcements WHERE status='published' AND
-                                      (audience='all' OR (audience='class' AND class_name=?) OR (audience='section' AND class_name=? AND section_name=?))
-                                      ORDER BY id DESC LIMIT 4''',(u['class_name'],u['class_name'],u['section_name'])).fetchall()
+        announcements=visible_announcements(conn,u,limit=4)
         notices=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 5',(u['id'],)).fetchall()
     return render(request,'student_dashboard.html',{'points':points,'rank':rank,'challenges':challenges,'transactions':tx,'announcements':announcements,'notifications':notices})
 
@@ -20,9 +18,14 @@ def challenge_list(request: Request):
             LEFT JOIN challenge_participations cp ON cp.challenge_id=c.id AND cp.user_id=?
             WHERE c.status!='draft' AND c.status!='archived'
             AND (c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?)
-            AND (c.eligibility_section IS NULL OR c.eligibility_section='' OR c.eligibility_section=?)
+            AND (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections') OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,''))))
             ORDER BY CASE c.status WHEN 'active' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END,c.id DESC''',(u['id'],u['class_name'],u['section_name'])).fetchall()
     return render(request,'challenges.html',{'challenges':rows})
+
+def _student_can_enter_challenge(student, challenge):
+    grade = challenge['eligibility_class']
+    section = (challenge['eligibility_section'] or '').strip().casefold()
+    return (not grade or grade == student['class_name']) and (section in {'', 'all', 'all section', 'all sections'} or section == (student['section_name'] or '').strip().casefold())
 
 @app.post('/challenges/{challenge_id}/join')
 def challenge_join(request: Request, challenge_id: int):
@@ -30,6 +33,7 @@ def challenge_join(request: Request, challenge_id: int):
     with connect() as conn:
         c=conn.execute('SELECT * FROM challenges WHERE id=?',(challenge_id,)).fetchone()
         if not c or c['status']!='active': return flash_redirect('/challenges','That challenge is not currently open.','error')
+        if not _student_can_enter_challenge(u, c): return flash_redirect('/challenges','You are not eligible for that challenge.','error')
         conn.execute('INSERT OR IGNORE INTO challenge_participations(challenge_id,user_id,status,created_at,updated_at) VALUES (?,?,?,?,?)',
                      (challenge_id,u['id'],'joined',iso_now(),iso_now()))
     return flash_redirect('/challenges','Challenge joined.')
@@ -42,6 +46,10 @@ def challenge_submit(request: Request, challenge_id: int, submission_text: str=F
     with connect() as conn:
         c=conn.execute('SELECT * FROM challenges WHERE id=?',(challenge_id,)).fetchone()
         if not c or c['status']!='active': return flash_redirect('/challenges','That challenge is not currently open.','error')
+        if not _student_can_enter_challenge(u, c): return flash_redirect('/challenges','You are not eligible for that challenge.','error')
+        existing=conn.execute('SELECT status,awarded FROM challenge_participations WHERE challenge_id=? AND user_id=?',(challenge_id,u['id'])).fetchone()
+        if existing and existing['awarded']:
+            return flash_redirect('/challenges','This challenge has already been approved.','error')
         conn.execute('''INSERT INTO challenge_participations(challenge_id,user_id,status,submission_text,created_at,updated_at)
                      VALUES (?,?,?,?,?,?) ON CONFLICT(challenge_id,user_id) DO UPDATE SET status='pending',submission_text=excluded.submission_text,updated_at=excluded.updated_at''',
                      (challenge_id,u['id'],'pending',submission_text.strip(),iso_now(),iso_now()))
@@ -50,6 +58,8 @@ def challenge_submit(request: Request, challenge_id: int, submission_text: str=F
 @app.get('/leaderboards', response_class=HTMLResponse)
 def leaderboards(request: Request, category: str='overall', period: str='all', class_name: str='', section_name: str='', challenge_id: int=0):
     u=require_user(request)
+    if u['role'] in ('parent','teacher'): raise HTTPException(403)
+    if u['role']=='admin': require_admin(request,'leaderboards')
     if category not in {'overall'}|ALLOWED_CATEGORIES: category='overall'
     since=None
     if period=='week':
@@ -65,7 +75,7 @@ def leaderboards(request: Request, category: str='overall', period: str='all', c
     if cond: q+=' AND '+' AND '.join(cond)
     if class_name: wh.append('u.class_name=?'); args.append(class_name)
     if section_name: wh.append('u.section_name=?'); args.append(section_name)
-    q+=' WHERE '+' AND '.join(wh)+' GROUP BY u.id ORDER BY points DESC,u.full_name ASC'
+    q+=' WHERE '+' AND '.join(wh)+' GROUP BY u.id ORDER BY points DESC,u.full_name ASC,u.id ASC'
     with connect() as conn:
         rows=conn.execute(q,args).fetchall()
         classes=[r['class_name'] for r in conn.execute('SELECT DISTINCT class_name FROM users WHERE role="student" AND class_name IS NOT NULL AND class_name!="" ORDER BY class_name').fetchall()]
@@ -73,30 +83,56 @@ def leaderboards(request: Request, category: str='overall', period: str='all', c
         challenge_options=conn.execute('SELECT id,title FROM challenges WHERE status!="draft" AND status!="archived" ORDER BY id DESC').fetchall()
     return render(request,'leaderboards.html',{'rows':rows,'category':category,'period':period,'class_name':class_name,'section_name':section_name,'challenge_id':challenge_id,'classes':classes,'sections':sections,'challenge_options':challenge_options})
 
+@app.get('/announcements', response_class=HTMLResponse)
+def announcements_page(request: Request):
+    u=require_user(request)
+    if u['role']=='admin': return RedirectResponse('/admin/announcements',status_code=303)
+    if u['role']=='parent': return RedirectResponse('/parent/announcements',status_code=303)
+    with connect() as conn:
+        rows=visible_announcements(conn,u)
+        mark_announcement_alerts_read(conn,u['id'])
+    return render(request,'announcements.html',{'announcements':_announcement_cards(rows),
+        'audience_roles':ANNOUNCEMENT_ROLES,'notifications_link':'/notifications',
+        'workspace_label':'TEACHING' if u['role']=='teacher' else 'STUDENT WORKSPACE'})
+
+
 @app.get('/notifications', response_class=HTMLResponse)
 def notifications_page(request: Request):
-    u=require_user(request,'student')
+    u=require_user(request)
     with connect() as conn:
-        rows=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],)).fetchall()
-    return render(request,'notifications.html',{'notifications':rows})
+        if u['role']=='admin' and 'fees' not in _admin_permissions(u):
+            rows=conn.execute('SELECT * FROM notifications WHERE user_id=? AND title!=? ORDER BY is_read ASC,id DESC',(u['id'],'Fee receipt submitted')).fetchall()
+        else:
+            rows=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY is_read ASC,id DESC',(u['id'],)).fetchall()
+        unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(u['id'],)).fetchone()['c']
+    return render(request,'notifications.html',{'notifications':rows,'unread_notifications':unread,'notification_categories':NOTIFICATION_CATEGORIES})
+
+@app.post('/notifications/{notification_id}/read')
+def notification_read(request: Request,notification_id:int):
+    u=require_user(request)
+    with connect() as conn:
+        result=conn.execute('UPDATE notifications SET is_read=1,read_at=? WHERE id=? AND user_id=?',(iso_now(),notification_id,u['id']))
+        if not result.rowcount: raise HTTPException(404)
+    return flash_redirect('/notifications','Notification marked as read.')
 
 @app.post('/notifications/read-all')
 def notifications_read_all(request: Request):
-    u=require_user(request,'student')
-    with connect() as conn: conn.execute('UPDATE notifications SET is_read=1 WHERE user_id=?',(u['id'],))
+    u=require_user(request)
+    with connect() as conn:
+        conn.execute('UPDATE notifications SET is_read=1,read_at=? WHERE user_id=? AND is_read=0',(iso_now(),u['id']))
     return flash_redirect('/notifications','Notifications marked as read.')
 
 @app.get('/achievements', response_class=HTMLResponse)
 def achievements(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
-        sync_achievements(conn,u['id'])
+        scores=sync_achievements(conn,u['id'])
         rows=conn.execute('''SELECT a.*,sa.unlocked_at FROM achievements a
                              LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?
                              WHERE a.status='active' ORDER BY a.points_required,a.name''',(u['id'],)).fetchall()
         enriched=[]
         for r in rows:
-            d=dict(r); d['current_points']=total_points(conn,u['id'],None if r['category']=='overall' else r['category']); enriched.append(d)
+            d=dict(r); d['current_points']=scores.get(r['category'],0); enriched.append(d)
     return render(request,'achievements.html',{'achievements':enriched})
 
 @app.get('/rewards', response_class=HTMLResponse)
@@ -104,7 +140,9 @@ def rewards(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
         points=total_points(conn,u['id'])
-        rows=conn.execute('''SELECT r.*,rc.status claim_status FROM rewards r LEFT JOIN reward_claims rc ON rc.reward_id=r.id AND rc.user_id=?
+        rows=conn.execute('''SELECT r.*,rc.status claim_status,
+                             (SELECT COUNT(*) FROM reward_claims reserved WHERE reserved.reward_id=r.id AND reserved.status IN ('approved','fulfilled')) reserved_count
+                             FROM rewards r LEFT JOIN reward_claims rc ON rc.reward_id=r.id AND rc.user_id=?
                              WHERE r.status='active' ORDER BY points_required''',(u['id'],)).fetchall()
     return render(request,'rewards.html',{'rewards':rows,'points':points})
 
@@ -115,8 +153,12 @@ def reward_claim(request: Request,reward_id:int):
         r=conn.execute('SELECT * FROM rewards WHERE id=? AND status="active"',(reward_id,)).fetchone()
         if not r: return flash_redirect('/rewards','Reward not available.','error')
         if total_points(conn,u['id'])<r['points_required']: return flash_redirect('/rewards','You have not reached the required points yet.','error')
-        conn.execute('INSERT OR IGNORE INTO reward_claims(reward_id,user_id,status,created_at) VALUES (?,?,"pending",?)',(reward_id,u['id'],iso_now()))
-        notify(conn,u['id'],'Reward claim submitted',f'Your claim for {r["name"]} is awaiting review.')
+        if r['quantity'] is not None:
+            reserved=conn.execute("SELECT COUNT(*) c FROM reward_claims WHERE reward_id=? AND status IN ('approved','fulfilled')", (reward_id,)).fetchone()['c']
+            if reserved >= r['quantity']: return flash_redirect('/rewards','This reward is out of stock.','error')
+        result=conn.execute('INSERT OR IGNORE INTO reward_claims(reward_id,user_id,status,created_at) VALUES (?,?,"pending",?)',(reward_id,u['id'],iso_now()))
+        if result.rowcount:
+            notify(conn,u['id'],'Reward claim submitted',f'Your claim for {r["name"]} is awaiting review.')
     return flash_redirect('/rewards','Reward claim submitted.')
 
 @app.get('/profile', response_class=HTMLResponse

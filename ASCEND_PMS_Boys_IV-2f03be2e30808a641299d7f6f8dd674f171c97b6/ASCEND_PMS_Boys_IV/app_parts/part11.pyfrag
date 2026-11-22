@@ -1,0 +1,1139 @@
+
+# Parent relationships are explicitly authorised by the Super Admin; an ID
+# resemblance never grants access. Parents use the same session machinery.
+def _parent_child(conn, parent_id, child_id):
+    row=conn.execute("""SELECT u.* FROM parent_student_links l JOIN users u ON u.id=l.student_id
+        WHERE l.parent_id=? AND u.id=? AND u.role='student'""",(parent_id,child_id)).fetchone()
+    if not row: raise HTTPException(404)
+    return row
+
+def _parent_children(conn, parent_id):
+    return conn.execute("""SELECT u.id,u.full_name,u.admission_no,u.class_name,u.section_name FROM parent_student_links l
+        JOIN users u ON u.id=l.student_id WHERE l.parent_id=? AND u.role='student' ORDER BY u.full_name,u.id""",(parent_id,)).fetchall()
+
+def _parent_identifier(conn, student_no):
+    base=re.sub(r'^[A-Z]+-', '', student_no.upper())
+    base=re.sub(r'[^A-Z0-9-]', '',base).strip('-')[:22] or 'GUARDIAN'
+    candidate='P-'+base; n=2
+    while conn.execute('SELECT id FROM users WHERE admission_no=?',(candidate,)).fetchone():
+        candidate='P-'+base+'-'+str(n); n+=1
+    return candidate
+
+@app.get('/admin/parents',response_class=HTMLResponse)
+def parent_admin(request: Request):
+    require_admin(request,super_only=True)
+    with connect() as conn:
+        parents=conn.execute("SELECT id,admission_no,full_name,status,created_at FROM users WHERE role='parent' ORDER BY full_name,id").fetchall()
+        students=conn.execute("SELECT id,full_name,admission_no,class_name FROM users u WHERE role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved') ORDER BY full_name,id").fetchall()
+        links=conn.execute("""SELECT l.parent_id,u.id,u.full_name,u.admission_no FROM parent_student_links l
+             JOIN users u ON u.id=l.student_id AND u.role='student' ORDER BY u.full_name""").fetchall()
+        # Guardians' own activity (sign-ins, password changes) is recorded in the
+        # existing audit ledger so the Super Admin can monitor parent access.
+        activity=conn.execute("""SELECT action,details,created_at FROM audit_logs
+             WHERE SUBSTR(action,1,7)='parent_' ORDER BY id DESC LIMIT 12""").fetchall()
+    return render(request,'admin_parents.html',{'parents':parents,'students':students,'links':links,'activity':activity})
+
+@app.post('/admin/parents/create')
+def parent_create(request: Request,full_name:str=Form(...),student_id:int=Form(...),password:str=Form(...)):
+    admin=require_admin(request,super_only=True)
+    try:
+        name=_clean_text(full_name,120)
+        if not _validate_password_strength(password): raise ValueError('Password must be 12–128 characters and include letters and numbers.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            student=conn.execute("SELECT id,admission_no FROM users u WHERE id=? AND role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved')",(student_id,)).fetchone()
+            if not student: raise ValueError('Choose an existing student.')
+            parent_no=_parent_identifier(conn,student['admission_no'])
+            row=conn.execute("""INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at)
+               VALUES (?,?,?,'parent','active',1,?) RETURNING id""",(parent_no,name,hash_password(password),iso_now())).fetchone()
+            conn.execute('INSERT INTO parent_student_links(parent_id,student_id,created_by,created_at) VALUES (?,?,?,?)',(row['id'],student_id,admin['id'],iso_now()))
+            audit(conn,admin['id'],'parent_created',f'{parent_no}; linked student {student_id}')
+    except (ValueError,TypeError) + INTEGRITY_ERRORS as exc:
+        return flash_redirect('/admin/parents',str(exc) if isinstance(exc,ValueError) else 'Could not create the parent account. Try again.','error')
+    return flash_redirect('/admin/parents',f'Parent account {parent_no} created. Share the ID and password securely.')
+
+@app.post('/admin/parents/{parent_id}/link')
+def parent_link(request: Request,parent_id:int,student_id:int=Form(...)):
+    admin=require_admin(request,super_only=True)
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not conn.execute("SELECT id FROM users WHERE id=? AND role='parent'",(parent_id,)).fetchone() or not conn.execute("SELECT id FROM users u WHERE id=? AND role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved')",(student_id,)).fetchone(): raise HTTPException(404)
+        result=conn.execute('INSERT OR IGNORE INTO parent_student_links(parent_id,student_id,created_by,created_at) VALUES (?,?,?,?)',(parent_id,student_id,admin['id'],iso_now()))
+        if result.rowcount: audit(conn,admin['id'],'parent_student_linked',f'Parent {parent_id}; student {student_id}')
+    return flash_redirect('/admin/parents','Student link saved.')
+
+@app.post('/admin/parents/{parent_id}/unlink')
+def parent_unlink(request: Request,parent_id:int,student_id:int=Form(...)):
+    admin=require_admin(request,super_only=True)
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        result=conn.execute('DELETE FROM parent_student_links WHERE parent_id=? AND student_id=?',(parent_id,student_id))
+        if result.rowcount: audit(conn,admin['id'],'parent_student_unlinked',f'Parent {parent_id}; student {student_id}')
+    return flash_redirect('/admin/parents','Student link removed.')
+
+@app.post('/admin/parents/{parent_id}/update')
+def parent_update(request: Request,parent_id:int,full_name:str=Form(...),status:str=Form(...)):
+    admin=require_admin(request,super_only=True)
+    try:
+        name=_clean_text(full_name,120)
+        if status not in ('active','disabled'): raise ValueError('Invalid account status.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            result=conn.execute("UPDATE users SET full_name=?,status=? WHERE id=? AND role='parent'",(name,status,parent_id))
+            if not result.rowcount: raise HTTPException(404)
+            if status=='disabled': conn.execute('DELETE FROM sessions WHERE user_id=?',(parent_id,))
+            audit(conn,admin['id'],'parent_updated',f'Parent {parent_id}; status {status}')
+    except ValueError as exc: return flash_redirect('/admin/parents',str(exc),'error')
+    return flash_redirect('/admin/parents','Parent account updated.')
+
+@app.post('/admin/parents/{parent_id}/password')
+def parent_reset_password(request: Request,parent_id:int,password:str=Form(...)):
+    admin=require_admin(request,super_only=True)
+    if not _validate_password_strength(password): return flash_redirect('/admin/parents','Password must be 12–128 characters and include letters and numbers.','error')
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        result=conn.execute("UPDATE users SET password_hash=? WHERE id=? AND role='parent'",(hash_password(password),parent_id))
+        if not result.rowcount: raise HTTPException(404)
+        conn.execute('DELETE FROM sessions WHERE user_id=?',(parent_id,)); audit(conn,admin['id'],'parent_password_reset',f'Parent {parent_id}')
+    return flash_redirect('/admin/parents','Parent password reset and sessions signed out.')
+
+def _parent_rank(conn, student, since=None, class_only=False):
+    if student['status']!='active': return None
+    query="""SELECT u.id FROM users u LEFT JOIN point_transactions p ON p.user_id=u.id"""
+    args=[]
+    if since:
+        query+=' AND p.created_at>=?'; args.append(since)
+    query+=" WHERE u.role='student' AND u.status='active'"
+    if class_only:
+        if not student['class_name']: return None
+        query+=' AND u.class_name=?'; args.append(student['class_name'])
+    query+=' GROUP BY u.id ORDER BY COALESCE(SUM(p.amount),0) DESC,u.full_name ASC,u.id ASC'
+    rows=conn.execute(query,args).fetchall()
+    return next((i for i,r in enumerate(rows,1) if r['id']==student['id']),None)
+
+def _academic_session_config(conn):
+    row=conn.execute("SELECT value FROM settings WHERE key='academic_session'").fetchone()
+    try:
+        data=json.loads(row['value']) if row and row['value'] else {}
+        if not isinstance(data,dict) or not all(isinstance(data.get(k),str) for k in ('name','start','end')): return None
+        start=date.fromisoformat(data['start']); end=date.fromisoformat(data['end'])
+        if not data['name'].strip() or start>end: return None
+        return data
+    except (ValueError,TypeError):
+        return None
+
+def _academic_session(conn, today):
+    data=_academic_session_config(conn)
+    return data if data and date.fromisoformat(data['start'])<=today<=date.fromisoformat(data['end']) else None
+
+def _attendance_day_marks(attendance, holiday_dates):
+    """Group eligible recorded marks by day; never invent missing absences."""
+    days={}
+    for record in attendance:
+        status=record['status']; day=record['session_date']
+        if status in ('present','late') or (status=='absent' and day not in holiday_dates):
+            days.setdefault(day,set()).add(status)
+    return days
+
+
+def _attendance_day_streaks(days):
+    # Any counted absence breaks a day, even if another class was attended.
+    # Holidays without an attended class, excused-only and unmarked days are skipped.
+    run=best=0
+    for day in sorted(days):
+        marks=days[day]
+        run=0 if 'absent' in marks else run+1
+        best=max(best,run)
+    return run,best
+
+
+def _attendance_insights(attendance, holiday_dates, today):
+    records=[r for r in attendance if r['session_date']<=today.isoformat()]
+    counted=[r for r in records if r['status'] in ('present','late') or
+             (r['status']=='absent' and r['session_date'] not in holiday_dates)]
+    attended=sum(r['status'] in ('present','late') for r in counted)
+    missed=sum(r['status']=='absent' for r in counted)
+    days=_attendance_day_marks(records,holiday_dates)
+    streak,best=_attendance_day_streaks(days)
+    first=(today-timedelta(days=6)).isoformat()
+    week=[marks for day,marks in days.items() if first<=day<=today.isoformat()]
+    week_attended=sum('absent' not in marks for marks in week)
+    rolling=[]
+    for length in (7,30):
+        start=(today-timedelta(days=length-1)).isoformat()
+        recent=[r for r in counted if start<=r['session_date']<=today.isoformat()]
+        recent_attended=sum(r['status'] in ('present','late') for r in recent)
+        rolling.append({'days':length,'total':len(recent),'attended':recent_attended,
+                        'percent':round(100*recent_attended/len(recent)) if recent else None})
+    months=[]
+    for offset in range(5,-1,-1):
+        month_index=today.year*12+today.month-1-offset
+        year,month=divmod(month_index,12); month+=1
+        key=f'{year:04d}-{month:02d}'
+        month_records=[r for r in counted if r['session_date'][:7]==key]
+        month_attended=sum(r['status'] in ('present','late') for r in month_records)
+        months.append({'month':key,'label':date(year,month,1).strftime('%b %Y'),
+            'attended':month_attended,'total':len(month_records),
+            'percent':round(100*month_attended/len(month_records)) if month_records else None})
+    return {'total':len(records),'attended':attended,'missed':missed,
+        'late':sum(r['status']=='late' for r in records),
+        'excused':sum(r['status']=='excused' for r in records),
+        'pending':sum(r['status'] is None for r in records),
+        'holiday_absences':sum(r['status']=='absent' and r['session_date'] in holiday_dates for r in records),
+        'percent':round(100*attended/len(counted)) if counted else None,
+        'current_streak':streak,'best_streak':best,
+        'week':{'start':first,'end':today.isoformat(),'attended':week_attended,'total':len(week),
+                'percent':round(100*week_attended/len(week)) if week else None},
+        'months':months,'rolling':rolling}
+
+def _mean_record_percentage(records,kind):
+    scored=[r for r in records if r['kind']==kind and r['score'] is not None and r['score_max'] is not None and r['score_max']>0]
+    return round(sum(100*r['score']/r['score_max'] for r in scored)/len(scored),1) if scored else None
+
+@app.post('/admin/settings/academic-session')
+def admin_academic_session(request:Request,name:str=Form(''),start:str=Form(''),end:str=Form('')):
+    admin=require_admin(request,super_only=True)
+    try:
+        name=_clean_text(name,120,False); start=start.strip(); end=end.strip()
+        if not (name or start or end): value=''
+        else:
+            if not name: raise ValueError('Enter an academic session name.')
+            start=_fee_date(start,True); end=_fee_date(end,True)
+            if start>end: raise ValueError('The session end date must not be before its start date.')
+            value=json.dumps({'name':name,'start':start,'end':end},ensure_ascii=False)
+        with connect() as conn:
+            conn.execute("INSERT INTO settings(key,value) VALUES ('academic_session',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(value,))
+            audit(conn,admin['id'],'academic_session_updated','Academic session updated' if value else 'Academic session cleared')
+    except ValueError as exc: return flash_redirect('/admin/settings',str(exc),'error')
+    return flash_redirect('/admin/settings','Academic session saved.' if value else 'Academic session cleared.')
+
+@app.post('/admin/settings/academic-terms')
+def admin_academic_term(request:Request,name:str=Form(...),start_date:str=Form(...),end_date:str=Form(...),term_id:int=Form(0)):
+    admin=require_admin(request,super_only=True)
+    try:
+        name=_clean_text(name,120); start_date=_fee_date(start_date,True); end_date=_fee_date(end_date,True)
+        if start_date>end_date: raise ValueError('The term end date must not be before its start date.')
+        if term_id<0: raise ValueError('Invalid term.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if term_id and not conn.execute('SELECT id FROM academic_terms WHERE id=?',(term_id,)).fetchone(): raise HTTPException(404)
+            if conn.execute('SELECT id FROM academic_terms WHERE id!=? AND start_date<=? AND end_date>=?',(term_id,end_date,start_date)).fetchone():
+                raise ValueError('Academic terms cannot overlap. Choose dates outside existing terms.')
+            if term_id:
+                conn.execute('UPDATE academic_terms SET name=?,start_date=?,end_date=? WHERE id=?',(name,start_date,end_date,term_id))
+                audit(conn,admin['id'],'academic_term_updated',f'Term {term_id}; {name}; {start_date} to {end_date}')
+            else:
+                created=conn.execute('INSERT INTO academic_terms(name,start_date,end_date,created_by,created_at) VALUES (?,?,?,?,?) RETURNING id',(name,start_date,end_date,admin['id'],iso_now())).fetchone()
+                audit(conn,admin['id'],'academic_term_created',f'Term {created["id"]}; {name}; {start_date} to {end_date}')
+    except ValueError as exc: return flash_redirect('/admin/settings',str(exc),'error')
+    return flash_redirect('/admin/settings','Academic term saved.')
+
+@app.get('/parent',response_class=HTMLResponse)
+def parent_dashboard(request: Request,child:Optional[int]=None,month:str='',day:str=''):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        children=_parent_children(conn,parent['id'])
+        if child is not None: student=_parent_child(conn,parent['id'],child)
+        elif children: student=_parent_child(conn,parent['id'],children[0]['id'])
+        else: return render(request,'parent_dashboard.html',{'children':children,'child':None,'parent_child_id':None})
+        sid=student['id']
+        if student['status']=='active': sync_achievements(conn,sid)
+        points=total_points(conn,sid)
+        ranks={'Overall':_parent_rank(conn,student),'Class':_parent_rank(conn,student,class_only=True),
+               'Last 7 days':_parent_rank(conn,student,(_now()-timedelta(days=7)).isoformat()),
+               'Last 30 days':_parent_rank(conn,student,(_now()-timedelta(days=30)).isoformat())}
+        attendance=conn.execute("""SELECT a.status,s.session_date,s.subject,s.start_time FROM class_attendance a
+            JOIN class_sessions s ON s.id=a.session_id WHERE a.student_id=? AND s.status='ended'
+            ORDER BY s.session_date DESC,s.start_time DESC,s.id DESC""",(sid,)).fetchall()
+        holiday_rows=conn.execute('SELECT holiday_date,title FROM academy_holidays').fetchall()
+        all_holidays={r['holiday_date']:r['title'] for r in holiday_rows}
+        import calendar
+        current=_class_now().date()
+        insights=_attendance_insights(attendance,set(all_holidays),current)
+        present=insights['attended']; missed=insights['missed']
+        academic_session=_academic_session(conn,current)
+        try:
+            if not month: month=current.strftime('%Y-%m')
+            if not re.fullmatch(r'\d{4}-\d{2}',month): raise ValueError()
+            selected_month=date.fromisoformat(month+'-01')
+            if not 1900<=selected_month.year<=2100: raise ValueError()
+        except ValueError: raise HTTPException(400,detail='Invalid calendar month.')
+        if day:
+            try:
+                selected_date=date.fromisoformat(day)
+                if selected_date.strftime('%Y-%m')!=month: raise ValueError()
+            except ValueError: raise HTTPException(400,detail='Invalid calendar date.')
+        holidays={d:title for d,title in all_holidays.items() if d.startswith(month)}
+        records_by_day={}
+        for r in attendance: records_by_day.setdefault(r['session_date'],[]).append(r)
+        weeks=[]
+        for week in calendar.Calendar(firstweekday=0).monthdatescalendar(selected_month.year,selected_month.month):
+            weeks.append([{'date':d.isoformat(),'number':d.day,'in_month':d.month==selected_month.month,
+                'present':any(r['status']=='present' for r in records_by_day.get(d.isoformat(),[])),
+                'absent':any(r['status']=='absent' for r in records_by_day.get(d.isoformat(),[])),
+                'late':any(r['status']=='late' for r in records_by_day.get(d.isoformat(),[])),
+                'excused':any(r['status']=='excused' for r in records_by_day.get(d.isoformat(),[])),
+                'pending':any(r['status'] is None for r in records_by_day.get(d.isoformat(),[])), 'holiday':holidays.get(d.isoformat())} for d in week])
+        selected_records=records_by_day.get(day,[]) if day else []
+        achievements=conn.execute("""SELECT a.name,a.description,a.category,a.points_required,sa.unlocked_at FROM student_achievements sa
+            JOIN achievements a ON a.id=sa.achievement_id WHERE sa.user_id=? ORDER BY sa.unlocked_at DESC""",(sid,)).fetchall()
+        scores=point_totals(conn,sid)
+        achievement_options=[dict(r,current_points=max(0,scores.get(r['category'],0))) for r in conn.execute("""SELECT a.name,a.description,a.category,a.points_required,sa.unlocked_at FROM achievements a
+            LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=? WHERE a.status='active' ORDER BY a.points_required,a.name""",(sid,)).fetchall()]
+        challenges=conn.execute("""SELECT c.title,c.description,c.points,c.start_date,c.end_date,p.status,p.created_at,p.updated_at FROM challenge_participations p
+            JOIN challenges c ON c.id=p.challenge_id WHERE p.user_id=? ORDER BY p.updated_at DESC""",(sid,)).fetchall()
+        available_challenges=conn.execute("""SELECT c.title,c.description,c.points,c.start_date,c.end_date,c.status,cp.status participation_status
+            FROM challenges c LEFT JOIN challenge_participations cp ON cp.challenge_id=c.id AND cp.user_id=?
+            WHERE c.status IN ('active','scheduled') AND (c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?)
+            AND (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections')
+                OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,'')))) ORDER BY c.id DESC""",(sid,student['class_name'],student['section_name'])).fetchall()
+        rewards=conn.execute("""SELECT r.name,r.description,r.points_required,r.status,r.quantity,rc.status claim_status,
+            (SELECT COUNT(*) FROM reward_claims reserved WHERE reserved.reward_id=r.id AND reserved.status IN ('approved','fulfilled')) reserved_count
+            FROM rewards r LEFT JOIN reward_claims rc ON rc.reward_id=r.id AND rc.user_id=?
+            WHERE r.status='active' OR rc.id IS NOT NULL ORDER BY r.points_required""",(sid,)).fetchall()
+        progress=conn.execute("""SELECT r.*,u.full_name teacher_name FROM student_progress_records r JOIN users u ON u.id=r.teacher_id
+            WHERE r.student_id=? AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records newer WHERE newer.replaces_id=r.id AND newer.status='approved') ORDER BY r.record_date DESC,r.id DESC""",(sid,)).fetchall()
+        subject_scores={}
+        for r in progress:
+            if r['kind']=='assessment' and r['score_max']:
+                entry=subject_scores.setdefault(r['subject'],[])
+                if len(entry)<8: entry.append({'score':r['score'],'max':r['score_max'],
+                    'percent':round(100*r['score']/r['score_max']),'date':r['record_date'],'title':r['title']})
+        academic_performance=_mean_record_percentage(progress,'assessment')
+        feedback_threads=_student_feedback(conn,sid)
+        learning_streak=insights['current_streak']
+        progress_counts={'assessments':sum(r['kind']=='assessment' for r in progress),
+            'assignments_completed':sum(r['kind']=='assignment' and r['outcome']=='completed' for r in progress),
+            'assignments_pending':sum(r['kind']=='assignment' and r['outcome']=='pending' for r in progress),
+            'feedback':sum(r['kind']=='feedback' for r in progress),
+            'feedback_open':sum(t['awaiting_parent'] for t in feedback_threads)}
+        fees=_fee_rows(conn,sid); history=_fee_history(conn,sid)
+        schedules=_schedules(conn); students=_class_students(conn); member=next((s for s in students if s['id']==sid),None)
+        assigned=[s for s in schedules if member and member in _members(s,students,schedules)]
+        # Follow the student's existing My Classes membership and one-off date rules.
+        # Never expose the rest of a class roster in the parent workspace.
+        upcoming_classes=[dict(s,day_label=_day_label(s),end_time=_end_time(s)) for s in assigned
+            if s['recurrence']=='weekly' or s['class_date']>=current.isoformat()]
+        teachers=sorted({s['teacher_name'] for s in upcoming_classes})
+        announcements=visible_announcements(conn,parent,limit=10)
+        # Opening the dashboard refreshes fee reminder/overdue alerts from the
+        # current fee records, then shows the parent's latest notifications.
+        run_fee_notifications(conn)
+        parent_notices=conn.execute("""SELECT * FROM notifications WHERE user_id=? ORDER BY is_read ASC,id DESC LIMIT 5""",(parent['id'],)).fetchall()
+        parent_unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(parent['id'],)).fetchone()['c']
+    return render(request,'parent_dashboard.html',{'children':children,'child':student,'parent_child_id':sid,'points':points,'attendance':attendance,'present':present,'missed':missed,
+        'attendance_insights':insights,'achievements':achievements,'achievement_options':achievement_options,'challenges':challenges,'rewards':rewards,'fees':fees,'history':history,
+        'totals':_fee_totals(fees),'teachers':teachers,'academic_session':academic_session,'academic_performance':academic_performance,'feedback_threads':feedback_threads,'feedback_open':sum(t['awaiting_parent'] for t in feedback_threads),'learning_streak':learning_streak,'upcoming_classes':upcoming_classes,'announcements':announcements,'progress':progress,'ranks':ranks,'calendar_weeks':weeks,'calendar_month':month,'selected_day':day,'selected_records':selected_records,'selected_holiday':holidays.get(day),'all_holiday_dates':set(all_holidays),'subject_scores':subject_scores,'progress_counts':progress_counts,'available_challenges':available_challenges,'feedback_labels':FEEDBACK_LABELS,'parent_notices':parent_notices,'parent_unread':parent_unread})
+
+# Parent detail pages: one focused page per section, all driven by the same
+# recorded academy data as the student portal. The shell navigates between
+# them without reloading the whole page.
+@app.get('/parent/children/{student_id}/classes',response_class=HTMLResponse)
+def parent_classes(request:Request,student_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        sid=child['id']; current=_class_now().date()
+        # Follow the student's existing My Classes membership and one-off date
+        # rules. Never expose the rest of a class roster in the parent workspace.
+        schedules=_schedules(conn); students=_class_students(conn)
+        member=next((s for s in students if s['id']==sid),None)
+        assigned=[s for s in schedules if member and member in _members(s,students,schedules)]
+        classes=[dict(s,day_label=_day_label(s),end_time=_end_time(s)) for s in assigned
+            if s['recurrence']=='weekly' or s['class_date']>=current.isoformat()]
+        teachers=sorted({s['teacher_name'] for s in classes})
+        by_day={i:[] for i in range(7)}
+        for s in sorted(classes,key=lambda x:(x['weekday'],x['start_time'])):
+            by_day.setdefault(s['weekday'],[]).append(s)
+        academic_session=_academic_session(conn,current)
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_classes.html',{'child':child,'children':children,'parent_child_id':sid,
+        'classes':classes,'by_day':by_day,'weekdays':WEEKDAYS,'teachers':teachers,'academic_session':academic_session})
+
+@app.get('/parent/children/{student_id}/attendance',response_class=HTMLResponse)
+def parent_attendance(request:Request,student_id:int,month:str='',day:str=''):
+    parent=require_user(request,'parent')
+    import calendar as _calendar
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        sid=child['id']; current=_class_now().date()
+        attendance=conn.execute("""SELECT a.status,s.session_date,s.subject,s.start_time FROM class_attendance a
+            JOIN class_sessions s ON s.id=a.session_id WHERE a.student_id=? AND s.status='ended'
+            ORDER BY s.session_date DESC,s.start_time DESC,s.id DESC""",(sid,)).fetchall()
+        holiday_rows=conn.execute('SELECT holiday_date,title FROM academy_holidays').fetchall()
+        all_holidays={r['holiday_date']:r['title'] for r in holiday_rows}
+        insights=_attendance_insights(attendance,set(all_holidays),current)
+        try:
+            if not month: month=current.strftime('%Y-%m')
+            if not re.fullmatch(r'\d{4}-\d{2}',month): raise ValueError()
+            selected_month=date.fromisoformat(month+'-01')
+            if not 1900<=selected_month.year<=2100: raise ValueError()
+        except ValueError: raise HTTPException(400,detail='Invalid calendar month.')
+        if day:
+            try:
+                selected_date=date.fromisoformat(day)
+                if selected_date.strftime('%Y-%m')!=month: raise ValueError()
+            except ValueError: raise HTTPException(400,detail='Invalid calendar date.')
+        holidays={d:title for d,title in all_holidays.items() if d.startswith(month)}
+        records_by_day={}
+        for r in attendance: records_by_day.setdefault(r['session_date'],[]).append(r)
+        weeks=[]
+        for week in _calendar.Calendar(firstweekday=0).monthdatescalendar(selected_month.year,selected_month.month):
+            weeks.append([{'date':d.isoformat(),'number':d.day,'in_month':d.month==selected_month.month,
+                'present':any(r['status']=='present' for r in records_by_day.get(d.isoformat(),[])),
+                'absent':any(r['status']=='absent' for r in records_by_day.get(d.isoformat(),[])),
+                'late':any(r['status']=='late' for r in records_by_day.get(d.isoformat(),[])),
+                'excused':any(r['status']=='excused' for r in records_by_day.get(d.isoformat(),[])),
+                'pending':any(r['status'] is None for r in records_by_day.get(d.isoformat(),[])), 'holiday':holidays.get(d.isoformat())} for d in week])
+        options=[]; y,m=selected_month.year,selected_month.month
+        for _ in range(6):
+            options.append({'value':f'{y:04d}-{m:02d}','label':date(y,m,1).strftime('%B %Y')})
+            m-=1
+            if m==0: m=12; y-=1
+        options.reverse()
+        selected_records=records_by_day.get(day,[]) if day else []
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_attendance.html',{'child':child,'children':children,'parent_child_id':sid,
+        'insights':insights,'weeks':weeks,'month':month,'month_options':options,'records':attendance,
+        'selected_day':day,'selected_records':selected_records,'selected_holiday':holidays.get(day),
+        'all_holiday_dates':set(all_holidays)})
+
+# ---------------------------------------------------------------------------
+# Teacher feedback conversations (linked parents <-> staff)
+# ---------------------------------------------------------------------------
+# An approved feedback record is the conversation's root: it already carries the
+# teacher, subject, category and the Super Admin's approval, so no second data
+# store is introduced. Replies live in feedback_messages and never alter the
+# approved record itself.
+# Parents answer with one tap, never free text: staff screens stay short and
+# readable no matter how many families are linked to a class.
+FEEDBACK_ACKS={
+    'thanks':'Thank you — noted',
+    'working':'We will work on it',
+    'done':'Done at home',
+    'contact':'Please contact us'
+}
+FEEDBACK_HELP={
+    'general':'A general observation from the teacher',
+    'academic':'Classwork, tests and study habits',
+    'improvement':'A specific area the teacher wants to see improve',
+    'behavior':'Classroom conduct and participation in lessons',
+    'parent_feedback':'A note the teacher wants the family to act on'
+}
+
+def _decorate_feedback(conn, records):
+    threads=[]
+    for record in records:
+        item=dict(record)
+        messages=[dict(m) for m in conn.execute("""SELECT m.id,m.body,m.created_at,m.author_role,u.full_name author_name
+            FROM feedback_messages m JOIN users u ON u.id=m.author_id WHERE m.record_id=? ORDER BY m.id""",(record['id'],)).fetchall()]
+        item['updates']=[m for m in messages if m['author_role']!='parent']
+        parent_rows=[m for m in messages if m['author_role']=='parent']
+        ack=parent_rows[-1] if parent_rows else None
+        if ack: ack['label']=FEEDBACK_ACKS.get(ack['body'],ack['body'])
+        item['ack']=ack
+        last_update=item['updates'][-1]['created_at'] if item['updates'] else record['created_at']
+        item['awaiting_parent']=not ack or ack['created_at']<last_update
+        item['awaiting_staff']=bool(ack and ack['created_at']>last_update)
+        item['update_count']=len(item['updates'])
+        item['last_activity']=max([last_update]+([ack['created_at']] if ack else []))
+        threads.append(item)
+    return threads
+
+def _student_feedback(conn, student_id):
+    records=conn.execute("""SELECT r.*,u.full_name teacher_name FROM student_progress_records r JOIN users u ON u.id=r.teacher_id
+        WHERE r.student_id=? AND r.kind='feedback' AND r.status='approved'
+          AND NOT EXISTS (SELECT 1 FROM student_progress_records n WHERE n.replaces_id=r.id AND n.status='approved')
+        ORDER BY r.record_date DESC,r.id DESC""",(student_id,)).fetchall()
+    return _decorate_feedback(conn,records)
+
+def _notify_feedback_parents(conn, student_id, title, body, link_path):
+    for parent in conn.execute("""SELECT u.id FROM parent_student_links l JOIN users u ON u.id=l.parent_id
+        WHERE l.student_id=? AND u.role='parent' AND u.status='active'""",(student_id,)).fetchall():
+        notify(conn,parent['id'],title,body,kind='remark',student_id=student_id,link_path=link_path)
+
+@app.get('/parent/children/{student_id}/feedback',response_class=HTMLResponse)
+def parent_feedback(request:Request,student_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        threads=_student_feedback(conn,child['id'])
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_feedback.html',{'child':child,'children':children,'parent_child_id':child['id'],
+        'threads':threads,'awaiting_replies':sum(t['awaiting_parent'] for t in threads),
+        'teachers':sorted({t['teacher_name'] for t in threads}),'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP,
+        'ack_options':FEEDBACK_ACKS})
+
+@app.post('/parent/children/{student_id}/feedback/{record_id}/acknowledge')
+def parent_feedback_acknowledge(request:Request,student_id:int,record_id:int,ack:str=Form('')):
+    parent=require_user(request,'parent')
+    back=f'/parent/children/{student_id}/feedback'
+    try:
+        if ack not in FEEDBACK_ACKS: raise ValueError('Choose one of the reply options.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            child=_parent_child(conn,parent['id'],student_id)
+            record=conn.execute("SELECT * FROM student_progress_records WHERE id=? AND student_id=? AND kind='feedback' AND status='approved'",(record_id,child['id'])).fetchone()
+            if not record: raise HTTPException(404)
+            # One standing answer per note: a new tap replaces the previous one.
+            conn.execute("DELETE FROM feedback_messages WHERE record_id=? AND author_role='parent'",(record_id,))
+            conn.execute('INSERT INTO feedback_messages(record_id,author_id,author_role,body,created_at) VALUES (?,?,?,?,?)',(record_id,parent['id'],'parent',ack,iso_now()))
+            author=conn.execute('SELECT id,role FROM users WHERE id=?',(record['teacher_id'],)).fetchone()
+            link=f"/admin/feedback/{record_id}" if author and author['role']=='admin' else f"/teacher/feedback/{record_id}"
+            if author:
+                notify(conn,author['id'],'Parent acknowledged your feedback',
+                    f"{child['full_name']}'s parent answered: {FEEDBACK_ACKS[ack]}.",kind='remark',student_id=child['id'],link_path=link)
+            audit(conn,None,'parent_feedback_acknowledged',f'Record {record_id}; parent {parent["id"]}; {ack}')
+    except (ValueError,TypeError) as exc: return flash_redirect(back,str(exc),'error')
+    return flash_redirect(back,'Thank you — your reply was sent to the teacher.')
+
+def _staff_feedback_threads(conn, actor, role):
+    scope="r.kind='feedback' AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records n WHERE n.replaces_id=r.id AND n.status='approved')"
+    params=()
+    if role!='admin':
+        scope+=' AND r.teacher_id=?'; params=(actor['id'],)
+    rows=conn.execute(f"""SELECT r.*,s.full_name student_name,s.admission_no,s.class_name,s.section_name,t.full_name teacher_name
+        FROM student_progress_records r JOIN users s ON s.id=r.student_id JOIN users t ON t.id=r.teacher_id
+        WHERE {scope} ORDER BY r.record_date DESC,r.id DESC""",params).fetchall()
+    if role!='admin':
+        # Teaching access follows the current class assignment, exactly like every
+        # other teacher screen: losing the class also closes the conversation.
+        assigned=_teacher_assignments(conn,actor['id'])
+        rows=[r for r in rows if r['student_id'] in assigned and r['subject'] in assigned[r['student_id']]['subjects']]
+    return _decorate_feedback(conn,rows)
+
+def _feedback_staff_view(request):
+    """Resolve the staff side of a feedback screen: admins see every student,
+    teachers see their own feedback only.
+
+    Admins are resolved by role, not by the URL, so a Super Admin (or a staff
+    admin holding the feedback permission) can open either entry point.
+    """
+    actor=require_user(request)
+    if actor['role']=='admin':
+        return require_admin(request,'feedback'), 'admin', '/admin/feedback'
+    if actor['role']=='teacher' and request.url.path.startswith('/teacher/'):
+        return actor, 'teacher', '/teacher/feedback'
+    raise HTTPException(403)
+
+@app.get('/teacher/feedback',response_class=HTMLResponse)
+@app.get('/admin/feedback',response_class=HTMLResponse)
+def staff_feedback(request:Request, student:Optional[int]=None):
+    actor,role,root=_feedback_staff_view(request)
+    with connect() as conn:
+        threads=_staff_feedback_threads(conn,actor,role)
+        if student is not None: threads=[t for t in threads if t['student_id']==student]
+        students=[dict(r) for r in conn.execute("""SELECT id,full_name,admission_no,class_name,section_name FROM users
+            WHERE role='student' AND status='active' ORDER BY class_name,section_name,full_name""").fetchall()] if role=='admin' else []
+    return render(request,'staff_feedback.html',{'threads':threads,'awaiting':sum(t['awaiting_staff'] for t in threads),
+        'students':students,'selected_student':student,'feedback_root':root,'staff_role':role,'subjects':ACADEMY_SUBJECTS,
+        'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP,'parent_child_id':None})
+
+@app.get('/teacher/feedback/{record_id}',response_class=HTMLResponse)
+@app.get('/admin/feedback/{record_id}',response_class=HTMLResponse)
+def staff_feedback_thread(request:Request,record_id:int):
+    actor,role,root=_feedback_staff_view(request)
+    with connect() as conn:
+        thread=next((t for t in _staff_feedback_threads(conn,actor,role) if t['id']==record_id),None)
+    if not thread: raise HTTPException(404)
+    return render(request,'staff_feedback_thread.html',{'thread':thread,'feedback_root':root,'staff_role':role,
+        'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP,'parent_child_id':None})
+
+@app.post('/teacher/feedback/{record_id}/reply')
+@app.post('/admin/feedback/{record_id}/reply')
+def staff_feedback_reply(request:Request,record_id:int,body:str=Form('')):
+    actor,role,root=_feedback_staff_view(request)
+    back=f'{root}/{record_id}'
+    try:
+        message=_clean_text(body,1200,True)
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            record=conn.execute("""SELECT r.*,s.full_name student_name FROM student_progress_records r JOIN users s ON s.id=r.student_id
+                WHERE r.id=? AND r.kind='feedback' AND r.status='approved'""",(record_id,)).fetchone()
+            if not record: raise HTTPException(404)
+            # Same answer as the read view: never confirm another teacher's thread exists.
+            if role!='admin' and record['teacher_id']!=actor['id']: raise HTTPException(404)
+            conn.execute('INSERT INTO feedback_messages(record_id,author_id,author_role,body,created_at) VALUES (?,?,?,?,?)',(record_id,actor['id'],role,message,iso_now()))
+            _notify_feedback_parents(conn,record['student_id'],'New note from the academy',
+                f"A teacher replied about the {record['subject']} feedback for {record['student_name']}.",
+                f"/parent/children/{record['student_id']}/feedback")
+            audit(conn,actor['id'] if role=='admin' else None,'staff_feedback_reply',f'Record {record_id}; {role}')
+    except (ValueError,TypeError) as exc: return flash_redirect(back,str(exc),'error')
+    return flash_redirect(back,'Reply sent to the parent.')
+
+@app.post('/admin/feedback/new')
+def admin_feedback_create(request:Request,student_id:int=Form(...),subject:str=Form(''),feedback_type:str=Form('general'),
+                          title:str=Form(''),details:str=Form('')):
+    admin=require_admin(request,'feedback')
+    try:
+        message=_clean_text(details,2000,True)
+        heading=_clean_text(title,160,False) or 'Feedback from the academy'
+        if subject not in ACADEMY_SUBJECTS: raise ValueError('Choose a valid subject.')
+        if feedback_type not in FEEDBACK_LABELS: raise ValueError('Choose a valid feedback category.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            student=conn.execute("SELECT id,full_name FROM users WHERE id=? AND role='student' AND status='active'",(student_id,)).fetchone()
+            if not student: raise HTTPException(404)
+            created=conn.execute("""INSERT INTO student_progress_records(student_id,teacher_id,subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,created_at,status,reviewed_by,reviewed_at,review_note,version,participation_type)
+                VALUES (?,?,?,'feedback',?,?,?,NULL,NULL,'','general',?,?,'approved',?,?,'',1,'general') RETURNING id""",
+                (student_id,admin['id'],subject,heading,message,_class_now().date().isoformat(),feedback_type,iso_now(),admin['id'],iso_now())).fetchone()
+            record_id=created['id']
+            _notify_feedback_parents(conn,student_id,'New teacher feedback',
+                f"New {FEEDBACK_LABELS[feedback_type].lower()} for {student['full_name']} in {subject}.",
+                f'/parent/children/{student_id}/feedback')
+            audit(conn,admin['id'],'feedback_published',f'Record {record_id}; student {student_id}')
+    except (ValueError,TypeError) as exc: return flash_redirect('/admin/feedback',str(exc),'error')
+    return flash_redirect('/admin/feedback','Feedback published to the linked parents.')
+
+def _teacher_assignments(conn, teacher_id):
+    students=_class_students(conn); schedules=_schedules(conn); result={}
+    for schedule in schedules:
+        if schedule['teacher_id']!=teacher_id: continue
+        for student in _members(schedule,students,schedules):
+            result.setdefault(student['id'],{'student':student,'subjects':set()})['subjects'].add(schedule['subject'])
+    return result
+
+@app.get('/teacher/progress',response_class=HTMLResponse)
+@app.get('/admin/teaching',response_class=HTMLResponse)
+def teaching_progress(request:Request,student:Optional[int]=None):
+    teacher,_=_progress_actor(request)
+    with connect() as conn:
+        assignments=_teacher_assignments(conn,teacher['id'])
+        if student is not None and student not in assignments: raise HTTPException(404)
+        own=conn.execute("""SELECT r.*,u.full_name,u.admission_no,(SELECT newer.status FROM student_progress_records newer WHERE newer.replaces_id=r.id AND newer.status IN ('pending','approved') LIMIT 1) revision_status FROM student_progress_records r JOIN users u ON u.id=r.student_id
+            WHERE r.teacher_id=? ORDER BY r.id DESC""",(teacher['id'],)).fetchall()
+        pending=conn.execute("""SELECT r.*,u.full_name,u.admission_no,t.full_name teacher_name,
+            old.title previous_title,old.assessment_type previous_assessment_type,old.feedback_type previous_feedback_type,old.period_start previous_period_start,old.period_end previous_period_end,old.details previous_details,old.score previous_score,old.score_max previous_score_max,old.outcome previous_outcome,old.record_date previous_date
+            FROM student_progress_records r JOIN users u ON u.id=r.student_id JOIN users t ON t.id=r.teacher_id
+            LEFT JOIN student_progress_records old ON old.id=r.replaces_id WHERE r.status='pending' ORDER BY r.id DESC""").fetchall() if is_super_admin(teacher) else []
+    own=[r for r in own if r['student_id'] in assignments and r['subject'] in assignments[r['student_id']]['subjects']]
+    return render(request,'teaching_progress.html',{'assignments':assignments,'records':own,'pending':pending,'subjects':ACADEMY_SUBJECTS,'feedback_labels':FEEDBACK_LABELS,'teaching_root':'/teacher/progress' if teacher['role']=='teacher' else '/admin/teaching','selected_student':student})
+
+def _progress_actor(request):
+    teacher=require_user(request)
+    if teacher['role']=='teacher' and request.url.path.startswith('/teacher/'):
+        return teacher, '/teacher/progress'
+    if teacher['role']=='admin' and request.url.path.startswith('/admin/'):
+        require_admin(request,'teaching')
+        return teacher, '/admin/teaching'
+    raise HTTPException(403)
+
+def _progress_values(form, kind, default_assessment_type="general"):
+    title=_fee_text(form,'title',160,True); details=_fee_text(form,'details',2000)
+    record_date=_fee_date(form.get('record_date'),True)
+    if record_date>_class_now().date().isoformat(): raise ValueError('Record date cannot be in the future.')
+    if kind not in ('assessment','assignment','feedback'): raise ValueError('Choose a valid record type.')
+    outcome=str(form.get('outcome') or '') if kind=='assignment' else ''
+    if kind=='assignment' and outcome not in ('pending','completed'): raise ValueError('Choose the assignment status.')
+    score=score_max=None
+    raw_score=str(form.get('score') or '').strip(); raw_max=str(form.get('score_max') or '').strip()
+    if kind=='assessment':
+        try:
+            if not re.fullmatch(r'\d{1,6}',raw_score) or not re.fullmatch(r'\d{1,6}',raw_max): raise ValueError()
+            score=int(raw_score); score_max=int(raw_max)
+            if score_max<1 or score_max>100000 or score>score_max: raise ValueError()
+        except ValueError: raise ValueError('Enter a valid score and maximum. Both values are required for an assessment.')
+    assessment_type=str(form.get('assessment_type') or default_assessment_type) if kind=='assessment' else 'general'
+    if assessment_type not in ('general','quiz','test'): raise ValueError('Choose a valid assessment type.')
+    return title,details,record_date,score,score_max,outcome,assessment_type
+
+FEEDBACK_LABELS={'general':'General feedback','academic':'Academic observation','improvement':'Improvement note','behavior':'Classroom observation','parent_feedback':'Feedback for parents'}
+
+def _feedback_values(form,kind,record=None):
+    if kind!='feedback': return 'general',None,None
+    category=str(form.get('feedback_type') or (record['feedback_type'] if record else 'general'))
+    if category not in FEEDBACK_LABELS: raise ValueError('Choose a valid feedback category.')
+    start=str(form.get('period_start') or '').strip() if 'period_start' in form else (record['period_start'] if record else None)
+    end=str(form.get('period_end') or '').strip() if 'period_end' in form else (record['period_end'] if record else None)
+    if not start and not end: return category,None,None
+    if not start or not end: raise ValueError('Enter both feedback period dates, or leave both blank.')
+    start=_fee_date(start,True); end=_fee_date(end,True)
+    if start>end: raise ValueError('The feedback period end must not be before its start.')
+    if end>_class_now().date().isoformat(): raise ValueError('The feedback period cannot end in the future.')
+    return category,start,end
+
+def _teacher_owned_progress(conn, teacher, record_id):
+    record=conn.execute('SELECT * FROM student_progress_records WHERE id=? AND teacher_id=?',(record_id,teacher['id'])).fetchone()
+    if not record: raise HTTPException(404)
+    assigned=_teacher_assignments(conn,teacher['id']).get(record['student_id'])
+    if not assigned or record['subject'] not in assigned['subjects']: raise HTTPException(404)
+    return record,assigned
+
+@app.post('/teacher/progress/records')
+@app.post('/admin/teaching/records')
+async def teaching_record_create(request:Request):
+    teacher,target=_progress_actor(request); f=await request.form()
+    try:
+        student_id=int(f.get('student_id') or 0); subject=_fee_text(f,'subject',80,True); kind=str(f.get('kind') or '')
+        title,details,record_date,score,score_max,outcome,assessment_type=_progress_values(f,kind)
+        feedback_type,period_start,period_end=_feedback_values(f,kind)
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            assignment=_teacher_assignments(conn,teacher['id']).get(student_id)
+            if not assignment or subject not in assignment['subjects']: raise HTTPException(403)
+            conn.execute('''INSERT INTO student_progress_records(student_id,teacher_id,subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,period_start,period_end,participation_type,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(student_id,teacher['id'],subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,period_start,period_end,'general',iso_now()))
+            audit(conn,teacher['id'],'progress_record_submitted',f'Student {student_id}; {kind}; {subject}')
+    except (ValueError,TypeError) as exc: return flash_redirect(target,str(exc),'error')
+    return flash_redirect(target,'Record submitted for Super Admin review.')
+
+@app.get('/teacher/progress/records/{record_id}/edit',response_class=HTMLResponse)
+@app.get('/admin/teaching/records/{record_id}/edit',response_class=HTMLResponse)
+def teaching_record_edit(request:Request,record_id:int):
+    teacher,target=_progress_actor(request)
+    with connect() as conn:
+        record,assignment=_teacher_owned_progress(conn,teacher,record_id)
+    if record['status'] not in ('pending','rejected'): return flash_redirect(target,'Approved records cannot be edited. Submit a new update for review.','error')
+    return render(request,'teaching_record_edit.html',{'record':record,'assignment':assignment,'target':target,'feedback_labels':FEEDBACK_LABELS})
+
+@app.post('/teacher/progress/records/{record_id}/edit')
+@app.post('/admin/teaching/records/{record_id}/edit')
+async def teaching_record_update(request:Request,record_id:int):
+    teacher,target=_progress_actor(request); form=await request.form()
+    try:
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            record,_=_teacher_owned_progress(conn,teacher,record_id)
+            if record['status'] not in ('pending','rejected'): raise ValueError('Approved records cannot be edited. Submit a new update for review.')
+            values=_progress_values(form,record['kind'],record['assessment_type'])
+            feedback_values=_feedback_values(form,record['kind'],record)
+            result=conn.execute("""UPDATE student_progress_records SET title=?,details=?,record_date=?,score=?,score_max=?,outcome=?,assessment_type=?,feedback_type=?,period_start=?,period_end=?,participation_type='general',
+                status='pending',reviewed_by=NULL,reviewed_at=NULL,review_note='',version=version+1 WHERE id=? AND teacher_id=? AND status IN ('pending','rejected')""",(*values,*feedback_values,record_id,teacher['id']))
+            if not result.rowcount: raise ValueError('This record was reviewed concurrently. Refresh and try again.')
+            audit(conn,teacher['id'],'progress_record_resubmitted' if record['status']=='rejected' else 'progress_record_updated',f'Record {record_id}; student {record["student_id"]}')
+    except (ValueError,TypeError)+INTEGRITY_ERRORS as exc: return flash_redirect(f'{target}/records/{record_id}/edit',str(exc) if isinstance(exc,ValueError) else 'Another correction is already pending or approved.','error')
+    return flash_redirect(target,'Record saved and submitted for Super Admin review.')
+
+@app.get('/teacher/progress/records/{record_id}/revise',response_class=HTMLResponse)
+@app.get('/admin/teaching/records/{record_id}/revise',response_class=HTMLResponse)
+def teaching_record_revise(request:Request,record_id:int):
+    teacher,target=_progress_actor(request)
+    with connect() as conn:
+        record,assignment=_teacher_owned_progress(conn,teacher,record_id)
+        active=conn.execute("SELECT id FROM student_progress_records WHERE replaces_id=? AND status IN ('pending','approved')",(record_id,)).fetchone()
+    if record['status']!='approved' or active: return flash_redirect(target,'A correction is already pending or this record has been superseded.','error')
+    return render(request,'teaching_record_edit.html',{'record':record,'assignment':assignment,'target':target,'revising':True,'feedback_labels':FEEDBACK_LABELS})
+
+@app.post('/teacher/progress/records/{record_id}/revise')
+@app.post('/admin/teaching/records/{record_id}/revise')
+async def teaching_record_revision_create(request:Request,record_id:int):
+    teacher,target=_progress_actor(request); form=await request.form()
+    try:
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            record,_=_teacher_owned_progress(conn,teacher,record_id)
+            if record['status']!='approved': raise ValueError('Only approved records can be corrected this way.')
+            values=_progress_values(form,record['kind'],record['assessment_type'])
+            feedback_values=_feedback_values(form,record['kind'],record)
+            if conn.execute("SELECT id FROM student_progress_records WHERE replaces_id=? AND status IN ('pending','approved')",(record_id,)).fetchone():
+                raise ValueError('A correction is already pending or this record has been superseded.')
+            result=conn.execute('''INSERT INTO student_progress_records(student_id,teacher_id,subject,kind,title,details,record_date,score,score_max,outcome,assessment_type,feedback_type,period_start,period_end,participation_type,created_at,replaces_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id''', (record['student_id'],teacher['id'],record['subject'],record['kind'],*values,*feedback_values,'general',iso_now(),record_id)).fetchone()
+            audit(conn,teacher['id'],'progress_correction_submitted',f'Record {result["id"]}; replaces {record_id}')
+    except (ValueError,TypeError)+INTEGRITY_ERRORS as exc: return flash_redirect(target,str(exc) if isinstance(exc,ValueError) else 'A correction is already pending or approved.','error')
+    return flash_redirect(target,'Correction submitted for review. The previous record remains visible until approval.')
+
+@app.post('/admin/teaching/records/{record_id}/review')
+def teaching_record_review(request:Request,record_id:int,decision:str=Form(...),note:str=Form(''),version:int=Form(0)):
+    admin=require_admin(request,super_only=True)
+    try:
+        note=_clean_text(note,1000,False)
+        if version<1: raise ValueError('Refresh the review page before reviewing this record.')
+        if decision not in ('approved','rejected'): raise ValueError('Choose approve or reject.')
+        if decision=='rejected' and not note: raise ValueError('Provide a reason for rejection.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            record=conn.execute('SELECT student_id,teacher_id,kind,subject,assessment_type,outcome FROM student_progress_records WHERE id=?',(record_id,)).fetchone()
+            if not record: raise HTTPException(404)
+            result=conn.execute("UPDATE student_progress_records SET status=?,review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='pending' AND version=?",(decision,note,admin['id'],iso_now(),record_id,version))
+            if not result.rowcount: raise ValueError('This record changed or was already reviewed. Refresh and review the latest version.')
+            notify(conn,record['teacher_id'],'Progress record reviewed',f'Your progress record was {decision}. Open Student progress for details.')
+            if decision=='approved':
+                record_kind=record['kind'] if record['kind'] in ('assessment','feedback','assignment') else 'feedback'
+                kind_map={'assessment':'assessment','feedback':'remark','assignment':'assignment'}
+                kind=kind_map[record_kind]
+                if record_kind=='assessment':
+                    title='New assessment result'; student_body=f'A new {record["assessment_type"]} assessment result is available for {record["subject"]}.'
+                    parent_body=f'A new assessment result for {record["subject"]} is available in your student\'s progress records.'
+                elif record_kind=='assignment':
+                    title='Assignment update'; student_body=f'Your {record["subject"]} assignment record was approved ({record["outcome"]} outcome).'
+                    parent_body=f'An {record["subject"]} assignment update was approved for {{student_name}}.'
+                else:
+                    title='New teacher remarks'; student_body=f'New teacher remarks for {record["subject"]} are available in your progress records.'
+                    parent_body=f'New teacher remarks for {record["subject"]} are available for {{student_name}}.'
+                parent_link=f"/parent/children/{record['student_id']}/feedback" if record_kind=='feedback' else f"/parent/children/{record['student_id']}/report"
+                notify_student_and_parents(conn,record['student_id'],kind,title,student_body,title,parent_body,
+                    student_link='/teacher/progress',parent_link=parent_link)
+            audit(conn,admin['id'],'progress_record_'+decision,f'Record {record_id}; student {record["student_id"]}')
+    except ValueError as exc: return flash_redirect('/admin/teaching',str(exc),'error')
+    return flash_redirect('/admin/teaching','Progress record '+decision+'.')
+
+@app.get('/parent/account',response_class=HTMLResponse)
+def parent_account(request:Request):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_account.html',{'parent_child_id':children[0]['id'] if children else None,'children':children})
+
+@app.post('/parent/account/password')
+def parent_account_password(request:Request,current_password:str=Form(...),new_password:str=Form(...),confirm_password:str=Form(...)):
+    parent=require_user(request,'parent')
+    if new_password!=confirm_password: return flash_redirect('/parent/account','Passwords do not match.','error')
+    if not _validate_password_strength(new_password): return flash_redirect('/parent/account','Password must be 12–128 characters and include letters and numbers.','error')
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        session_hash=token_hash(request.cookies.get('pms_session',''))
+        # Recheck both password and session after acquiring the same lock used
+        # by administrator resets, disables and parent sign-in.
+        latest=conn.execute("""SELECT u.password_hash FROM users u JOIN sessions s ON s.user_id=u.id
+            WHERE u.id=? AND u.role='parent' AND u.status='active' AND s.token_hash=? AND s.expires_at>?""",
+            (parent['id'],session_hash,iso_now())).fetchone()
+        if not latest: raise HTTPException(401)
+        if not latest['password_hash'] or not verify_password(current_password,latest['password_hash']):
+            return flash_redirect('/parent/account','Current password is incorrect.','error')
+        conn.execute('UPDATE users SET password_hash=? WHERE id=? AND role=\'parent\'',(hash_password(new_password),parent['id']))
+        conn.execute('DELETE FROM sessions WHERE user_id=? AND token_hash!=?',(parent['id'],session_hash))
+        audit(conn,None,'parent_password_changed',f"{parent['admission_no']} · {parent['full_name']}")
+    return flash_redirect('/parent/account','Password updated. Other sessions have been signed out.')
+
+def _student_report_data(conn, student, period, term_id):
+    today=_class_now().date()
+    terms=[dict(r) for r in conn.execute('SELECT id,name,start_date,end_date FROM academic_terms ORDER BY start_date DESC,id DESC').fetchall()]
+    if period not in ('all','weekly','monthly','term'): raise HTTPException(400,detail='Invalid report period.')
+    start=end=None; term=None
+    if period=='weekly': start=today-timedelta(days=6); end=today; label='Last 7 days'
+    elif period=='monthly': start=today-timedelta(days=29); end=today; label='Last 30 days'
+    elif period=='term':
+        term=next((t for t in terms if t['id']==term_id),None)
+        if not term: raise HTTPException(400,detail='Choose an existing academic term.')
+        start=date.fromisoformat(term['start_date']); end=date.fromisoformat(term['end_date']); label=term['name']
+    else: label='All recorded history'
+    all_records=conn.execute("""SELECT r.*,u.full_name teacher_name FROM student_progress_records r JOIN users u ON u.id=r.teacher_id
+        WHERE r.student_id=? AND r.kind!='participation' AND r.status='approved' AND NOT EXISTS (SELECT 1 FROM student_progress_records newer WHERE newer.replaces_id=r.id AND newer.status='approved')
+        ORDER BY r.record_date DESC,r.id DESC""",(student['id'],)).fetchall()
+    records=[dict(r) for r in all_records if (not start or start.isoformat()<=r['record_date']<=end.isoformat())]
+    profile=academy_profile_from_row(conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(student['id'],)).fetchone())
+    enrolled=profile.get('subjects',[])
+    enrolled=[x for x in enrolled if isinstance(x,str) and x in ACADEMY_SUBJECTS] if isinstance(enrolled,list) else []
+    schedules=_schedules(conn); students=_class_students(conn); member=next((x for x in students if x['id']==student['id']),None)
+    assigned=[s for s in schedules if member and member in _members(s,students,schedules) and (s['recurrence']=='weekly' or s['class_date']>=today.isoformat())]
+    subjects=[]
+    for name in sorted(set(enrolled) | {r['subject'] for r in records}):
+        entries=[r for r in records if r['subject']==name]
+        assessments=[r for r in entries if r['kind']=='assessment' and r['score_max']]
+        teachers=sorted({s['teacher_name'] for s in assigned if s['subject']==name})
+        subjects.append({'name':name,'teachers':teachers,'current':assessments[0] if assessments else None,
+            'previous':assessments[1] if len(assessments)>1 else None,'average':_mean_record_percentage(assessments,'assessment'),
+            'completed':sum(r['kind']=='assignment' and r['outcome']=='completed' for r in entries),
+            'pending':sum(r['kind']=='assignment' and r['outcome']=='pending' for r in entries)})
+    scored=[s for s in subjects if s['average'] is not None]
+    highest=max((s['average'] for s in scored),default=None); lowest=min((s['average'] for s in scored),default=None)
+    comparison=len(scored)>=2 and highest!=lowest
+    return {'records':records,'assessments':[r for r in records if r['kind']=='assessment'],
+        'quizzes':[r for r in records if r['kind']=='assessment' and r['assessment_type']=='quiz'],
+        'tests':[r for r in records if r['kind']=='assessment' and r['assessment_type']=='test'],
+        'feedback':[r for r in records if r['kind']=='feedback'],'subjects':subjects,
+        'overall':_mean_record_percentage(records,'assessment'),
+        'completed':sum(r['kind']=='assignment' and r['outcome']=='completed' for r in records),
+        'pending':sum(r['kind']=='assignment' and r['outcome']=='pending' for r in records),
+        'high':[s for s in scored if s['average']==highest] if comparison else [],
+        'low':[s for s in scored if s['average']==lowest] if comparison else [],
+        'period':period,'label':label,'start':start.isoformat() if start else None,'end':end.isoformat() if end else None,
+        'term':term,'terms':terms}
+
+@app.get('/parent/children/{student_id}/report',response_class=HTMLResponse)
+def parent_report(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        student=_parent_child(conn,parent['id'],student_id)
+        report=_student_report_data(conn,student,period,term_id)
+    return render(request,'parent_report.html',{'child':student,'parent_child_id':student_id,'report':report,'feedback_labels':FEEDBACK_LABELS})
+
+
+@app.get('/admin/students/{student_id}/report',response_class=HTMLResponse)
+def admin_student_report(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):
+    # Academy staff review the same approved records guardians see. Student IDs
+    # are always resolved server-side; the URL alone grants no access.
+    require_admin(request,'students')
+    with connect() as conn:
+        student=conn.execute("SELECT * FROM users WHERE id=? AND role='student'",(student_id,)).fetchone()
+        if not student: raise HTTPException(404)
+        report=_student_report_data(conn,student,period,term_id)
+    return render(request,'parent_report.html',{'child':student,'report':report,
+        'feedback_labels':FEEDBACK_LABELS,
+        'report_base':f'/admin/students/{student_id}','report_back':'/admin/parents',
+        'report_eyebrow':'ACADEMY RECORDS','report_admin':True})
+
+def _report_access(request: Request, student_id: int):
+    """Resolve the report's student for a guardian or an authorised staff member.
+
+    Guardians only reach their explicitly linked children; staff use the
+    existing 'students' permission. Financial sections are returned only when
+    the viewer is also allowed to see fee records.
+    """
+    if request.url.path.startswith('/admin/'):
+        admin=require_admin(request,'students')
+        with connect() as conn:
+            student=conn.execute("SELECT * FROM users WHERE id=? AND role='student'",(student_id,)).fetchone()
+        if not student: raise HTTPException(404)
+        return student, (is_super_admin(admin) or 'fees' in _admin_permissions(admin))
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        return _parent_child(conn,parent['id'],student_id), True
+
+
+def _report_pdf(request: Request, student_id: int, period: str, term_id):
+    # Authorize every report request; a filename or student ID alone grants no access.
+    student, include_finance = _report_access(request, student_id)
+    with connect() as conn:
+        report=_student_report_data(conn,student,period,term_id)
+        records=report['records']
+        attendance=conn.execute("""SELECT a.status,s.session_date,s.subject FROM class_attendance a JOIN class_sessions s ON s.id=a.session_id
+            WHERE a.student_id=? AND s.status='ended' AND a.status IS NOT NULL AND s.session_date<=? ORDER BY s.session_date DESC,s.id DESC""",(student_id,_class_now().date().isoformat())).fetchall()
+        holiday_dates={r['holiday_date'] for r in conn.execute('SELECT holiday_date FROM academy_holidays').fetchall()}
+        points=total_points(conn,student_id)
+        fee_totals=_fee_totals(_fee_rows(conn,student_id)) if include_finance else []
+        ranks={'Overall':_parent_rank(conn,student),'Class':_parent_rank(conn,student,class_only=True)}
+        challenges=conn.execute("""SELECT c.title,p.status FROM challenge_participations p JOIN challenges c ON c.id=p.challenge_id
+            WHERE p.user_id=? ORDER BY p.updated_at DESC,p.id DESC""",(student_id,)).fetchall()
+        claims=conn.execute("""SELECT r.name,rc.status FROM reward_claims rc JOIN rewards r ON r.id=rc.reward_id
+            WHERE rc.user_id=? ORDER BY rc.created_at DESC,rc.id DESC""",(student_id,)).fetchall()
+        achievements=conn.execute("""SELECT a.name,sa.unlocked_at FROM student_achievements sa JOIN achievements a ON a.id=sa.achievement_id
+            WHERE sa.user_id=? ORDER BY sa.unlocked_at DESC""",(student_id,)).fetchall()
+        branding=get_settings(conn); logo=None
+        if branding.get('school_logo_path')=='/uploads/school_logo.png':
+            if DATABASE_URL:
+                asset=conn.execute("SELECT data FROM file_assets WHERE name='school_logo.png'").fetchone()
+                if asset: logo=bytes(asset['data'])
+            else:
+                logo_path=UPLOAD_DIR/'school_logo.png'
+                if logo_path.is_file(): logo=logo_path.read_bytes()
+    from html import escape
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as ReportImage
+    from reportlab.lib.units import mm
+    name='AscendReportFont'
+    if name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(name,str(BASE_DIR/'static/fonts/DejaVuSans.ttf')))
+    style=ParagraphStyle('body',fontName=name,fontSize=9,leading=14,spaceAfter=5,textColor=colors.HexColor('#17252b'))
+    heading=ParagraphStyle('heading',parent=style,fontSize=13,leading=18,spaceBefore=12,spaceAfter=7,textColor=colors.HexColor('#075c49'))
+    title=ParagraphStyle('title',parent=heading,fontSize=18,leading=23,spaceBefore=0)
+    def text(value): return escape(str(value or '')).replace('\n','<br/>')
+    output=io.BytesIO(); doc=SimpleDocTemplate(output,pagesize=(210*mm,297*mm),rightMargin=18*mm,leftMargin=18*mm,topMargin=17*mm,bottomMargin=17*mm)
+    content=[]
+    if logo:
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(io.BytesIO(logo)) as im: width,height=im.size
+            if width>0 and height>0:
+                scale=min(36*mm/width,20*mm/height)
+                content.append(ReportImage(io.BytesIO(logo),width=width*scale,height=height*scale,hAlign='LEFT'))
+        except (OSError,ValueError): pass
+    content.extend([Paragraph(text(branding.get('school_name','ASCEND Academy')),title),Paragraph('Student progress report',heading),
+        Paragraph(f"Student: {text(student['full_name'])} · ID: {text(student['admission_no'])}",style),
+        Paragraph(f"Grade: {text(student['class_name'] or 'Not set')} · Section: {text(student['section_name'] or 'Not set')}",style),
+        Paragraph(f"Generated: {text(_class_now().date().isoformat())}",style),
+        Paragraph(f"Academic report period: {text(report['label'])}" + (f" · {text(report['start'])} to {text(report['end'])}" if report['start'] else ''),style),
+        Paragraph('Academic overview',heading),
+        Paragraph(text(f"Overall academic score: {str(report['overall'])+'%' if report['overall'] is not None else 'Not recorded'} · approved assessment percentages, equally weighted"),style),
+        Paragraph(text(f"Assignments: {report['completed']} completed; {report['pending']} pending approved records"),style)])
+    for subject in report['subjects']:
+        current=subject['current']; previous=subject['previous']
+        content.append(Paragraph(text(f"{subject['name']} · Teachers: {', '.join(subject['teachers']) or 'Not assigned'} · Average: {str(subject['average'])+'%' if subject['average'] is not None else 'Not recorded'} · Current: {str(current['score'])+'/'+str(current['score_max']) if current else 'Not recorded'} · Previous: {str(previous['score'])+'/'+str(previous['score_max']) if previous else 'Not recorded'} · Assignments: {subject['completed']} completed, {subject['pending']} pending"),style))
+    if not report['subjects']: content.append(Paragraph('No subjects or approved results recorded.',style))
+    content.append(Paragraph('Relative subject comparisons',heading))
+    if report['high']:
+        content.append(Paragraph(text('Higher recorded averages: '+', '.join(s['name']+' ('+str(s['average'])+'%)' for s in report['high'])),style))
+        content.append(Paragraph(text('Lower recorded averages: '+', '.join(s['name']+' ('+str(s['average'])+'%)' for s in report['low'])),style))
+        content.append(Paragraph('Relative observations only, not a diagnosis; assessments may differ in topic and difficulty.',style))
+    else: content.append(Paragraph('Not enough differing subject averages for a relative comparison.',style))
+    content.append(Paragraph('Attendance (all-time)',heading))
+    present=sum(r['status'] in ('present','late') for r in attendance); absent=sum(r['status']=='absent' and r['session_date'] not in holiday_dates for r in attendance)
+    summary=f'{present} present or late; {absent} absent in {present+absent} counted completed sessions (excused and holiday absences excluded)'
+    if present+absent: summary+=f' ({round(100*present/(present+absent))}% attendance)'
+    content.append(Paragraph(text(summary),style))
+    for r in attendance:
+        content.append(Paragraph(text(f"{r['session_date']} · {r['subject']} · {r['status'].title()}" + (' (holiday, excluded from absence totals)' if r['status']=='absent' and r['session_date'] in holiday_dates else '')),style))
+    if not attendance: content.append(Paragraph('No marked completed sessions.',style))
+    content.append(Paragraph('Approved teacher records',heading))
+    for r in records:
+        metric=f" · {r['score']}/{r['score_max']}" if r['kind']=='assessment' and r['score'] is not None else f" · {r['outcome'].title()}" if r['kind']=='assignment' else ''
+        content.append(Paragraph(text(f"{r['record_date']} · {r['subject']} · {(r['assessment_type'].title() if r['kind']=='assessment' else r['kind'].title())} · {r['title']}{metric} · {r['teacher_name']}"),style))
+        if r['kind']=='feedback':
+            content.append(Paragraph(text(FEEDBACK_LABELS.get(r['feedback_type'],'General feedback') + (f" · Period: {r['period_start']} to {r['period_end']}" if r['period_start'] and r['period_end'] else '')),style))
+        if r['details']: content.append(Paragraph(text(r['details']),style))
+    if not records: content.append(Paragraph('No approved teacher records yet.',style))
+    content.append(Paragraph('Points and achievements (all-time)',heading)); content.append(Paragraph(text(f'{points} total recorded points'),style))
+    for a in achievements: content.append(Paragraph(text(f"{a['name']} · earned {a['unlocked_at'][:10]}"),style))
+    if not achievements: content.append(Paragraph('No achievements earned yet.',style))
+    content.append(Paragraph('Rankings and challenges (all-time)',heading))
+    content.append(Paragraph(text('Points leaderboard: '+ '; '.join(f'{label}: #{rank}' if rank else f'{label}: not available' for label,rank in ranks.items())),style))
+    for challenge in challenges: content.append(Paragraph(text(f"Challenge: {challenge['title']} · {challenge['status'].title()}"),style))
+    if not challenges: content.append(Paragraph('No challenge activity recorded.',style))
+    for claim in claims: content.append(Paragraph(text(f"Reward claim: {claim['name']} · {claim['status'].title()}"),style))
+    if not claims: content.append(Paragraph('No reward claims recorded.',style))
+    if include_finance:
+        content.append(Paragraph('Fee overview (all-time)',heading))
+        content.append(Paragraph('Submitted payments remain in the balance until approved. Authorized waivers reduce the balance. No currency conversion is applied.',style))
+        for currency,totals in fee_totals:
+            content.append(Paragraph(text(f"{currency}: assigned {_fee_format(totals['total'])}; approved payments {_fee_format(totals['paid'])}; waived {_fee_format(totals['waived'])}; balance {_fee_format(totals['balance'])}; submitted for verification {_fee_format(totals['submitted'])}"),style))
+        if not fee_totals: content.append(Paragraph('No fees assigned.',style))
+    doc.build(content)
+    return Response(output.getvalue(),media_type='application/pdf',headers={'Cache-Control':'private, no-store','Content-Disposition':f'attachment; filename="student-report-{student_id}.pdf"'})
+
+
+
+@app.get('/parent/children/{student_id}/report.pdf')
+def parent_report_pdf(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):
+    return _report_pdf(request,student_id,period,term_id)
+
+@app.get('/admin/students/{student_id}/report.pdf')
+def admin_report_pdf(request:Request,student_id:int,period:str='all',term_id:Optional[int]=None):
+    # Academy staff download the same approved-record report; fee sections are
+    # included only when the viewer may also see fee records.
+    return _report_pdf(request,student_id,period,term_id)
+
+@app.get('/admin/teachers',response_class=HTMLResponse)
+def teacher_accounts(request:Request):
+    require_admin(request,super_only=True)
+    with connect() as conn:
+        teachers=conn.execute("SELECT id,admission_no,full_name,status FROM users WHERE role='teacher' ORDER BY full_name,id").fetchall()
+    return render(request,'admin_teachers.html',{'teachers':teachers})
+
+@app.post('/admin/teachers/create')
+def teacher_account_create(request:Request,teacher_id:str=Form(...),full_name:str=Form(...),password:str=Form(...)):
+    admin=require_admin(request,super_only=True)
+    try:
+        teacher_id=teacher_id.strip().upper()
+        if not re.fullmatch(r'T-[A-Z0-9]{3,20}',teacher_id): raise ValueError('Use a teacher ID such as T-1234.')
+        full_name=_clean_text(full_name,120)
+        if not _validate_password_strength(password): raise ValueError('Password must be 12–128 characters and include letters and numbers.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            conn.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES (?,?,?,'teacher','active',1,?)",(teacher_id,full_name,hash_password(password),iso_now()))
+            audit(conn,admin['id'],'teacher_account_created',teacher_id)
+    except (ValueError,TypeError)+INTEGRITY_ERRORS as exc:
+        return flash_redirect('/admin/teachers',str(exc) if isinstance(exc,ValueError) else 'That account ID is already in use.','error')
+    return flash_redirect('/admin/teachers','Teacher account created. Share the credentials securely.')
+
+@app.post('/admin/teachers/{teacher_id}/update')
+def teacher_account_update(request:Request,teacher_id:int,full_name:str=Form(...),status:str=Form(...)):
+    admin=require_admin(request,super_only=True)
+    try:
+        full_name=_clean_text(full_name,120)
+        if status not in ('active','disabled'): raise ValueError('Invalid status.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            changed=conn.execute("UPDATE users SET full_name=?,status=? WHERE id=? AND role='teacher'",(full_name,status,teacher_id))
+            if not changed.rowcount: raise HTTPException(404)
+            if status=='disabled': conn.execute('DELETE FROM sessions WHERE user_id=?',(teacher_id,))
+            audit(conn,admin['id'],'teacher_account_updated',f'Teacher {teacher_id}; status {status}')
+    except ValueError as exc: return flash_redirect('/admin/teachers',str(exc),'error')
+    return flash_redirect('/admin/teachers','Teacher account updated.')
+
+@app.post('/admin/teachers/{teacher_id}/password')
+def teacher_account_reset(request:Request,teacher_id:int,password:str=Form(...)):
+    admin=require_admin(request,super_only=True)
+    if not _validate_password_strength(password): return flash_redirect('/admin/teachers','Password must be 12–128 characters and include letters and numbers.','error')
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        result=conn.execute("UPDATE users SET password_hash=? WHERE id=? AND role='teacher'",(hash_password(password),teacher_id))
+        if not result.rowcount: raise HTTPException(404)
+        conn.execute('DELETE FROM sessions WHERE user_id=?',(teacher_id,)); audit(conn,admin['id'],'teacher_password_reset',f'Teacher {teacher_id}')
+    return flash_redirect('/admin/teachers','Password reset and teacher sessions signed out.')
+
+@app.get('/teacher',response_class=HTMLResponse)
+def teacher_home(request:Request):
+    teacher=require_user(request,'teacher')
+    with connect() as conn: assignments=_teacher_assignments(conn,teacher['id'])
+    return render(request,'teacher_home.html',{'assignments':assignments})
+
+@app.get('/admin/teaching/classes',response_class=HTMLResponse)
+@app.get('/teacher/classes',response_class=HTMLResponse)
+def teacher_classes(request:Request):
+    teacher,_=_progress_actor(request)
+    with connect() as conn:
+        all_schedules=_schedules(conn); students=_class_students(conn); today=_class_now().date()
+        schedules=[s for s in all_schedules if s['teacher_id']==teacher['id']]
+        started={r['schedule_id'] for r in conn.execute('SELECT schedule_id FROM class_sessions WHERE session_date=? AND teacher_id=?',(today.isoformat(),teacher['id'])).fetchall()}
+        rows=[dict(s,members=_members(s,students,all_schedules),day_label=_day_label(s),end_time=_end_time(s),due=_due_today(s,today),started=s['id'] in started) for s in schedules]
+        sessions=[dict(r) for r in conn.execute('SELECT * FROM class_sessions WHERE teacher_id=? ORDER BY id DESC LIMIT 100',(teacher['id'],)).fetchall()]
+        assignments=_teacher_assignments(conn,teacher['id'])
+        roster_by_session={s['id']:[] for s in sessions}
+        if sessions:
+            ids=list(roster_by_session); q=','.join('?' for _ in ids)
+            roster=conn.execute('''SELECT a.session_id,a.student_id,a.status,u.full_name,u.admission_no FROM class_attendance a JOIN users u ON u.id=a.student_id
+                WHERE a.session_id IN ('''+q+''') ORDER BY u.full_name,u.id''',ids).fetchall()
+            subjects_by_session={s['id']:s['subject'] for s in sessions}
+            for r in roster:
+                if r['student_id'] in assignments and subjects_by_session[r['session_id']] in assignments[r['student_id']]['subjects']:
+                    roster_by_session[r['session_id']].append(r)
+        for session in sessions: session['roster']=roster_by_session[session['id']]
+    return render(request,'teacher_classes.html',{'rows':rows,'sessions':sessions,'today':today.isoformat(),'classes_root':'/teacher/classes' if teacher['role']=='teacher' else '/admin/teaching/classes','student_root':'/teacher/students' if teacher['role']=='teacher' else '/admin/teaching/students'})
+
+@app.get('/teacher/students/{student_id}',response_class=HTMLResponse)
+@app.get('/admin/teaching/students/{student_id}',response_class=HTMLResponse)
+def teacher_student_profile(request:Request,student_id:int):
+    teacher,target=_progress_actor(request)
+    with connect() as conn:
+        assignment=_teacher_assignments(conn,teacher['id']).get(student_id)
+        if not assignment: raise HTTPException(404)
+        attendance=conn.execute("""SELECT s.session_date,s.subject,a.status FROM class_attendance a JOIN class_sessions s ON s.id=a.session_id
+            WHERE a.student_id=? AND s.teacher_id=? AND s.status='ended' ORDER BY s.session_date DESC,s.id DESC""",(student_id,teacher['id'])).fetchall()
+        attendance=[r for r in attendance if r['subject'] in assignment['subjects']]
+        records=conn.execute('SELECT * FROM student_progress_records WHERE student_id=? AND teacher_id=? ORDER BY record_date DESC,id DESC',(student_id,teacher['id'])).fetchall()
+        records=[r for r in records if r['subject'] in assignment['subjects']]
+    return render(request,'teacher_student.html',{'assignment':assignment,'attendance':attendance,'records':records,'teaching_root':target,'feedback_labels':FEEDBACK_LABELS})
+
+@app.get('/teacher/account',response_class=HTMLResponse)
+def teacher_own_account(request:Request):
+    require_user(request,'teacher')
+    return render(request,'teacher_account.html')
+
+@app.post('/teacher/account/password')
+def teacher_own_password(request:Request,current_password:str=Form(...),new_password:str=Form(...),confirm_password:str=Form(...)):
+    teacher=require_user(request,'teacher')
+    if new_password!=confirm_password: return flash_redirect('/teacher/account','Passwords do not match.','error')
+    if not _validate_password_strength(new_password): return flash_redirect('/teacher/account','Password must be 12–128 characters and include letters and numbers.','error')
+    if not teacher['password_hash'] or not verify_password(current_password,teacher['password_hash']): return flash_redirect('/teacher/account','Current password is incorrect.','error')
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute("UPDATE users SET password_hash=? WHERE id=? AND role='teacher'",(hash_password(new_password),teacher['id']))
+        conn.execute('DELETE FROM sessions WHERE user_id=? AND token_hash!=?',(teacher['id'],token_hash(request.cookies.get('pms_session',''))))
+    return flash_redirect('/teacher/account','Password updated. Other sessions have been signed out.')
+
+
+@app.get('/admin/holidays',response_class=HTMLResponse)
+def holiday_admin(request:Request):
+    require_admin(request,super_only=True)
+    with connect() as conn:
+        holidays=conn.execute('SELECT holiday_date,title FROM academy_holidays ORDER BY holiday_date DESC').fetchall()
+    return render(request,'admin_holidays.html',{'holidays':holidays})
+
+@app.post('/admin/holidays')
+def holiday_save(request:Request,holiday_date:str=Form(...),title:str=Form(...)):
+    admin=require_admin(request,super_only=True)
+    try:
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',holiday_date): raise ValueError('Choose a valid date.')
+        value=date.fromisoformat(holiday_date)
+        if not 1900<=value.year<=2100: raise ValueError('Choose a date between 1900 and 2100.')
+        title=_clean_text(title,120)
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            conn.execute('INSERT INTO academy_holidays(holiday_date,title,created_by,created_at) VALUES (?,?,?,?) ON CONFLICT(holiday_date) DO UPDATE SET title=excluded.title,created_by=excluded.created_by,created_at=excluded.created_at',(holiday_date,title,admin['id'],iso_now()))
+            audit(conn,admin['id'],'holiday_saved',holiday_date)
+    except ValueError as exc: return flash_redirect('/admin/holidays',str(exc),'error')
+    return flash_redirect('/admin/holidays','Holiday saved. Existing attendance records are unchanged.')
+
+@app.post('/admin/holidays/remove')
+def holiday_remove(request:Request,holiday_date:str=Form(...)):
+    admin=require_admin(request,super_only=True)
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        result=conn.execute('DELETE FROM academy_holidays WHERE holiday_date=?',(holiday_date,))
+        if result.rowcount: audit(conn,admin['id'],'holiday_removed',holiday_date)
+    return flash_redirect('/admin/holidays','Holiday removed. Existing attendance records are unchanged.')

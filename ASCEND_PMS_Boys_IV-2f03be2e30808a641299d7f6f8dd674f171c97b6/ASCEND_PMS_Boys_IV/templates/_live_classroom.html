@@ -1,0 +1,6 @@
+<section class="live-workspace" id="liveClassWorkspace" hidden aria-labelledby="liveClassTitle">
+  <input type="hidden" id="liveClassCsrf" value="{{ csrf_token }}">
+  <div class="live-workspace-head"><div><span class="class-kicker">LIVE CLASSROOM</span><h2 id="liveClassTitle">Your live class</h2><p id="liveClassState" role="status" aria-live="polite">Connecting to the classroom…</p></div><div class="live-workspace-actions"><button class="btn ghost small" type="button" data-live-action="expand" aria-pressed="false">Expand layout</button><button class="btn ghost small" type="button" data-live-action="fullscreen" aria-pressed="false">Full screen</button><button class="btn ghost small" type="button" data-live-action="leave">Leave classroom</button></div></div>
+  <div class="live-video-frame" id="liveVideoFrame"></div>
+  <p class="live-class-privacy">This class uses public Jitsi. Keep the room link private; anyone with it may be able to join. Teachers may be asked by Jitsi to sign in as moderator.</p>
+</section>

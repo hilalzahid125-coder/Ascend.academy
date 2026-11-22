@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head"><div><span class="eyebrow">PARENT WORKSPACE</span><h1>Student analytics</h1><p>An overall picture of {{ child.full_name }}’s development, calculated from the academy’s recorded results.</p></div>
+{% if children|length > 1 %}<form class="fee-period-filter" method="get" action="/parent/children/{{ child.id }}/analytics"><label>Student<select name="child" onchange="this.form.submit()">{% for s in children %}<option value="{{ s.id }}" {{ 'selected' if s.id==child.id else '' }}>{{ s.full_name }} · {{ s.admission_no }}</option>{% endfor %}</select></label></form>{% endif %}</section>
+<nav class="analytics-period-tabs" role="tablist" aria-label="Analytics period">
+  {% for value,label in [('week','Weekly'),('month','Monthly'),('term','Term')] %}
+  <a class="analytics-tab {{ 'active' if period==value else '' }}" href="/parent/children/{{ child.id }}/analytics?period={{ value }}{% if period=='term' %}&amp;term_id={{ term_id }}{% endif %}" role="tab"{{ ' aria-selected="true"' if period==value else '' }}>{{ label }}</a>
+  {% endfor %}
+  {% if period=='term' %}<form class="analytics-term-select" method="get" action="/parent/children/{{ child.id }}/analytics"><input type="hidden" name="period" value="term"><label>Term<select name="term_id" onchange="this.form.submit()">{% for t in terms %}<option value="{{ t.id }}" {{ 'selected' if t.id==term_id else '' }}>{{ t.name }}</option>{% endfor %}</select></label></form>{% endif %}
+  <span class="analytics-period-note">{{ period_label }}</span>
+</nav>
+
+<section class="analytics-stats" aria-label="Development at a glance">
+  <article class="analytics-stat accent-blue"><div class="analytics-stat-head"><span>Academic performance</span>{% if academic_score_trend.direction!='flat' %}<span class="trend {{ academic_score_trend.direction }}">{{ '▲' if academic_score_trend.direction=='up' else '▼' }} {{ '%+.1f'|format(academic_score_trend.delta) }} vs last period</span>{% endif %}</div><strong>{{ (academic_score|string ~ '%') if academic_score is not none else 'Not recorded' }}</strong><small>Weighted from {{ academic_parts|length }} recorded area{{ '' if academic_parts|length==1 else 's' }} · <a href="#performance-breakdown">how it is calculated</a></small></article>
+  <article class="analytics-stat accent-green"><div class="analytics-stat-head"><span>Attendance</span>{% if att_trend.direction!='flat' %}<span class="trend {{ att_trend.direction }}">{{ '▲' if att_trend.direction=='up' else '▼' }} {{ '%+.1f'|format(att_trend.delta) }} vs last period</span>{% endif %}</div><strong>{{ (att_now|string ~ '%') if att_now is not none else 'Not recorded' }}</strong><small>{{ att_att }} of {{ att_counted }} recorded sessions attended</small></article>
+  <article class="analytics-stat accent-teal"><div class="analytics-stat-head"><span>Learning consistency</span></div><strong>{{ streak }} <span class="unit">{{ 'day' if streak==1 else 'days' }}</span></strong><small>Current streak · best {{ best_streak }} {{ 'day' if best_streak==1 else 'days' }}</small></article>
+  <article class="analytics-stat accent-amber"><div class="analytics-stat-head"><span>Teacher feedback</span></div><strong>{{ feedback_threads|length }}</strong><small>{{ feedback_open }} awaiting your reply · <a href="/parent/children/{{ child.id }}/feedback">open feedback</a></small></article>
+  <article class="analytics-stat accent-violet"><div class="analytics-stat-head"><span>Challenge completion</span>{% if challenge_trend.direction!='flat' %}<span class="trend {{ challenge_trend.direction }}">{{ '▲' if challenge_trend.direction=='up' else '▼' }} {{ '%+.1f'|format(challenge_trend.delta) }} vs last period</span>{% endif %}</div><strong>{{ (challenge_now|string ~ '%') if challenge_now is not none else 'Not recorded' }}</strong><small>{{ challenge_completed }} of {{ challenge_joined }} challenges completed</small></article>
+  <article class="analytics-stat accent-rose"><div class="analytics-stat-head"><span>Assignment completion</span>{% if assign_trend.direction!='flat' %}<span class="trend {{ assign_trend.direction }}">{{ '▲' if assign_trend.direction=='up' else '▼' }} {{ '%+.1f'|format(assign_trend.delta) }} vs last period</span>{% endif %}</div><strong>{{ (assign_now|string ~ '%') if assign_now is not none else 'Not recorded' }}</strong><small>{{ assign_completed }} of {{ assign_total }} assignments complete</small></article>
+</section>
+
+<section class="panel analytics-panel" id="performance-breakdown">
+  <div class="panel-head"><div><span class="eyebrow">ACADEMIC PERFORMANCE</span><h2>How this figure is built</h2></div><p class="analytics-panel-note">{{ (academic_score|string ~ '% overall') if academic_score is not none else 'Not enough recorded activity yet' }} · {{ period_label }}</p></div>
+  {% if academic_parts %}
+  <div class="analytics-progress-list compact-list">
+    {% for p in academic_parts %}<div class="analytics-progress-row{{ ' earned' if p.value>=75 }}"><div class="analytics-progress-top"><strong>{{ p.label }}</strong><span class="analytics-chip">{{ p.value }}% · weight {{ p.share }}%</span></div><div class="analytics-progress-track"><div class="analytics-progress-fill subject" style="width:{{ p.value }}%"></div></div></div>{% endfor %}
+  </div>
+  <p class="analytics-panel-note">Results, attendance, challenge and assignment completion, learning consistency and achievements are weighted into one figure. An area with no recorded activity is left out and the other weights are redistributed, so nothing is estimated or invented.</p>
+  {% else %}<div class="empty compact"><strong>No recorded activity in this period</strong><p>Attendance, results, challenges and assignments feed this figure as soon as they are recorded.</p></div>{% endif %}
+</section>
+
+<section class="panel analytics-panel">
+  <div class="panel-head"><div><span class="eyebrow">RESULTS</span><h2>Results over time</h2></div><p class="analytics-panel-note">Approved assessment results averaged per period · quizzes and tests count together · {{ period_label }}</p></div>
+  {% if academic_chart.points %}
+  <svg class="analytics-line-chart" viewBox="0 0 {{ academic_chart.width }} {{ academic_chart.height }}" role="img" aria-label="Academic performance trend chart">
+    <line x1="10" y1="24" x2="{{ academic_chart.width-10 }}" y2="24" class="grid"/><line x1="10" y1="127" x2="{{ academic_chart.width-10 }}" y2="127" class="grid"/><line x1="10" y1="230" x2="{{ academic_chart.width-10 }}" y2="230" class="grid"/>
+    <text x="6" y="28" class="axis">100%</text><text x="6" y="131" class="axis">50%</text><text x="6" y="234" class="axis">0%</text>
+    <path d="{{ academic_chart.area }}" class="area"/><path d="{{ academic_chart.path }}" class="line"/>
+    {% for point in academic_chart.points.split(' ') %}<circle cx="{{ point.split(',')[0] }}" cy="{{ point.split(',')[1] }}" r="4.5" class="dot"/>{% endfor %}
+    {% for b in academic %}<text x="{{ (loop.index0*(academic_chart.width-20)/((academic|length-1) or 1)+10)|round }}" y="{{ academic_chart.height-8 }}" class="axis label">{{ b.label }}</text>{% endfor %}
+  </svg>
+  <div class="analytics-legend">{% for b in academic %}<span><b>{{ b.label }}</b>{{ (b.average|string ~ '%') if b.average is not none else '—' }}{% if b.count %} · {{ b.count }} result{{ '' if b.count==1 else 's' }}{% endif %}</span>{% endfor %}</div>
+  {% else %}<div class="empty"><strong>No assessment results in this period</strong><p>Results appear here once approved assessment records are recorded for {{ child.full_name }}.</p></div>{% endif %}
+</section>
+
+<div class="analytics-grid two">
+  <section class="panel analytics-panel">
+    <div class="panel-head"><div><span class="eyebrow">ATTENDANCE</span><h2>Attendance trend</h2></div></div>
+    {% if attendance_series %}
+    <div class="analytics-bars" role="img" aria-label="Attendance rate per period">
+      {% for b in attendance_series %}<div class="analytics-bar-col"><div class="analytics-bar-track"><div class="analytics-bar attend {{ 'empty' if b.rate is none }}" style="height:{{ (b.rate or 0) }}%" title="{{ b.label }}: {{ (b.rate|string ~ '%') if b.rate is not none else 'no sessions' }}"><span class="bar-value">{{ (b.rate|string ~ '%') if b.rate is not none else '—' }}</span></div></div><span class="bar-label">{{ b.label }}</span></div>{% endfor %}
+    </div>
+    <p class="analytics-panel-note">{{ attendance_note }}</p>
+    {% else %}<div class="empty compact"><strong>No recorded sessions</strong><p>Attendance appears here once class sessions are marked.</p></div>{% endif %}
+  </section>
+  <section class="panel analytics-panel">
+    <div class="panel-head"><div><span class="eyebrow">CHALLENGES &amp; RECOGNITION</span><h2>Completed activity</h2></div></div>
+    {% if recognition_series %}
+    {% set max_count = [recognition_series|map(attribute='challenges')|max, recognition_series|map(attribute='achievements')|max]|max or 1 %}
+    <div class="analytics-bars recognition-bars" role="img" aria-label="Challenges completed and achievements unlocked per period">
+      {% for b in recognition_series %}<div class="analytics-bar-col"><div class="analytics-bar-track dual"><div class="analytics-bar challenge{{ ' empty' if not b.challenges }}" style="height:{{ (100*b.challenges/max_count)|round }}%" title="{{ b.label }}: {{ b.challenges }} challenge(s) completed"><span class="bar-value">{{ b.challenges }}</span></div><div class="analytics-bar achieve{{ ' empty' if not b.achievements }}" style="height:{{ (100*b.achievements/max_count)|round }}%" title="{{ b.label }}: {{ b.achievements }} achievement(s) unlocked"><span class="bar-value">{{ b.achievements }}</span></div></div><span class="bar-label">{{ b.label }}</span></div>{% endfor %}
+    </div>
+    <p class="analytics-legend bars-legend"><span><i class="bar-key challenge"></i> Challenges completed</span><span><i class="bar-key achieve"></i> Achievements unlocked</span></p>
+    {% else %}<div class="empty compact"><strong>No recorded challenges</strong><p>Completed challenges and unlocked achievements appear here as they are recorded.</p></div>{% endif %}
+  </section>
+</div>
+
+<section class="panel analytics-panel">
+  <div class="panel-head"><div><span class="eyebrow">LEARNING CONSISTENCY</span><h2>Attendance rhythm</h2></div><p class="analytics-panel-note">Last 28 days · current streak {{ streak }} {{ 'day' if streak==1 else 'days' }} · best {{ best_streak }} {{ 'day' if best_streak==1 else 'days' }}</p></div>
+  <div class="analytics-heat" role="img" aria-label="Attendance heat map for the last 28 days">
+    {% for d in heat %}<span class="analytics-heat-cell {{ d.state }}" title="{{ d.date }}: {{ d.state|replace('_',' ') }}"><small>{{ d.label[:5] }}</small></span>{% endfor %}
+  </div>
+  <p class="analytics-legend heat-legend"><span><i class="hc present"></i> Present</span><span><i class="hc late"></i> Late</span><span><i class="hc absent"></i> Absent</span><span><i class="hc excused"></i> Excused</span><span><i class="hc holiday"></i> Holiday</span><span><i class="hc none"></i> No class</span></p>
+</section>
+
+<section class="panel analytics-panel">
+  <div class="panel-head"><div><span class="eyebrow">RECOGNITION</span><h2>Achievement progress</h2></div><p class="analytics-panel-note">{{ achievement_earned }} of {{ achievement_total }} active achievements unlocked</p></div>
+  {% if achievements %}<div class="analytics-progress-list compact-list">
+    {% for a in achievements %}{% set current=scores.get(a['category'],0) %}{% set raw=100*current/a['points_required'] if a['points_required'] else 0 %}{% set pct=100 if a['unlocked_at'] else (100 if raw>100 else raw) %}
+    <div class="analytics-progress-row {{ 'earned' if a['unlocked_at'] }}"><div class="analytics-progress-top"><strong>{{ a.name }}</strong>{% if a['unlocked_at'] %}<span class="analytics-chip earned">Unlocked</span>{% elif a['points_required'] %}<span class="analytics-chip">{{ current }} / {{ a.points_required }} pts</span>{% else %}<span class="analytics-chip">{{ a.category }} points</span>{% endif %}</div>
+    <div class="analytics-progress-track"><div class="analytics-progress-fill {{ 'full' if a['unlocked_at'] }}" style="width:{{ pct }}%"></div></div>
+    <p class="analytics-progress-note">{{ a.description }}</p></div>{% endfor %}
+  </div>
+  {% else %}<div class="empty compact"><strong>No active achievements</strong><p>Achievement progress appears here as academy achievements are configured.</p></div>{% endif %}
+</section>
+
+<div class="analytics-grid two">
+  <section class="panel analytics-panel">
+    <div class="panel-head"><div><span class="eyebrow">CHALLENGES</span><h2>Completion rate</h2></div></div>
+    {% if challenge_now is not none %}
+    <div class="analytics-donut-wrap"><svg class="analytics-donut" viewBox="0 0 100 100" role="img" aria-label="Challenge completion {{ challenge_now }} percent"><circle cx="50" cy="50" r="40" class="donut-bg"/><circle cx="50" cy="50" r="40" class="donut-fg challenge" stroke-dasharray="{{ (challenge_now/100*251.3)|round(1) }} 251.3" transform="rotate(-90 50 50)"/><text x="50" y="56" class="donut-value">{{ challenge_now }}%</text></svg><div><strong>{{ challenge_completed }} of {{ challenge_joined }}</strong><small>completed challenges{{ ' · last period ' ~ challenge_prev|string ~ '%' if challenge_prev is not none else '' }}</small></div></div>
+    {% else %}<div class="empty compact"><strong>No challenges yet</strong><p>Challenge completion appears here once {{ child.full_name }} joins a challenge.</p></div>{% endif %}
+  </section>
+  <section class="panel analytics-panel">
+    <div class="panel-head"><div><span class="eyebrow">ASSIGNMENTS</span><h2>Completion rate</h2></div></div>
+    {% if assign_now is not none %}
+    <div class="analytics-donut-wrap"><svg class="analytics-donut" viewBox="0 0 100 100" role="img" aria-label="Assignment completion {{ assign_now }} percent"><circle cx="50" cy="50" r="40" class="donut-bg"/><circle cx="50" cy="50" r="40" class="donut-fg assign" stroke-dasharray="{{ (assign_now/100*251.3)|round(1) }} 251.3" transform="rotate(-90 50 50)"/><text x="50" y="56" class="donut-value">{{ assign_now }}%</text></svg><div><strong>{{ assign_completed }} of {{ assign_total }}</strong><small>completed assignments{{ ' · last period ' ~ assign_prev|string ~ '%' if assign_prev is not none else '' }}</small></div></div>
+    {% else %}<div class="empty compact"><strong>No assignments recorded</strong><p>Assignment completion appears here once approved assignment records exist.</p></div>{% endif %}
+  </section>
+</div>
+
+<section class="panel analytics-panel">
+  <div class="panel-head"><div><span class="eyebrow">SUBJECTS</span><h2>Subject-wise strengths</h2></div><p class="analytics-panel-note">Average assessment percentage per subject since the first recorded result{% if journey_start %} ({{ journey_start }}){% endif %}</p></div>
+  {% if strengths or weaker_subjects %}
+  <div class="analytics-subject-list">
+    {% for s in strengths + weaker_subjects %}<div class="analytics-subject-row {{ 'strong' if s.average>=75 else 'watch' }}">
+      <div class="analytics-subject-top"><strong>{{ s.subject }}</strong><span>{{ s.average }}% · {{ s.count }} result{{ '' if s.count==1 else 's' }}</span></div>
+      <div class="analytics-progress-track"><div class="analytics-progress-fill {{ 'full' if s.average>=75 }} subject" style="width:{{ s.average }}%"></div></div>
+    </div>{% endfor %}
+  </div>
+  {% else %}<div class="empty compact"><strong>No scored subjects yet</strong><p>Subject averages appear here once approved, scored assessment records exist — and then keep building from the student’s first result.</p></div>{% endif %}
+</section>
+
+<section class="panel analytics-panel">
+  <div class="panel-head"><div><span class="eyebrow">FOCUS</span><h2>Areas requiring improvement</h2></div></div>
+  {% if improvements %}<div class="analytics-improvements compact-list">
+    {% for i in improvements %}<article class="analytics-improvement {{ i.kind }}"><span class="analytics-improvement-icon" aria-hidden="true">!</span><div><strong>{{ i.title }}</strong><p>{{ i.detail }}</p></div></article>{% endfor %}
+  </div>
+  {% else %}<div class="analytics-improvements"><article class="analytics-improvement all-good"><span class="analytics-improvement-icon" aria-hidden="true">✓</span><div><strong>Looking strong this period</strong><p>No areas flagged from the recorded results. Keep the momentum going.</p></div></article></div>{% endif %}
+</section>
+<p class="analytics-footnote">All figures come from approved academy records for {{ child.full_name }} — assessment results, attendance marks, assignments, challenges and achievements, and approved teacher feedback. Nothing is estimated or invented.</p>
+{% endblock %}

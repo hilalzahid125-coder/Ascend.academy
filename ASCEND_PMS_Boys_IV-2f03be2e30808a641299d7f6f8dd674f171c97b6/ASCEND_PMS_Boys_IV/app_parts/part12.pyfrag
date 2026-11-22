@@ -1,0 +1,533 @@
+
+# Parent leaderboard: linked-child authorization is checked on every request.
+# Scores and points are separate measurements; no scores create points.
+@app.get('/parent/children/{student_id}/leaderboard',response_class=HTMLResponse)
+def parent_leaderboard(request:Request,student_id:int,period:str='all',category:str='overall',
+                       class_name:str='',section_name:str='',subject:str='',challenge_id:int=0):
+    parent=require_user(request,'parent')
+    if period not in ('all','week','month') or category not in ({'overall'}|ALLOWED_CATEGORIES):
+        raise HTTPException(400,detail='Invalid leaderboard filter.')
+    if subject and subject not in ACADEMY_SUBJECTS: raise HTTPException(400,detail='Invalid subject.')
+    if challenge_id<0: raise HTTPException(400,detail='Invalid challenge.')
+    now=_now(); cutoff=now-timedelta(days=7)
+    since=now-timedelta(days=7 if period=='week' else 30) if period!='all' else None
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        challenges=conn.execute("SELECT id,title FROM challenges WHERE status NOT IN ('draft','archived') ORDER BY id DESC").fetchall()
+        if challenge_id and not any(c['id']==challenge_id for c in challenges): raise HTTPException(400,detail='Invalid challenge.')
+        classes=[r['class_name'] for r in conn.execute("SELECT DISTINCT class_name FROM users WHERE role='student' AND status='active' AND class_name IS NOT NULL AND class_name!='' ORDER BY class_name").fetchall()]
+        sections=[r['section_name'] for r in conn.execute("SELECT DISTINCT section_name FROM users WHERE role='student' AND status='active' AND section_name IS NOT NULL AND section_name!='' ORDER BY section_name").fetchall()]
+        if class_name and class_name not in classes: raise HTTPException(400,detail='Invalid grade.')
+        if section_name and section_name not in sections: raise HTTPException(400,detail='Invalid section.')
+        # Fetch only fields already exposed on the student leaderboard, plus country.
+        q="""SELECT u.id,u.full_name,u.admission_no,u.class_name,u.section_name,u.profile_picture_path,u.created_at,p.profile_json
+             FROM users u LEFT JOIN academy_signup_profiles p ON p.user_id=u.id
+             WHERE u.role='student' AND u.status='active'"""
+        args=[]
+        if class_name: q+=' AND u.class_name=?'; args.append(class_name)
+        if section_name: q+=' AND u.section_name=?'; args.append(section_name)
+        users=[dict(r) for r in conn.execute(q,args).fetchall()]
+        eligible={u['id'] for u in users}
+        # Subject metadata on a point is a snapshot. Older challenge awards can
+        # use an explicitly classified challenge; never infer from its title.
+        pts=conn.execute("""SELECT p.user_id,p.amount,p.category,p.created_at,p.challenge_id,
+              COALESCE(p.subject,c.subject) subject FROM point_transactions p
+              JOIN users u ON u.id=p.user_id LEFT JOIN challenges c ON c.id=p.challenge_id
+              WHERE u.role='student' AND u.status='active'""").fetchall()
+        current={uid:0 for uid in eligible}; baseline={uid:0 for uid in eligible}
+        matched={uid:0 for uid in eligible}; undated=False
+        for row in pts:
+            uid=row['user_id']
+            if uid not in eligible or (category!='overall' and row['category']!=category): continue
+            if subject and row['subject']!=subject: continue
+            if challenge_id and row['challenge_id']!=challenge_id: continue
+            try:
+                stamp=datetime.fromisoformat(row['created_at'].replace('Z','+00:00'))
+                if stamp.tzinfo is None: stamp=stamp.replace(tzinfo=timezone.utc)
+            except (ValueError,TypeError):
+                # Undated legacy points still count for the established all-time
+                # leaderboard, but cannot safely be put into a time period.
+                if not since:
+                    current[uid]+=row['amount']; matched[uid]+=1; undated=True
+                continue
+            if (not since or stamp>=since) and stamp<=now:
+                current[uid]+=row['amount']; matched[uid]+=1
+            # Same period and active roster, shifted back seven days. This is a
+            # points-based comparison, not a historical roster snapshot.
+            baseline_start=(cutoff-timedelta(days=7 if period=='week' else 30)) if period!='all' else None
+            if stamp<=cutoff and (not baseline_start or stamp>=baseline_start): baseline[uid]+=row['amount']
+        users.sort(key=lambda u:(-current[u['id']],u['full_name'],u['id']))
+        for pos,u in enumerate(users,1):
+            u['rank']=pos; u['points']=current[u['id']]; u['matched']=matched[u['id']]
+            country=academy_profile_from_row({'profile_json':u['profile_json']}).get('country','') if u['profile_json'] else ''
+            u['country']=country[:100] if isinstance(country,str) else ''
+        all_users=list(users)
+        # Do not give subject or challenge positions when there are no actual
+        # matching transactions anywhere in that board.
+        has_matching=not (subject or challenge_id) or any(matched.values())
+        if subject or challenge_id:
+            users=[u for u in users if u['matched']]
+            for pos,u in enumerate(users,1): u['rank']=pos
+        child_row=next((u for u in users if u['id']==student_id),None)
+        prior=sorted(users,key=lambda u:(-baseline[u['id']],u['full_name'],u['id']))
+        prior_rank=next((i for i,u in enumerate(prior,1) if u['id']==student_id),None)
+        movement=None
+        if child_row and prior_rank is not None and has_matching and not subject and not challenge_id and not undated:
+            try:
+                created=datetime.fromisoformat(child_row['created_at'].replace('Z','+00:00'))
+                if created.tzinfo is None: created=created.replace(tzinfo=timezone.utc)
+                if created<=cutoff: movement=prior_rank-child_row['rank']
+            except (ValueError,TypeError,AttributeError): pass
+        # A subject's academic ranking is based only on approved, scored
+        # assessments; assignments are reported separately, not scored as 0/100.
+        assessments=[]; assignments=[]
+        if subject and not challenge_id:
+            records=conn.execute("""SELECT r.student_id,r.kind,r.outcome,r.score,r.score_max,r.record_date
+                FROM student_progress_records r JOIN users u ON u.id=r.student_id
+                WHERE u.role='student' AND u.status='active' AND r.subject=? AND r.status='approved'
+                AND r.kind IN ('assessment','assignment') AND NOT EXISTS
+                (SELECT 1 FROM student_progress_records n WHERE n.replaces_id=r.id AND n.status='approved')""",(subject,)).fetchall()
+            local_today=_class_now().date(); min_day=(local_today-timedelta(days=6 if period=='week' else 29)).isoformat() if period!='all' else None
+            groups={}; assignment_groups={}
+            for r in records:
+                if r['student_id'] not in eligible or r['record_date']>local_today.isoformat() or (min_day and r['record_date']<min_day): continue
+                if r['kind']=='assignment':
+                    assignment_groups.setdefault(r['student_id'],[]).append(r['outcome'])
+                if r['kind']=='assessment' and r['score'] is not None and r['score_max'] is not None and r['score_max']>0:
+                    groups.setdefault(r['student_id'],[]).append(100*r['score']/r['score_max'])
+            by_id={u['id']:u for u in all_users}
+            assessments=[dict(by_id[uid],average=round(sum(scores)/len(scores),1),assessments=len(scores)) for uid,scores in groups.items()]
+            assessments.sort(key=lambda x:(-sum(groups[x['id']])/len(groups[x['id']]),x['full_name'],x['id']))
+            for pos,row in enumerate(assessments,1): row['rank']=pos
+            assignments=[dict(by_id[uid],completed=outcomes.count('completed'),assignment_total=len(outcomes)) for uid,outcomes in assignment_groups.items()]
+            assignments.sort(key=lambda x:(-x['completed'],x['full_name'],x['id']))
+            for pos,row in enumerate(assignments,1): row['rank']=pos
+        points=total_points(conn,student_id)
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_leaderboard.html',{'child':child,'children':children,'parent_child_id':student_id,'rows':users if has_matching else [],
+        'own':child_row if has_matching else None,'movement':movement,'cutoff':cutoff.date().isoformat(),
+        'period':period,'category':category,'class_name':class_name,'section_name':section_name,
+        'subject':subject,'challenge_id':challenge_id,'challenges':challenges,'classes':classes,'sections':sections,
+        'subjects':ACADEMY_SUBJECTS,'total_points':points,'assessments':assessments,'assignments':assignments})
+
+# Parent recognition uses the same award engine and persistent records as the
+# student portal, never a separate parent-only achievement or guessed rule.
+@app.get('/parent/children/{student_id}/achievements',response_class=HTMLResponse)
+def parent_achievements(request:Request,student_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        scores=sync_achievements(conn,student_id) if child['status']=='active' else point_totals(conn,student_id)
+        earned=conn.execute("""SELECT a.id,a.name,a.description,a.category,a.points_required,a.status,sa.unlocked_at
+            FROM student_achievements sa JOIN achievements a ON a.id=sa.achievement_id
+            WHERE sa.user_id=? ORDER BY sa.unlocked_at DESC,sa.id DESC""",(student_id,)).fetchall()
+        pending=conn.execute("""SELECT a.id,a.name,a.description,a.category,a.points_required
+            FROM achievements a LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?
+            WHERE a.status='active' AND sa.id IS NULL ORDER BY a.points_required,a.name,a.id""",(student_id,)).fetchall()
+        progress=[]
+        for r in pending:
+            item=dict(r); item['current_points']=max(0,scores.get(r['category'],0))
+            item['percent']=min(100,int(item['current_points']*100/r['points_required'])) if r['points_required'] else 100
+            progress.append(item)
+    return render(request,'parent_achievements.html',{'child':child,'parent_child_id':student_id,'earned':earned,'progress':progress})
+
+@app.get('/parent/children/{student_id}/challenges-rewards',response_class=HTMLResponse)
+def parent_challenges_rewards(request:Request,student_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        # Show eligible published challenges, plus challenges the child already
+        # joined even if its eligibility subsequently changed. No inferred tasks.
+        challenges=conn.execute("""SELECT c.id,c.title,c.description,c.category,c.subject,c.points,c.start_date,c.end_date,c.status,
+            p.status participation_status,p.awarded,p.created_at joined_at,p.updated_at,
+            (SELECT COUNT(*) FROM point_transactions t WHERE t.user_id=? AND t.challenge_id=c.id) award_count,
+            (SELECT COALESCE(SUM(t.amount),0) FROM point_transactions t WHERE t.user_id=? AND t.challenge_id=c.id) awarded_points
+            FROM challenges c LEFT JOIN challenge_participations p ON p.challenge_id=c.id AND p.user_id=?
+            WHERE c.status IN ('active','scheduled') AND (p.id IS NOT NULL OR
+              ((c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?) AND
+               (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections')
+                OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,''))))))
+            ORDER BY CASE c.status WHEN 'active' THEN 0 ELSE 1 END,c.end_date,c.id DESC""",
+            (student_id,student_id,student_id,child['class_name'],child['section_name'])).fetchall()
+        history=conn.execute("""SELECT c.title,c.description,c.category,c.subject,c.points,c.start_date,c.end_date,c.status,
+            p.status participation_status,p.created_at joined_at,p.updated_at,
+            (SELECT COUNT(*) FROM point_transactions t WHERE t.user_id=p.user_id AND t.challenge_id=c.id) award_count,
+            (SELECT COALESCE(SUM(t.amount),0) FROM point_transactions t WHERE t.user_id=p.user_id AND t.challenge_id=c.id) awarded_points
+            FROM challenge_participations p JOIN challenges c ON c.id=p.challenge_id
+            WHERE p.user_id=? ORDER BY p.updated_at DESC,p.id DESC""",(student_id,)).fetchall()
+        points=total_points(conn,student_id)
+        rewards=conn.execute("""SELECT r.id,r.name,r.description,r.points_required,r.status,r.quantity,rc.status claim_status,rc.created_at claim_date,
+            (SELECT COUNT(*) FROM reward_claims booked WHERE booked.reward_id=r.id AND booked.status IN ('approved','fulfilled')) reserved_count
+            FROM rewards r LEFT JOIN reward_claims rc ON rc.reward_id=r.id AND rc.user_id=?
+            WHERE r.status='active' OR rc.id IS NOT NULL ORDER BY r.points_required,r.name,r.id""",(student_id,)).fetchall()
+        available=[]; upcoming=[]; unavailable=[]; claims=[]
+        for row in rewards:
+            r=dict(row)
+            r['progress']=min(100,max(0,int(points*100/r['points_required']))) if r['points_required']>0 else 100
+            if r['claim_status']: claims.append(r)
+            elif r['status']=='active':
+                if r['quantity'] is not None and r['reserved_count']>=r['quantity']: unavailable.append(r)
+                elif points>=r['points_required']: available.append(r)
+                else: upcoming.append(r)
+        claims.sort(key=lambda r:(r['claim_date'],r['id']),reverse=True)
+    return render(request,'parent_challenges_rewards.html',{'child':child,'parent_child_id':student_id,'challenges':challenges,'history':history,
+        'points':points,'available':available,'upcoming':upcoming,'unavailable':unavailable,'claims':claims,
+        'redeemed':[r for r in claims if r['claim_status']=='fulfilled']})
+
+# Fee views derive exclusively from the existing fee ledger and authorize the
+# parent-child link on every request. They do not create invoices or payments.
+def _parent_fee(conn,parent_id,student_id,fee_id):
+    child=_parent_child(conn,parent_id,student_id)
+    fee=next((row for row in _fee_rows(conn,student_id) if row['id']==fee_id),None)
+    if not fee: raise HTTPException(404)
+    return child,fee
+
+@app.get('/parent/children/{student_id}/fees',response_class=HTMLResponse)
+def parent_fees(request:Request,student_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        fees=_fee_rows(conn,student_id); history=_fee_history(conn,student_id)
+    today=date.today().isoformat()
+    upcoming=sorted((f for f in fees if f['balance']>0 and f['due_date'] and f['due_date']>=today),key=lambda f:(f['due_date'],f['id']))
+    return render(request,'parent_fees.html',{'child':child,'parent_child_id':student_id,'fees':fees,'history':history,'totals':_fee_totals(fees),'upcoming':upcoming})
+
+@app.get('/parent/children/{student_id}/fees/{fee_id}',response_class=HTMLResponse)
+def parent_fee_detail(request:Request,student_id:int,fee_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child,fee=_parent_fee(conn,parent['id'],student_id,fee_id)
+        history=[p for p in _fee_history(conn,student_id) if p['fee_id']==fee_id]
+    return render(request,'parent_fee_detail.html',{'child':child,'parent_child_id':student_id,'fee':fee,'history':history})
+
+@app.get('/parent/children/{student_id}/fees/{fee_id}/voucher.pdf')
+def parent_fee_voucher(request:Request,student_id:int,fee_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        child,fee=_parent_fee(conn,parent['id'],student_id,fee_id)
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from xml.sax.saxutils import escape
+    font='AscendReportFont'
+    if font not in pdfmetrics.getRegisteredFontNames(): pdfmetrics.registerFont(TTFont(font,str(BASE_DIR/'static/fonts/DejaVuSans.ttf')))
+    body=ParagraphStyle('feeBody',fontName=font,fontSize=10,leading=15,spaceAfter=6,textColor=colors.HexColor('#17252b'))
+    heading=ParagraphStyle('feeTitle',parent=body,fontSize=18,leading=24,textColor=colors.HexColor('#075c49'))
+    def safe(v): return escape(str(v if v is not None else '')).replace('\n','<br/>')
+    data=[('Generated at (UTC)',iso_now()),('Fee record reference',f"#{fee['id']}"),('Student',child['full_name']),('Student ID',child['admission_no']),
+          ('Grade / section',' / '.join(str(x) for x in (child['class_name'],child['section_name']) if x) or 'Not set'),
+          ('Fee',fee['title']),('Billing period',fee['period']),('Installment',fee['installment'] or 'Not specified'),
+          ('Fee amount',fee['currency']+' '+_fee_format(fee['amount'])),('Approved payments',fee['currency']+' '+_fee_format(fee['paid'])),
+          ('Waived',fee['currency']+' '+_fee_format(fee['waived'])),('Outstanding balance',fee['currency']+' '+_fee_format(fee['balance'])),('Submitted for verification',fee['currency']+' '+_fee_format(fee['submitted'])),
+          ('Due date',fee['due_date'] or 'Not set'),('Current status',fee['status'])]
+    output=io.BytesIO(); doc=SimpleDocTemplate(output,pagesize=(210*mm,297*mm),rightMargin=18*mm,leftMargin=18*mm,topMargin=17*mm,bottomMargin=17*mm)
+    content=[Paragraph(safe(settings().get('school_name') or 'Academy'),heading),Paragraph('Fee voucher',heading),
+             Paragraph('Generated from the current academy fee record. This is not proof of payment or a bank-issued voucher.',body),Spacer(1,6*mm)]
+    for label,value in data: content.append(Paragraph(f'{safe(label)}: {safe(value)}',body))
+    if fee['description']: content.append(Paragraph('Description: '+safe(fee['description']),body))
+    if fee['waived']: content.append(Paragraph('Waiver reason: '+safe(fee['waiver_reason']),body))
+    content.append(Spacer(1,5*mm));content.append(Paragraph('Submitted payment proofs are not deducted until approved. Use the parent portal for current payment instructions and balance.',body))
+    doc.build(content)
+    return Response(output.getvalue(),media_type='application/pdf',headers={'Content-Disposition':f'attachment; filename="fee-voucher-{fee_id}.pdf"','Cache-Control':'private, no-store'})
+
+@app.get('/parent/children/{student_id}/fees/receipts/{payment_id}/download')
+def parent_fee_receipt_download(request:Request,student_id:int,payment_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        _parent_child(conn,parent['id'],student_id)
+        receipt=conn.execute('SELECT receipt FROM fee_payments WHERE id=? AND student_id=?',(payment_id,student_id)).fetchone()
+        if not receipt: raise HTTPException(404)
+    return Response(bytes(receipt['receipt']),media_type='image/webp',headers={'Cache-Control':'private, no-store','Content-Disposition':f'attachment; filename="payment-proof-{payment_id}.webp"'})
+
+@app.post('/admin/fees/{fee_id}/waive')
+async def admin_fee_waive(request:Request,fee_id:int):
+    admin=require_admin(request,'fees'); form=await request.form()
+    try:
+        reason=_fee_text(form,'reason',1000,True)
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            record=conn.execute('SELECT student_id FROM fee_assignments WHERE id=?',(fee_id,)).fetchone()
+            if not record: raise HTTPException(404)
+            fee=next(r for r in _fee_rows(conn,record['student_id']) if r['id']==fee_id)
+            if fee['submitted']: raise ValueError('Review the pending payment proof before waiving this fee.')
+            if fee['waived'] or fee['balance']<=0: raise ValueError('There is no outstanding balance to waive.')
+            conn.execute('INSERT INTO fee_waivers(fee_id,amount,reason,waived_by,waived_at) VALUES (?,?,?,?,?)',(fee_id,fee['balance'],reason,admin['id'],iso_now()))
+            audit(conn,admin['id'],'fee_waived',f'Fee {fee_id}; student {record["student_id"]}; {fee["currency"]} {_fee_format(fee["balance"])}; reason: {reason}')
+            notify(conn,record['student_id'],'Fee updated',f'The outstanding balance for {fee["title"]} was waived. View Fee Management for details.')
+    except ValueError as exc: return flash_redirect('/admin/fees',str(exc),'error')
+    return flash_redirect('/admin/fees','Remaining balance waived.')
+
+@app.post('/admin/fees/{fee_id}/waiver/reverse')
+async def admin_fee_waiver_reverse(request:Request,fee_id:int):
+    admin=require_admin(request,'fees'); form=await request.form()
+    try:
+        reason=_fee_text(form,'reason',1000,True)
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            fee=conn.execute('SELECT id,student_id,title FROM fee_assignments WHERE id=?',(fee_id,)).fetchone()
+            if not fee: raise HTTPException(404)
+            waiver=conn.execute('SELECT id,amount FROM fee_waivers WHERE fee_id=? AND revoked_at IS NULL',(fee_id,)).fetchone()
+            if not waiver: raise ValueError('There is no active waiver to reverse.')
+            if conn.execute("SELECT 1 FROM fee_payments WHERE fee_id=? AND status='submitted'",(fee_id,)).fetchone(): raise ValueError('Review the pending payment proof before reversing this waiver.')
+            conn.execute('UPDATE fee_waivers SET revoked_by=?,revoked_at=?,revocation_reason=? WHERE id=?',(admin['id'],iso_now(),reason,waiver['id']))
+            audit(conn,admin['id'],'fee_waiver_reversed',f'Fee {fee_id}; student {fee["student_id"]}; reason: {reason}')
+            notify(conn,fee['student_id'],'Fee updated',f'The waiver for {fee["title"]} was reversed. View Fee Management for current details.')
+    except ValueError as exc: return flash_redirect('/admin/fees',str(exc),'error')
+    return flash_redirect('/admin/fees','Waiver reversed; the outstanding balance has been restored.')
+
+@app.get('/parent/announcements',response_class=HTMLResponse)
+def parent_announcements(request:Request):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        children=_parent_children(conn,parent['id'])
+        rows=visible_announcements(conn,parent)
+        mark_announcement_alerts_read(conn,parent['id'])
+    return render(request,'announcements.html',{'announcements':_announcement_cards(rows),
+        'audience_roles':ANNOUNCEMENT_ROLES,'notifications_link':'/parent/notifications',
+        'workspace_label':'PARENT WORKSPACE','children':children,
+        'parent_child_id':children[0]['id'] if children else None})
+
+@app.get('/parent/notifications',response_class=HTMLResponse)
+def parent_notifications(request:Request,filter:str='all'):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        # Dashboard visits refresh fee-driven alerts before the history is shown.
+        run_fee_notifications(conn)
+        categories=sorted(NOTIFICATION_CATEGORIES.items(),key=lambda kv:kv[1].lower())
+        if filter not in ('all',)+tuple(NOTIFICATION_CATEGORIES): filter='all'
+        query='SELECT * FROM notifications WHERE user_id=?'
+        args=[parent['id']]
+        if filter!='all': query+=' AND kind=?'; args.append(filter)
+        query+=' ORDER BY is_read ASC,id DESC'
+        rows=conn.execute(query,args).fetchall()
+        unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(parent['id'],)).fetchone()['c']
+        children=_parent_children(conn,parent['id'])
+    return render(request,'parent_notifications.html',{'notifications':rows,'categories':categories,'filter':filter,'unread_notifications':unread,'parent_child_id':children[0]['id'] if children else None})
+
+@app.post('/parent/notifications/{notification_id}/read')
+def parent_notification_read(request:Request,notification_id:int):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        result=conn.execute("UPDATE notifications SET is_read=1,read_at=? WHERE id=? AND user_id=?",(iso_now(),notification_id,parent['id']))
+        if not result.rowcount: raise HTTPException(404)
+    return flash_redirect('/parent/notifications','Notification marked as read.')
+
+@app.post('/parent/notifications/read-all')
+def parent_notifications_read_all(request:Request):
+    parent=require_user(request,'parent')
+    with connect() as conn:
+        conn.execute('UPDATE notifications SET is_read=1,read_at=? WHERE user_id=? AND is_read=0',(iso_now(),parent['id']))
+    return flash_redirect('/parent/notifications','All notifications marked as read.')
+
+@app.get('/parent/children/{student_id}/analytics',response_class=HTMLResponse)
+def parent_analytics(request:Request,student_id:int,period:str='month',term_id:int=0):
+    parent=require_user(request,'parent')
+    if period not in ('week','month','term'): period='month'
+    with connect() as conn:
+        child=_parent_child(conn,parent['id'],student_id)
+        sid=child['id']; today=_class_now().date()
+        holidays={r['holiday_date'] for r in conn.execute('SELECT holiday_date FROM academy_holidays').fetchall()}
+        # ---- Period window and buckets (week = 7 days, month = 6 months, term = one academic term) ----
+        term=None
+        if period=='week':
+            start=today-timedelta(days=6); end=today
+            buckets=[start+timedelta(days=i) for i in range(7)]
+            bucket_key=lambda d:(d if isinstance(d,str) else d.isoformat())
+            bucket_label=lambda b:(b.strftime('%a')+' '+b.strftime('%d %b'))
+            prev_start=start-timedelta(days=7); prev_end=start-timedelta(days=1)
+            terms=[]
+        elif period=='month':
+            months=[]
+            for offset in range(5,-1,-1):
+                idx=today.year*12+today.month-1-offset; y,m=divmod(idx,12); m+=1
+                months.append(date(y,m,1))
+            start=months[0]; end=today
+            buckets=months
+            bucket_key=lambda d:(d[:7] if isinstance(d,str) else d.isoformat()[:7])
+            bucket_label=lambda b:date(b.year,b.month,1).strftime('%b %Y')
+            prev_start=date(start.year,start.month,1)-timedelta(days=1)
+            prev_end=start-timedelta(days=1)
+            terms=[]
+        else:
+            terms=[dict(r) for r in conn.execute('SELECT id,name,start_date,end_date FROM academic_terms ORDER BY start_date DESC,id DESC').fetchall()]
+            if not terms:
+                fallback=date(today.year,today.month,1)-timedelta(days=183)
+                terms=[{'id':0,'name':'Last six months','start_date':fallback.isoformat(),'end_date':today.isoformat()}]
+            term=next((t for t in terms if t['id']==term_id),None)
+            if term is None: term=terms[0]
+            t_start=date.fromisoformat(term['start_date']); t_end=min(date.fromisoformat(term['end_date']),today)
+            start=t_start; end=t_end
+            buckets=[]; cur=date(t_start.year,t_start.month,1)
+            while cur<=t_end:
+                buckets.append(cur); cur=date(cur.year+(cur.month==12),(cur.month%12)+1,1)
+            bucket_key=lambda d:(d[:7] if isinstance(d,str) else d.isoformat()[:7])
+            bucket_label=lambda b:date(b.year,b.month,1).strftime('%b %Y')
+            prev_term=next((t for t in terms if t['id']!=term['id']),None)
+            if prev_term:
+                prev_start=date.fromisoformat(prev_term['start_date']); prev_end=min(date.fromisoformat(prev_term['end_date']),today)
+            else:
+                prev_start=start-timedelta(days=183); prev_end=start-timedelta(days=1)
+        def in_window(d):
+            return start.isoformat()<=str(d)[:10]<=end.isoformat()
+        def in_prev(d):
+            return prev_start.isoformat()<=str(d)[:10]<=prev_end.isoformat()
+        def bucket_of(d):
+            key=bucket_key(d)
+            return next((b for b in buckets if bucket_key(b)==key),None)
+        # ---- Records from the existing systems ----
+        progress=conn.execute("""SELECT * FROM student_progress_records r
+            WHERE r.student_id=? AND r.status='approved' AND NOT EXISTS
+              (SELECT 1 FROM student_progress_records n WHERE n.replaces_id=r.id AND n.status='approved')
+            ORDER BY r.record_date,r.id""",(sid,)).fetchall()
+        attendance=conn.execute("""SELECT a.status,s.session_date,s.subject FROM class_attendance a
+            JOIN class_sessions s ON s.id=a.session_id
+            WHERE a.student_id=? AND s.status='ended' AND s.session_date<=?
+            ORDER BY s.session_date,s.start_time""",(sid,today.isoformat())).fetchall()
+        challenges=conn.execute("""SELECT c.title,c.category,c.points,p.status,p.awarded,p.created_at,p.updated_at
+            FROM challenge_participations p JOIN challenges c ON c.id=p.challenge_id
+            WHERE p.user_id=? ORDER BY p.created_at""",(sid,)).fetchall()
+        achievements=conn.execute("""SELECT a.name,a.description,a.category,a.points_required,sa.unlocked_at
+            FROM achievements a LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?
+            WHERE a.status='active' ORDER BY a.points_required,a.name""",(sid,)).fetchall()
+        scores=point_totals(conn,sid)
+        # ---- Bucket series ----
+        academic=[];att_series=[];recognition_series=[];assign_series=[]
+        for b in buckets:
+            entries=[r for r in progress if r['record_date']<=today.isoformat() and bucket_of(r['record_date'])==b]
+            scored=[r for r in entries if r['kind']=='assessment' and r['score'] is not None and r['score_max'] and r['score_max']>0]
+            academic.append({'label':bucket_label(b),'average':round(sum(100*r['score']/r['score_max'] for r in scored)/len(scored),1) if scored else None,'count':len(scored)})
+            rows=[r for r in attendance if bucket_of(r['session_date'])==b]
+            counted=[r for r in rows if r['status'] in ('present','late') or (r['status']=='absent' and r['session_date'] not in holidays)]
+            att_series.append({'label':bucket_label(b),'total':len(counted),
+                'attended':sum(r['status'] in ('present','late') for r in counted),
+                'rate':round(100*sum(r['status'] in ('present','late') for r in counted)/len(counted)) if counted else None})
+            recognition_series.append({'label':bucket_label(b),
+                'challenges':sum(1 for c in challenges if c['awarded'] and bucket_of(str(c['updated_at'] or c['created_at'])[:10])==b),
+                'achievements':sum(1 for a in achievements if a['unlocked_at'] and bucket_of(a['unlocked_at'][:10])==b)})
+            assigns=[r for r in entries if r['kind']=='assignment']
+            assign_series.append({'label':bucket_label(b),'completed':sum(r['outcome']=='completed' for r in assigns),'total':len(assigns)})
+        window_progress=[r for r in progress if in_window(r['record_date'])]
+        prev_progress=[r for r in progress if in_prev(r['record_date'])]
+        window_attendance=[r for r in attendance if in_window(r['session_date'])]
+        prev_attendance=[r for r in attendance if in_prev(r['session_date'])]
+        window_challenges=[c for c in challenges if in_window(c['updated_at'] or c['created_at'])]
+        prev_challenges=[c for c in challenges if in_prev(c['updated_at'] or c['created_at'])]
+        # ---- Summary metrics with previous-period comparison ----
+        def metric(records,kind):
+            scored=[r for r in records if r['kind']==kind and r['score'] is not None and r['score_max'] and r['score_max']>0]
+            return round(sum(100*r['score']/r['score_max'] for r in scored)/len(scored),1) if scored else None
+        def att_rate(rows):
+            counted=[r for r in rows if r['status'] in ('present','late') or (r['status']=='absent' and r['session_date'] not in holidays)]
+            if not counted: return None,0,0
+            att=sum(r['status'] in ('present','late') for r in counted)
+            return round(100*att/len(counted)),att,len(counted)
+        window_insights=_attendance_insights(window_attendance,holidays,today)
+        prev_insights=_attendance_insights(prev_attendance,holidays,today)
+        academic_now=metric(window_progress,'assessment'); academic_prev=metric(prev_progress,'assessment')
+        att_now,att_att,att_counted=att_rate(window_attendance)
+        att_prev,_,_=att_rate(prev_attendance)
+        assign_records=[r for r in window_progress if r['kind']=='assignment']
+        assign_prev=[r for r in prev_progress if r['kind']=='assignment']
+        assign_now_rate=round(100*sum(r['outcome']=='completed' for r in assign_records)/len(assign_records)) if assign_records else None
+        assign_prev_rate=round(100*sum(r['outcome']=='completed' for r in assign_prev)/len(assign_prev)) if assign_prev else None
+        joined_now=len(window_challenges); completed_now=sum(c['awarded'] for c in window_challenges)
+        joined_prev=len(prev_challenges); completed_prev=sum(c['awarded'] for c in prev_challenges)
+        challenge_now=round(100*completed_now/joined_now) if joined_now else None
+        challenge_prev=round(100*completed_prev/joined_prev) if joined_prev else None
+        def trend(now,prev):
+            if now is None or prev is None: return {'direction':'flat','delta':None}
+            delta=round(now-prev,1)
+            if abs(delta)<0.5: return {'direction':'flat','delta':0}
+            return {'direction':'up' if delta>0 else 'down','delta':delta}
+        earned=[a for a in achievements if a['unlocked_at']]
+        # ---- Academic performance: weighted composite of recorded activity ----
+        # Only areas with real approved records take part, and the weights of the
+        # missing areas are redistributed, so a student is never penalised for an
+        # area the academy has not recorded yet.
+        def _pct(n,d): return round(100*n/d,1) if d else None
+        total_achievements=len(achievements)
+        achieved_now=_pct(len(earned),total_achievements)
+        achieved_prev=_pct(sum(1 for a in achievements if a['unlocked_at'] and str(a['unlocked_at'])[:10]<=prev_end.isoformat()),total_achievements)
+        streak_now=window_insights['current_streak']; streak_prev=prev_insights['current_streak']
+        consistency_now=min(100,round(100*streak_now/10)) if window_insights['total'] else None
+        consistency_prev=min(100,round(100*streak_prev/10)) if prev_insights['total'] else None
+        def _composite(parts):
+            live=[p for p in parts if p[1] is not None]
+            weight=sum(p[2] for p in live)
+            if not weight: return None,[]
+            return round(sum(p[1]*p[2] for p in live)/weight),[
+                {'label':p[0],'value':p[1],'weight':p[2],'share':round(100*p[2]/weight)} for p in live]
+        academic_score,academic_parts=_composite([
+            ('Assessment results',academic_now,35),('Attendance',att_now,20),('Challenge completion',challenge_now,15),
+            ('Assignment completion',assign_now_rate,10),('Learning consistency',consistency_now,10),('Achievements unlocked',achieved_now,10)])
+        academic_score_prev,_=_composite([
+            ('Assessment results',academic_prev,35),('Attendance',att_prev,20),('Challenge completion',challenge_prev,15),
+            ('Assignment completion',assign_prev_rate,10),('Learning consistency',consistency_prev,10),('Achievements unlocked',achieved_prev,10)])
+        feedback_threads=_student_feedback(conn,sid)
+        # ---- Subject strengths: recorded from the student's first result ----
+        subject_stats={}
+        for r in progress:
+            if r['kind']=='assessment' and r['score'] is not None and r['score_max'] and r['score_max']>0:
+                entry=subject_stats.setdefault(r['subject'],[])
+                entry.append(100*r['score']/r['score_max'])
+        journey_start=min((r['record_date'] for r in progress),default=None)
+        subject_rows=[{'subject':s,'average':round(sum(v)/len(v),1),'count':len(v)} for s,v in subject_stats.items()]
+        subject_rows.sort(key=lambda x:(-x['average'],x['subject']))
+        strengths=[s for s in subject_rows if s['average']>=75][:4]
+        weaker=[s for s in subject_rows if s['average']<75][:4]
+        # ---- Areas requiring improvement (derived from actual records) ----
+        improvements=[]
+        if weaker:
+            for s in weaker: improvements.append({'kind':'subject','title':s['subject']+' needs attention','detail':f"Average assessment score {s['average']}% across {s['count']} record(s) this period."})
+        if att_now is not None and att_now<80:
+            improvements.append({'kind':'attendance','title':'Attendance below target','detail':f"{att_att} of {att_counted} recorded sessions attended ({att_now}%) this period."})
+        pending_assigns=sum(r['outcome']!='completed' for r in assign_records)
+        if pending_assigns:
+            improvements.append({'kind':'assignment','title':'Assignments still open','detail':f"{pending_assigns} approved assignment record(s) are not marked complete this period."})
+        missed=window_insights['missed']
+        if missed:
+            improvements.append({'kind':'attendance','title':'Recorded absences','detail':f"{missed} non-holiday absence(s) recorded this period. Review the attendance calendar for dates."})
+        pending_reviews=sum(c['status']=='pending' for c in window_challenges)
+        if pending_reviews:
+            improvements.append({'kind':'challenge','title':'Challenge submissions awaiting review','detail':f"{pending_reviews} submission(s) are awaiting academy review this period."})
+        # ---- Chart geometry ----
+        def line_chart(values,width=640,height=210):
+            pts=[(i*(width-20)/max(1,len(values)-1)+10, height-24-(v/100)*(height-48)) for i,v in enumerate(values) if v is not None]
+            if not pts: return {'points':'','path':'','area':'','width':width,'height':height}
+            path='M'+' L'.join(f'{x:.1f},{y:.1f}' for x,y in pts)
+            area=f'M10,{height-24} L'+' L'.join(f'{x:.1f},{y:.1f}' for x,y in pts)+f' L{width-10},{height-24} Z'
+            return {'points':' '.join(f'{x:.1f},{y:.1f}' for x,y in pts),'path':path,'area':area,'width':width,'height':height}
+        academic_chart=line_chart([a['average'] for a in academic])
+        # 28-day consistency heat strip (independent of period for a stable visual)
+        heat=[]
+        for i in range(27,-1,-1):
+            d=today-timedelta(days=i); marks=[r['status'] for r in attendance if r['session_date']==d.isoformat()]
+            if d.isoformat() in holidays: state='holiday'
+            elif not marks: state='none'
+            elif all(m in ('excused',None) for m in marks): state='excused'
+            elif any(m=='absent' for m in marks): state='absent'
+            elif any(m=='late' for m in marks): state='late'
+            else: state='present'
+            heat.append({'date':d,'state':state,'label':d.strftime('%d %b')})
+        return render(request,'parent_analytics.html',{
+            'child':child,'children':_parent_children(conn,parent['id']),'parent_child_id':sid,'period':period,'terms':terms,'term_id':term['id'] if period=='term' else 0,
+            'period_label':'Last 7 days' if period=='week' else ('Last 6 months' if period=='month' else term['name']),
+            'academic':academic,'attendance_series':att_series,'recognition_series':recognition_series,'assignment_series':assign_series,
+            'academic_chart':academic_chart,
+            'academic_now':academic_now,'academic_prev':academic_prev,'academic_trend':trend(academic_now,academic_prev),
+            'academic_score':academic_score,'academic_score_prev':academic_score_prev,'academic_score_trend':trend(academic_score,academic_score_prev),'academic_parts':academic_parts,
+            'att_now':att_now,'att_prev':att_prev,'att_trend':trend(att_now,att_prev),'att_att':att_att,'att_counted':att_counted,
+            'streak':window_insights['current_streak'],'best_streak':window_insights['best_streak'],
+            'feedback_threads':feedback_threads,'feedback_open':sum(t['awaiting_parent'] for t in feedback_threads),
+            'feedback_latest':feedback_threads[0] if feedback_threads else None,
+            'challenge_now':challenge_now,'challenge_prev':challenge_prev,'challenge_trend':trend(challenge_now,challenge_prev),
+            'challenge_joined':joined_now,'challenge_completed':completed_now,
+            'assign_now':assign_now_rate,'assign_prev':assign_prev_rate,'assign_trend':trend(assign_now_rate,assign_prev_rate),
+            'assign_completed':sum(r['outcome']=='completed' for r in assign_records),'assign_total':len(assign_records),
+            'achievements':achievements,'achievement_earned':len(earned),'achievement_total':len(achievements),
+            'scores':scores,'strengths':strengths,'weaker_subjects':weaker,'improvements':improvements,'heat':heat,'journey_start':journey_start,
+            'attendance_note':(f"{att_counted} session(s) recorded this period — holidays and unmarked sessions are excluded from the attendance rate." if att_counted else 'No attended sessions recorded yet for this period.'),
+            'attendance_note':'Attended includes present and late; holiday absences and unmarked or excused-only sessions are not counted against the rate.'})

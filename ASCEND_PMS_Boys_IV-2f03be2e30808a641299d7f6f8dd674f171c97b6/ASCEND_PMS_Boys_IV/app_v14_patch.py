@@ -6,17 +6,25 @@ def render(request: Request, name: str, context=None, status_code=200):
     context = context or {}
     csrf = request.cookies.get('pms_csrf') or new_token(24)
     user = current_user(request)
-    context.update({'request':request,'settings':settings(),'user':user,
+    unread=0; unread_announcements=0
+    if user is not None:
+        try:
+            with connect() as conn:
+                unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(user['id'],)).fetchone()['c']
+                unread_announcements=conn.execute("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0 AND kind='announcement'",(user['id'],)).fetchone()['c']
+        except Exception:
+            unread=0; unread_announcements=0
+    context.update({'request':request,'settings':getattr(request.state,'display_settings',None) or settings(),'user':user,
                     'msg':request.query_params.get('msg'),'kind':request.query_params.get('kind','success'),
                     'csrf_token':csrf,
                     'is_super_admin':is_super_admin(user),
                     'admin_permissions':_admin_permissions(user),
                     'staff_permission_labels':STAFF_PERMISSION_LABELS,
-                    'app_version':APP_VERSION})
+                    'app_version':APP_VERSION,'academy_grades':ACADEMY_GRADES,'academy_subjects':ACADEMY_SUBJECTS,
+                    'unread_notifications':unread,'unread_announcements':unread_announcements})
     response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
     if not request.cookies.get('pms_csrf'):
-        response.set_cookie('pms_csrf',csrf,httponly=False,samesite='lax',
-                            secure=os.getenv('PMS_SECURE_COOKIE','0')=='1',max_age=7*24*3600)
+        set_app_cookie(response,'pms_csrf',csrf)
     return response
 
 
@@ -28,32 +36,33 @@ _v14_remove_route('/student','GET')
 def student_dashboard(request: Request):
     u=require_user(request,'student')
     with connect() as conn:
-        points=total_points(conn,u['id'])
+        profile=academy_profile_from_row(conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(u['id'],)).fetchone())
+        scores=sync_achievements(conn,u['id'])
+        points=scores['overall']
         rank=conn.execute('''SELECT 1+COUNT(*) rank FROM (
-                                SELECT u2.id,COALESCE(SUM(p.amount),0) total
+                                SELECT u2.id,u2.full_name,COALESCE(SUM(p.amount),0) total
                                 FROM users u2 LEFT JOIN point_transactions p ON p.user_id=u2.id
                                 WHERE u2.role='student' AND u2.status='active'
                                 GROUP BY u2.id
-                             ) x WHERE x.total > ?''',(points,)).fetchone()['rank']
+                             ) x WHERE x.total > ? OR (x.total = ? AND (x.full_name < ? OR (x.full_name = ? AND x.id < ?)))''',(points,points,u['full_name'],u['full_name'],u['id'])).fetchone()['rank']
         leaders=conn.execute('''SELECT u2.id,u2.full_name,u2.admission_no,u2.class_name,u2.section_name,u2.profile_picture_path,
                                        COALESCE(SUM(p.amount),0) points
                                 FROM users u2 LEFT JOIN point_transactions p ON p.user_id=u2.id
                                 WHERE u2.role='student' AND u2.status='active'
-                                GROUP BY u2.id ORDER BY points DESC,u2.full_name ASC LIMIT 3''').fetchall()
+                                GROUP BY u2.id ORDER BY points DESC,u2.full_name ASC,u2.id ASC LIMIT 3''').fetchall()
         challenges=conn.execute('''SELECT c.*, cp.status participation_status FROM challenges c
                                    LEFT JOIN challenge_participations cp ON cp.challenge_id=c.id AND cp.user_id=?
                                    WHERE c.status IN ('active','scheduled')
                                    AND (c.eligibility_class IS NULL OR c.eligibility_class='' OR c.eligibility_class=?)
-                                   AND (c.eligibility_section IS NULL OR c.eligibility_section='' OR c.eligibility_section=?)
+                                   AND (c.eligibility_section IS NULL OR LOWER(TRIM(c.eligibility_section)) IN ('','all','all section','all sections') OR LOWER(TRIM(c.eligibility_section))=LOWER(TRIM(COALESCE(?,''))))
                                    ORDER BY c.status='active' DESC,c.end_date LIMIT 4''',(u['id'],u['class_name'],u['section_name'])).fetchall()
-        sync_achievements(conn,u['id'])
         achievement_rows=conn.execute('''SELECT a.*,sa.unlocked_at FROM achievements a
                                          LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?
                                          WHERE a.status='active' ORDER BY a.points_required,a.name''',(u['id'],)).fetchall()
         achievement_preview=[]
         for row in achievement_rows:
             item=dict(row)
-            item['current_points']=total_points(conn,u['id'],None if row['category']=='overall' else row['category'])
+            item['current_points']=scores.get(row['category'],0)
             item['remaining']=max(0,row['points_required']-item['current_points'])
             achievement_preview.append(item)
         achievement_preview.sort(key=lambda x:(0 if not x['unlocked_at'] else 1,x['remaining'],x['points_required']))
@@ -68,11 +77,14 @@ def student_dashboard(request: Request):
         announcements=conn.execute('''SELECT * FROM announcements WHERE status='published' AND
                                       (audience='all' OR (audience='class' AND class_name=?) OR (audience='section' AND class_name=? AND section_name=?))
                                       ORDER BY id DESC LIMIT 3''',(u['class_name'],u['class_name'],u['section_name'])).fetchall()
+        # Opening the dashboard refreshes fee reminder/overdue alerts and the badge.
+        run_fee_notifications(conn)
+        notices=conn.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY is_read ASC,id DESC LIMIT 5',(u['id'],)).fetchall()
         unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(u['id'],)).fetchone()['c']
     return render(request,'student_dashboard.html',{
-        'points':points,'rank':rank,'leaders':leaders,'challenges':challenges,
+        'points':points,'rank':rank,'academy_profile':profile,'leaders':leaders,'challenges':challenges,
         'achievements_preview':achievement_preview,'rewards_preview':rewards_preview,
-        'transactions':tx,'announcements':announcements,'unread_notifications':unread
+        'transactions':tx,'announcements':announcements,'unread_notifications':unread,'student_notices':notices
     })
 
 
@@ -81,32 +93,40 @@ _v14_remove_route('/admin','GET')
 def admin_dashboard(request: Request):
     a=require_admin(request)
     with connect() as conn:
-        stats={
-          'students':conn.execute('SELECT COUNT(*) c FROM users WHERE role="student"').fetchone()['c'],
-          'active_challenges':conn.execute('SELECT COUNT(*) c FROM challenges WHERE status="active"').fetchone()['c'],
-          'pending':conn.execute('SELECT COUNT(*) c FROM challenge_participations WHERE status="pending"').fetchone()['c'],
-          'points':conn.execute('SELECT COALESCE(SUM(amount),0) c FROM point_transactions').fetchone()['c'],
-        }
+        stats=conn.execute('''SELECT
+          (SELECT COUNT(*) FROM users u WHERE u.role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved')) students,
+          (SELECT COUNT(*) FROM challenges WHERE status='active') active_challenges,
+          (SELECT COUNT(*) FROM challenge_participations WHERE status='pending') pending,
+          (SELECT COALESCE(SUM(amount),0) FROM point_transactions) points''').fetchone()
         top=conn.execute('''SELECT u.full_name,u.admission_no,u.profile_picture_path,COALESCE(SUM(p.amount),0) points FROM users u
                             LEFT JOIN point_transactions p ON p.user_id=u.id WHERE u.role='student' AND u.status='active'
                             GROUP BY u.id ORDER BY points DESC,u.full_name ASC LIMIT 5''').fetchall()
-        logs=conn.execute('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 8').fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
-    return render(request,'admin_dashboard.html',{'stats':stats,'top':top,'logs':logs})
+        fee_filter='' if is_super_admin(a) or 'fees' in _admin_permissions(a) else " AND SUBSTR(action,1,4)!='fee_'"
+        activity_filter=" WHERE SUBSTR(action,1,7)!='parent_'"+fee_filter
+        logs=conn.execute('SELECT * FROM audit_logs'+activity_filter+' ORDER BY id DESC LIMIT 8').fetchall() if (is_super_admin(a) or 'activity' in _admin_permissions(a)) else []
+        run_fee_notifications(conn)
+        admin_notices=conn.execute("SELECT * FROM notifications WHERE user_id=? AND (?='super' OR title!='Fee receipt submitted') ORDER BY is_read ASC,id DESC LIMIT 5",(a['id'],'super' if is_super_admin(a) else 'staff')).fetchall()
+        admin_unread=conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0'+("" if is_super_admin(a) else " AND title!='Fee receipt submitted'"),(a['id'],)).fetchone()['c']
+    return render(request,'admin_dashboard.html',{'stats':stats,'top':top,'logs':logs,'admin_notices':admin_notices,'admin_unread':admin_unread})
 
 
 @app.post('/admin/students/{student_id}/delete')
 def admin_student_delete(request: Request, student_id:int):
     a=require_admin(request,super_only=True)
     with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         student=conn.execute('SELECT id,admission_no,full_name,profile_picture_path FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
         if not student:
             return flash_redirect('/admin/students','Student not found.','error')
+        if conn.execute('SELECT 1 FROM fee_assignments WHERE student_id=? LIMIT 1',(student_id,)).fetchone():
+            return flash_redirect('/admin/students','This student has fee records and cannot be deleted. Disable the account instead.','error')
+        if conn.execute('SELECT 1 FROM parent_student_links WHERE student_id=? LIMIT 1',(student_id,)).fetchone():
+            return flash_redirect('/admin/students','This student has linked parent accounts. Remove the links or disable the student instead.','error')
+        if conn.execute('SELECT 1 FROM student_progress_records WHERE student_id=? LIMIT 1',(student_id,)).fetchone():
+            return flash_redirect('/admin/students','This student has progress records and cannot be deleted. Disable the account instead.','error')
         admission_no=student['admission_no']; full_name=student['full_name']; photo_path=student['profile_picture_path']
         conn.execute('DELETE FROM users WHERE id=? AND role="student"',(student_id,))
         audit(conn,a['id'],'student_deleted',f'{admission_no}: {full_name}')
     if photo_path and photo_path.startswith('/uploads/'):
-        candidate=(UPLOAD_DIR/Path(photo_path).name).resolve()
-        if candidate.parent==UPLOAD_DIR.resolve() and candidate.exists():
-            try: candidate.unlink()
-            except OSError: pass
+        delete_upload(Path(photo_path).name)
     return flash_redirect('/admin/students',f'Student {admission_no} and linked student data were deleted.')

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320">
+  <!-- A modular pattern inspired by the curves and geometry of learning. -->
+  <path fill="#075c49" d="M0 0h80v80H0z"/>
+  <path fill="#e0f3e9" d="M0 0a80 80 0 0 0 80 80H0z"/>
+  <path fill="#00a77d" d="M80 0h80v80H80z"/>
+  <path fill="#d5eee1" d="M80 0a80 80 0 0 0 80 80V0z"/>
+  <path fill="#064d3d" d="M160 0h80v80h-80z"/>
+  <circle fill="#80ba29" cx="240" cy="0" r="40"/>
+  <path fill="#b9e4ce" d="M240 0h80v80h-80z"/>
+  <path fill="#0b8e6a" d="M320 0a80 80 0 0 1-80 80h80z"/>
+  <path fill="#12a878" d="M0 80h80v80H0z"/>
+  <path fill="#075747" d="M0 160a80 80 0 0 0 80-80v80z"/>
+  <path fill="#edf8f1" d="M80 80h80v80H80z"/>
+  <path fill="#0c7c61" d="M80 80a80 80 0 0 0 80 80V80z"/>
+  <path fill="#a2c944" d="M160 80h80v80h-80z"/>
+  <path fill="#075c49" d="M160 160a80 80 0 0 1 80-80v80z"/>
+  <path fill="#d9efe2" d="M240 80h80v80h-80z"/>
+  <path fill="#007e61" d="M240 80a80 80 0 0 0 80 80V80z"/>
+  <path fill="#075c49" d="M0 160h80v80H0z"/>
+  <path fill="#d8f0e1" d="M0 160a80 80 0 0 0 80 80H0z"/>
+  <path fill="#c0e6d1" d="M80 160h80v80H80z"/>
+  <path fill="#008867" d="M120 160a40 40 0 0 1 0 80 40 40 0 0 1 0-80"/>
+  <path fill="#00a97d" d="M160 160h80v80h-80z"/>
+  <path fill="#075747" d="M160 240a80 80 0 0 0 80-80v80z"/>
+  <path fill="#075c49" d="M240 160h80v80h-80z"/>
+  <path fill="#a7d46a" d="M240 160a80 80 0 0 1 80 80h-80z"/>
+  <path fill="#c1e6cf" d="M0 240h80v80H0z"/>
+  <path fill="#07896a" d="M0 320a80 80 0 0 1 80-80v80z"/>
+  <path fill="#064d3d" d="M80 240h80v80H80z"/>
+  <path fill="#ecf8f0" d="M80 240a80 80 0 0 0 80 80H80z"/>
+  <path fill="#d1eadb" d="M160 240h80v80h-80z"/>
+  <path fill="#008e6a" d="M160 240a80 80 0 0 1 80 80h-80z"/>
+  <path fill="#05a47c" d="M240 240h80v80h-80z"/>
+  <path fill="#075c49" d="M280 240a40 40 0 0 1 0 80 40 40 0 0 1 0-80"/>
+</svg>

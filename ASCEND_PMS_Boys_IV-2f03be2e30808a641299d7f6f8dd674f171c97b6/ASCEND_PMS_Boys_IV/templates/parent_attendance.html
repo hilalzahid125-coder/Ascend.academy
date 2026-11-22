@@ -1,0 +1,56 @@
+{% extends "base.html" %}{% block title %}Attendance · {{ settings.app_name }}{% endblock %}
+{% block content %}
+<section class="page-head overview-banner">
+  <div><span class="eyebrow">PARENT WORKSPACE</span><h1>{{ child.full_name }}’s attendance</h1><p>Recorded class attendance, learning streaks and the monthly calendar.</p></div>
+  <a class="btn ghost" href="/parent">Back to overview</a>
+</section>
+{% if children|length > 1 %}<form class="fee-period-filter" method="get" action="/parent/children/{{ child.id }}/attendance"><label>Student<select name="child">{% for s in children %}<option value="{{ s.id }}" {{ 'selected' if s.id==child.id else '' }}>{{ s.full_name }} · {{ s.admission_no }}</option>{% endfor %}</select></label><button class="btn primary">View student</button></form>{% endif %}
+<section class="fee-section parent-attendance-stats-wrap">
+  <div class="fee-stats parent-attendance-stats">
+    <div><span>Total classes</span><strong>{{ insights.total }}</strong><small>Completed sessions, incl. pending and excused</small></div>
+    <div><span>Classes attended</span><strong class="good">{{ insights.attended }}</strong><small>Present or late</small></div>
+    <div><span>Classes missed</span><strong class="{{ 'warn' if insights.missed else 'good' }}">{{ insights.missed }}</strong><small>Recorded absences, excl. holidays</small></div>
+    <div><span>Late arrivals</span><strong>{{ insights.late }}</strong><small>Included in attended</small></div>
+    <div><span>Attendance percentage</span><strong class="{{ 'good' if insights.percent is not none and insights.percent >= 90 else '' }}">{{ (insights.percent|string ~ '%') if insights.percent is not none else 'Not recorded' }}</strong><small>Attended / counted sessions</small></div>
+    <div><span>Current attendance streak</span><strong>{{ insights.current_streak }} {{ 'day' if insights.current_streak == 1 else 'days' }}</strong><small>Consecutive recorded class days</small></div>
+    <div><span>Longest attendance streak</span><strong>{{ insights.best_streak }} {{ 'day' if insights.best_streak == 1 else 'days' }}</strong><small>Longest recorded run</small></div>
+    <div><span>Awaiting marking</span><strong>{{ insights.pending }}</strong><small>Not counted as missed</small></div>
+  </div>
+  <p class="parent-attendance-note">{{ insights.excused }} excused session{{ '' if insights.excused == 1 else 's' }} · {{ insights.holiday_absences }} holiday absence{{ '' if insights.holiday_absences == 1 else 's' }} excluded. Non-scheduled days are not assumed to be absences, and attendance records are never changed.</p>
+</section>
+<section class="fee-section">
+  <div class="parent-attendance-insights">
+    <article class="fee-entry"><h3>Weekly consistency</h3><p>Last 7 calendar days · {{ insights.week.start }} to {{ insights.week.end }}</p>
+      {% if insights.week.total %}<strong>{{ insights.week.percent }}% · {{ insights.week.attended }} of {{ insights.week.total }} recorded class days attended</strong>{% else %}<strong>No counted class days this week</strong>{% endif %}
+      <p>Days count once. A counted absence on any class that day makes it a missed day; excused-only and unmarked days are skipped.</p>
+    </article>
+    <article class="fee-entry"><h3>Learning streaks</h3><p>Current: <strong>{{ insights.current_streak }} {{ 'day' if insights.current_streak == 1 else 'days' }}</strong> · Best: <strong>{{ insights.best_streak }} {{ 'day' if insights.best_streak == 1 else 'days' }}</strong></p><p>Consecutive recorded class days attended, not consecutive calendar days. A counted absence breaks the streak; late counts as attended. Holidays, excused-only and unmarked days do not break it.</p></article>
+  </div>
+  <div class="fee-meta">{% for period in insights.rolling %}<span><b>Last {{ period.days }} days · sessions</b>{{ (period.percent|string ~ '% · ' ~ period.attended ~ ' of ' ~ period.total ~ ' counted sessions') if period.total else 'No counted sessions' }}</span>{% endfor %}</div>
+  <h3 class="parent-trends-heading">Monthly attendance trends</h3><p>Last six calendar months · attended / counted completed sessions. Months without eligible records are shown as not recorded.</p>
+  <div class="parent-month-trends">{% for trend in insights.months %}<div class="parent-month-trend"><strong>{{ trend.label }}</strong>{% if trend.total %}<span>{{ trend.percent }}%</span><small>{{ trend.attended }} of {{ trend.total }} sessions</small><div class="progress" role="img" aria-label="{{ trend.label }}: {{ trend.percent }} percent, {{ trend.attended }} of {{ trend.total }} sessions"><span style="width:{{ trend.percent }}%"></span></div>{% else %}<span>Not recorded</span><small>No counted sessions</small>{% endif %}</div>{% endfor %}</div>
+</section>
+<section class="panel parent-calendar-panel" aria-labelledby="calendar-heading">
+  <div class="panel-head">
+    <div><span class="eyebrow">MONTHLY CALENDAR</span><h2 id="calendar-heading">Attendance calendar</h2></div>
+    <form class="fee-period-filter parent-month-picker" method="get" action="/parent/children/{{ child.id }}/attendance">{% if children|length > 1 %}<input type="hidden" name="child" value="{{ child.id }}">{% endif %}<label>Month<select name="month" onchange="this.form.submit()">{% for o in month_options %}<option value="{{ o.value }}" {{ 'selected' if o.value==month }}>{{ o.label }}</option>{% endfor %}</select></label></form>
+  </div>
+  <p>Choose a date to see its recorded sessions. Multiple marks can appear on the same day; an unmarked day is not an absence.</p>
+  <div class="parent-calendar" role="group" aria-label="Attendance calendar for {{ month }}"><div class="parent-calendar-weekdays" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+  {% for week in weeks %}<div class="parent-calendar-row">{% for d in week %}
+    <a href="/parent/children/{{ child.id }}/attendance?month={{ month }}&amp;day={{ d.date }}#attendance-day" class="parent-calendar-cell {{ 'selected' if selected_day==d.date }} {{ 'out-month' if not d.in_month else '' }}" aria-label="{{ d.date }}{% if d.present %}, present recorded{% endif %}{% if d.absent %}, absent recorded{% endif %}{% if d.late %}, late recorded{% endif %}{% if d.excused %}, excused recorded{% endif %}{% if d.pending %}, attendance pending{% endif %}{% if d.holiday %}, holiday: {{ d.holiday }}{% endif %}" {% if selected_day==d.date %}aria-current="date"{% endif %}>
+      <small class="cell-num">{{ d.number }}</small>
+      {% if d.holiday %}<span class="cell-holiday">Holiday</span>{% endif %}
+      <span class="parent-calendar-marks" aria-hidden="true">{% if d.present %}<i class="present"></i>{% endif %}{% if d.absent %}<i class="absent"></i>{% endif %}{% if d.late %}<i class="late"></i>{% endif %}{% if d.excused %}<i class="excused"></i>{% endif %}{% if d.pending %}<i class="pending"></i>{% endif %}{% if d.holiday %}<i class="holiday"></i>{% endif %}</span>
+    </a>
+  {% endfor %}</div>{% endfor %}</div>
+  <p class="parent-panel-note"><span class="cal-dot present"></span> Present <span class="cal-dot late"></span> Late <span class="cal-dot absent"></span> Absent <span class="cal-dot excused"></span> Excused <span class="cal-dot pending"></span> Pending <span class="cal-dot holiday"></span> Holiday</p>
+  {% if selected_day %}<div class="fee-note parent-day-detail" id="attendance-day" tabindex="-1"><strong>{{ selected_day }}</strong>{% if selected_holiday %}<div>Holiday · {{ selected_holiday }}</div>{% endif %}{% for r in selected_records %}<div>{{ r.start_time }} · {{ r.subject }} · {{ r.status|title if r.status else 'Pending' }}{% if selected_holiday and r.status == 'absent' %} (holiday absence excluded from totals){% endif %}</div>{% else %}<div>No marked completed sessions on this date.</div>{% endfor %}</div>{% endif %}
+</section>
+<section class="panel table-panel" aria-labelledby="records-heading">
+  <div class="panel-head"><div><span class="eyebrow">SESSION RECORDS</span><h2 id="records-heading">Recorded marks</h2></div></div>
+  <details class="fee-disclosure"><summary>View attendance records</summary>
+    {% for r in records %}<div class="fee-detail"><span>{{ r.session_date }} · {{ r.start_time }} · {{ r.subject }}</span><strong>{{ r.status|title if r.status else 'Pending' }}{% if r.status == 'absent' and r.session_date in all_holiday_dates %} · holiday (excluded){% endif %}</strong></div>{% else %}<p>No completed attendance records yet.</p>{% endfor %}
+  </details>
+</section>
+{% endblock %}

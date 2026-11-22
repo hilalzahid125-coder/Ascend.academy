@@ -1,15 +1,20 @@
 uest.cookies.get('pms_csrf') or new_token(24)
-    context.update({'request':request,'settings':settings(),'user':current_user(request),
+    _user=current_user(request)
+    try:
+        with connect() as _conn:
+            _unread=_conn.execute('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0',(_user['id'],)).fetchone()['c'] if _user else 0
+    except Exception:
+        _unread=0
+    context.update({'request':request,'settings':settings(),'user':_user,
                     'msg':request.query_params.get('msg'),'kind':request.query_params.get('kind','success'),
                     'csrf_token':csrf,
-                    'is_super_admin':is_super_admin(current_user(request)),
-                    'admin_permissions':_admin_permissions(current_user(request)),
+                    'is_super_admin':is_super_admin(_user),
+                    'admin_permissions':_admin_permissions(_user),
                     'staff_permission_labels':STAFF_PERMISSION_LABELS,
-                    'app_version':APP_VERSION})
+                    'app_version':APP_VERSION,'unread_notifications':_unread})
     response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
     if not request.cookies.get('pms_csrf'):
-        response.set_cookie('pms_csrf',csrf,httponly=False,samesite='lax',
-                            secure=os.getenv('PMS_SECURE_COOKIE','0')=='1',max_age=7*24*3600)
+        set_app_cookie(response,'pms_csrf',csrf)
     return response
 
 def total_points(conn, user_id, category=None, since=None):
@@ -18,24 +23,202 @@ def total_points(conn, user_id, category=None, since=None):
     if since: q+=' AND created_at>=?'; args.append(since)
     return conn.execute(q,args).fetchone()['total']
 
+def point_totals(conn, user_id):
+    rows=conn.execute('SELECT category, COALESCE(SUM(amount),0) total FROM point_transactions WHERE user_id=? GROUP BY category',(user_id,)).fetchall()
+    totals={r['category']:r['total'] for r in rows}
+    totals['overall']=sum(totals.values())
+    return totals
+
 def sync_achievements(conn, user_id):
-    achievements=conn.execute('SELECT * FROM achievements WHERE status="active" ORDER BY points_required').fetchall()
+    # One points aggregation and one achievement lookup, rather than one or
+    # more database round trips per achievement on every dashboard visit.
+    totals=point_totals(conn,user_id)
+    achievements=conn.execute('''SELECT a.*,sa.unlocked_at FROM achievements a
+        LEFT JOIN student_achievements sa ON sa.achievement_id=a.id AND sa.user_id=?
+        WHERE a.status='active' ORDER BY a.points_required''',(user_id,)).fetchall()
     for ach in achievements:
-        category=ach['category']
-        points=total_points(conn,user_id,None if category=='overall' else category)
-        if points >= ach['points_required']:
-            exists=conn.execute('SELECT 1 FROM student_achievements WHERE achievement_id=? AND user_id=?',(ach['id'],user_id)).fetchone()
-            if not exists:
-                conn.execute('INSERT INTO student_achievements(achievement_id,user_id,unlocked_at) VALUES (?,?,?)',(ach['id'],user_id,iso_now()))
-                notify(conn,user_id,'Achievement unlocked',f'You unlocked {ach["name"]}.')
+        if ach['unlocked_at'] is None and totals.get(ach['category'],0)>=ach['points_required']:
+            created=conn.execute('INSERT OR IGNORE INTO student_achievements(achievement_id,user_id,unlocked_at) VALUES (?,?,?)',(ach['id'],user_id,iso_now()))
+            if created.rowcount:
+                notify_student_and_parents(conn,user_id,'achievement','Achievement unlocked',f'You unlocked {ach["name"]}.',
+                    'Achievement unlocked',f'{{student_name}} unlocked {ach["name"]}.',student_link='/achievements',parent_link=f'/parent/children/{user_id}/achievements')
+    return totals
 
 def audit(conn, admin_id, action, details=''):
     conn.execute('INSERT INTO audit_logs(admin_id,action,details,created_at) VALUES (?,?,?,?)',
                  (admin_id,action,details,iso_now()))
 
-def notify(conn, user_id, title, body):
-    conn.execute('INSERT INTO notifications(user_id,title,body,created_at) VALUES (?,?,?,?)',
-                 (user_id,title,body,iso_now()))
+# Notification categories used by the parent notification center. They group
+# existing notifications instead of creating a second notification system.
+NOTIFICATION_CATEGORIES={
+    'absence':'Absence','attendance':'Attendance','assessment':'Assessments','remark':'Teacher remarks',
+    'assignment':'Assignments','achievement':'Achievements','challenge':'Challenges','fee':'Fees',
+    'fee_reminder':'Fees','fee_overdue':'Fees','announcement':'Announcements','update':'Updates'}
+_NOTIFY_TITLE_KINDS={
+    'Achievement unlocked':'achievement','Challenge approved':'challenge','Challenge reviewed':'challenge',
+    'Reward claim updated':'challenge','Fee assigned':'fee','Fee updated':'fee',
+    'Fee payment approved':'fee','Fee payment rejected':'fee'}
+
+def notify(conn, user_id, title, body, kind=None, student_id=None, link_path=None):
+    conn.execute('INSERT INTO notifications(user_id,title,body,is_read,kind,student_id,link_path,read_at,created_at) VALUES (?,?,?,0,?,?,?,NULL,?)',
+                 (user_id,title,body,kind or _NOTIFY_TITLE_KINDS.get(title,'update'),student_id,link_path,iso_now()))
+    # Generic parent alerts remain non-identifying even if a relationship is later revoked.
+    if title in _NOTIFY_TITLE_KINDS:
+        conn.execute("""INSERT INTO notifications(user_id,title,body,is_read,kind,student_id,link_path,read_at,created_at)
+            SELECT parent.id,?,?,0,?,?,?,NULL,? FROM parent_student_links l JOIN users parent ON parent.id=l.parent_id
+            WHERE l.student_id=? AND parent.role='parent' AND parent.status='active'""",
+            (title,'A linked student has an update. Open the parent workspace for current details.',
+             _NOTIFY_TITLE_KINDS[title],student_id,link_path,iso_now(),user_id))
+
+def _already_notified(conn, user_id, kind, student_id, title, body):
+    # Portable null-safe equality: "IS ?" is not valid with a bound parameter
+    # on PostgreSQL.
+    return conn.execute("""SELECT 1 FROM notifications
+        WHERE user_id=? AND kind=? AND COALESCE(student_id,-1)=COALESCE(?,-1) AND title=? AND body=? LIMIT 1""",
+        (user_id,kind,student_id,title,body)).fetchone() is not None
+
+def notify_student_and_parents(conn, student_id, kind, student_title, student_body, parent_title, parent_body,
+                               student_link=None, parent_link=None):
+    """Deliver one event to the student and every linked active parent, each with a
+    role-appropriate title and body but a shared category and student reference."""
+    student=conn.execute('SELECT full_name FROM users WHERE id=?',(student_id,)).fetchone()
+    student_name=student['full_name'] if student else 'your student'
+    if not _already_notified(conn,student_id,kind,student_id,student_title,student_body):
+        notify(conn,student_id,student_title,student_body,kind=kind,student_id=student_id,link_path=student_link)
+    for parent in conn.execute("""SELECT u.id,u.full_name FROM parent_student_links l JOIN users u ON u.id=l.parent_id
+        WHERE l.student_id=? AND u.role='parent' AND u.status='active'""",(student_id,)).fetchall():
+        body=parent_body.format(student_name=student_name,parent_name=parent['full_name'])
+        if not _already_notified(conn,parent['id'],kind,student_id,parent_title,body):
+            notify(conn,parent['id'],parent_title,body,kind=kind,student_id=student_id,link_path=parent_link)
+
+ANNOUNCEMENT_ROLES={'all':'Everyone','students':'Students','parents':'Parents','teachers':'Teachers'}
+
+def announcement_scope_text(announcement):
+    """Human wording for where a notice applies."""
+    audience=announcement['audience'] if 'audience' in announcement.keys() else 'all'
+    class_name=announcement['class_name'] if 'class_name' in announcement.keys() else None
+    section_name=announcement['section_name'] if 'section_name' in announcement.keys() else None
+    if audience in ('class','section') and class_name:
+        label=str(class_name)
+        if audience=='section' and section_name: label+=' · Section '+str(section_name)
+        return label
+    return 'Whole academy'
+
+
+def _announcement_cards(rows, today=None):
+    """Decorate raw announcement rows for the read-only pages."""
+    from datetime import date as _date, timedelta as _td
+    today=today or _class_now().date()
+    fresh_after=(today-_td(days=6)).isoformat()
+    cards=[]
+    for r in rows:
+        card={k:r[k] for k in r.keys()}
+        card['role_label']=ANNOUNCEMENT_ROLES.get(card.get('audience_role') or 'all','Everyone')
+        card['scope_label']=announcement_scope_text(r)
+        card['fresh']=str(card.get('created_at') or '')[:10]>=fresh_after
+        cards.append(card)
+    return cards
+
+
+def visible_announcements(conn, user, limit=None):
+    """Published announcements a signed-in person may see, newest first.
+
+    Role targeting and class/section scoping are both applied here so the
+    dashboards, the dedicated pages and the notifications can never disagree.
+    """
+    role=user['role']
+    sql="SELECT a.* FROM announcements a WHERE a.status='published'"
+    params=[]
+    if role=='student': sql+=" AND a.audience_role IN ('all','students')"
+    elif role=='parent': sql+=" AND a.audience_role IN ('all','parents')"
+    elif role=='teacher': sql+=" AND a.audience_role IN ('all','teachers')"
+    if role=='student':
+        sql+=" AND (a.audience='all' OR (a.audience='class' AND a.class_name=?) OR (a.audience='section' AND a.class_name=? AND COALESCE(a.section_name,'')=COALESCE(?,'')))"
+        params=[user['class_name'],user['class_name'],user['section_name']]
+    elif role=='parent':
+        # Any linked child can qualify the notice, not just the first one.
+        sql+=""" AND (a.audience='all'
+            OR (a.audience='class' AND a.class_name IN (SELECT s.class_name FROM parent_student_links l JOIN users s ON s.id=l.student_id WHERE l.parent_id=?))
+            OR (a.audience='section' AND EXISTS (SELECT 1 FROM parent_student_links l JOIN users s ON s.id=l.student_id
+                 WHERE l.parent_id=? AND s.class_name=a.class_name AND COALESCE(s.section_name,'')=COALESCE(a.section_name,''))))"""
+        params=[user['id'],user['id']]
+    elif role=='teacher':
+        # Teachers also see notices aimed at a grade they actually teach.
+        sql+=" AND (a.audience='all' OR a.class_name IN (SELECT DISTINCT s.grade FROM class_schedules s WHERE s.teacher_id=? AND s.active=1))"
+        params=[user['id']]
+    sql+=' ORDER BY a.id DESC'
+    if limit: sql+=' LIMIT '+str(int(limit))
+    return conn.execute(sql,tuple(params)).fetchall()
+
+
+def mark_announcement_alerts_read(conn, user_id):
+    """Opening the announcements page clears the related alerts for that person."""
+    conn.execute("UPDATE notifications SET is_read=1,read_at=? WHERE user_id=? AND is_read=0 AND kind='announcement'",(iso_now(),user_id))
+
+
+def deliver_announcement(conn, announcement):
+    """Fan a published notice out to exactly the people it targets.
+
+    Everything still goes through the existing notification centre; only the
+    recipient list and the deep link differ per role.
+    """
+    role=announcement.get('audience_role') or 'all'
+    scope=announcement.get('audience') or 'all'
+    class_name=announcement.get('class_name'); section_name=announcement.get('section_name')
+    title='Academy announcement: '+announcement['title']
+    body=announcement['body']
+    targets=[]
+    student_scope="role='student' AND status='active'"
+    if scope=='class': student_scope+=' AND class_name=?'; scope_params=(class_name,)
+    elif scope=='section': student_scope+=" AND class_name=? AND COALESCE(section_name,'')=COALESCE(?,'')"; scope_params=(class_name,section_name)
+    else: scope_params=()
+    if role in ('all','students'):
+        for row in conn.execute(f'SELECT id FROM users WHERE {student_scope}',scope_params).fetchall():
+            targets.append((row['id'],'/announcements'))
+    if role in ('all','parents'):
+        parent_where="u.role='parent' AND u.status='active'"
+        if scope=='class': parent_where+=' AND s.class_name=?'; parent_params=(class_name,)
+        elif scope=='section': parent_where+=" AND s.class_name=? AND COALESCE(s.section_name,'')=COALESCE(?,'')"; parent_params=(class_name,section_name)
+        else: parent_params=()
+        parent_rows=conn.execute(f"""SELECT DISTINCT u.id FROM parent_student_links l JOIN users u ON u.id=l.parent_id
+            JOIN users s ON s.id=l.student_id WHERE {parent_where}""",parent_params).fetchall()
+        for row in parent_rows:
+            targets.append((row['id'],'/parent/announcements'))
+    if role in ('all','teachers'):
+        if scope=='all':
+            teacher_rows=conn.execute("SELECT id FROM users WHERE role='teacher' AND status='active'").fetchall()
+        elif class_name:
+            teacher_rows=conn.execute("""SELECT DISTINCT u.id FROM users u JOIN class_schedules s ON s.teacher_id=u.id
+                WHERE u.role='teacher' AND u.status='active' AND s.active=1 AND s.grade=?""",(class_name,)).fetchall()
+        else: teacher_rows=[]
+        for row in teacher_rows:
+            targets.append((row['id'],'/announcements'))
+    for user_id,link in targets:
+        if not _already_notified(conn,user_id,'announcement',None,title,body):
+            notify(conn,user_id,title,body,kind='announcement',student_id=None,link_path=link)
+
+
+def run_fee_notifications(conn, today=None):
+    """Regenerate fee reminder and overdue notifications from the current fee
+    records. Scan-generated alerts are idempotent: one per fee per kind."""
+    from datetime import date as _date, timedelta
+    today=today or _date.today()
+    soon=today+timedelta(days=7)
+    for fee in _fee_rows(conn):
+        if fee['balance']<=0 or not fee['due_date']: continue
+        student_id=fee['student_id']
+        if fee['due_date']<today.isoformat():
+            kind='fee_overdue'; title=f"Fee overdue: {fee['title']}"
+            student_body=f"The {fee['title']} fee ({fee['currency']} {fee['balance']/100:.2f}) is past its due date of {fee['due_date']}. Open Fee Management to submit payment proof."
+            parent_body=f"{fee['title']} is past its due date of {fee['due_date']} ({fee['currency']} {fee['balance']/100:.2f} outstanding). Open fee management to submit payment proof."
+        else:
+            if fee['due_date']>soon.isoformat(): continue
+            if fee['submitted']: continue
+            kind='fee_reminder'; title=f"Fee reminder: {fee['title']}"
+            student_body=f"The {fee['title']} fee is due on {fee['due_date']} ({fee['currency']} {fee['balance']/100:.2f} outstanding). Open Fee Management to submit payment proof."
+            parent_body=f"{fee['title']} is due on {fee['due_date']} ({fee['currency']} {fee['balance']/100:.2f} outstanding). Open fee management to submit payment proof."
+        notify_student_and_parents(conn,student_id,kind,title,student_body,title,parent_body,
+            student_link='/fees',parent_link=f"/parent/children/{student_id}/fees")
 
 @app.middleware('http')
 async def security_middleware(request: Request, call_next):
@@ -46,12 +229,29 @@ async def security_middleware(request: Request, call_next):
             length=0
         if length > MAX_POST_BYTES:
             return JSONResponse({'detail':'Request too large.'}, status_code=413)
+    # Pending applicants may use only the isolated demo and account status.
+    # Enforce this before routing, including APIs, files and unsafe methods.
+    path=request.url.path
+    # The school logo remains public; student profile images require a signed-in,
+    # active account. Applicants cannot bypass the demo gate by signing out.
+    if path.startswith('/uploads/profile_'):
+        viewer=current_user(request)
+        if not viewer or viewer['status']!='active':
+            return Response(status_code=404)
+    if request.cookies.get('pms_session') and not (path.startswith('/static/') or path in {'/health','/logout','/explore','/admission/status'}):
+        user=current_user(request)
+        if user and user['role']=='student':
+            with connect() as conn:
+                admission=conn.execute('SELECT status FROM student_admissions WHERE user_id=?',(user['id'],)).fetchone()
+            if admission and admission['status']!='approved':
+                if request.method in {'GET','HEAD'}: return RedirectResponse('/admission/status',303)
+                return JSONResponse({'detail':'Your application is awaiting review.'},status_code=403)
     response = await call_next(request)
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['X-Frame-Options']='DENY'
     response.headers['Referrer-Policy']='same-origin'
-    response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
-    response.headers['Content-Security-Policy']="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    response.headers['Permissions-Policy']='camera=(self "https://meet.jit.si"), microphone=(self "https://meet.jit.si"), display-capture=(self "https://meet.jit.si"), fullscreen=(self "https://meet.jit.si"), geolocation=()'
+    response.headers['Content-Security-Policy']="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-src 'self' https://meet.jit.si; frame-ancestors 'none'; form-action 'self'"
     if os.getenv('PMS_SECURE_COOKIE','0')=='1':
         response.headers['Strict-Transport-Security']='max-age=31536000; includeSubDomains'
     if request.url.path not in {'/health'}:
@@ -60,18 +260,29 @@ async def security_middleware(request: Request, call_next):
 
 @app.exception_handler(401)
 async def unauth(request, exc):
-    return RedirectResponse('/login', status_code=303)
+    path=request.url.path
+    return RedirectResponse('/parent/login' if path=='/parent' or path.startswith('/parent/') else '/login', status_code=303)
 
 @app.exception_handler(403)
 async def forbidden(request, exc):
+    if exc.detail == 'Security token expired. Refresh the page and try again.':
+        message = 'Your security session expired or cookies are unavailable. Refresh the sign-in page and try again.'
+        if request.url.path == '/register/academy':
+            return JSONResponse({'detail': message}, status_code=403)
+        return render(request,'error.html',{'code':403,'title':'Security session expired','message':message},403)
     return render(request,'error.html',{'code':403,'title':'Access denied','message':'You do not have permission to view this page.'},403)
 
 @app.get('/', response_class=HTMLResponse)
 def home(request: Request):
     u=current_user(request)
     if u:
-        return RedirectResponse('/admin' if u['role']=='admin' else '/student',303)
+        return RedirectResponse('/admin' if u['role']=='admin' else '/parent' if u['role']=='parent' else '/teacher' if u['role']=='teacher' else '/student',303)
     return render(request,'landing.html')
+
+@app.get('/explore', response_class=HTMLResponse)
+def explore_page(request: Request):
+    # A standalone demonstration: no student data or live writes are loaded.
+    return render(request,'explore.html')
 
 @app.get('/about', response_class=HTMLResponse)
 def about_page(request: Request):
@@ -84,61 +295,154 @@ def privacy_page(request: Request):
 @app.get('/login', response_class=HTMLResponse)
 def login_page(request: Request): return render(request,'auth.html',{'mode':'login'})
 
+@app.get('/parent/login', response_class=HTMLResponse)
+def parent_login_page(request: Request):
+    # The shared layout is the authenticated workspace when a session exists.
+    user=current_user(request)
+    if user and user['status']=='active':
+        return RedirectResponse('/admin' if user['role']=='admin' else '/parent' if user['role']=='parent' else '/teacher' if user['role']=='teacher' else '/student',303)
+    # A disabled account's session cannot access the workspace.
+    if user: request.state.current_user=None
+    return render(request,'auth.html',{'mode':'parent_login'})
+
 @app.get('/register', response_class=HTMLResponse)
-def register_page(request: Request): return render(request,'auth.html',{'mode':'register'})
+def register_page(request: Request): return render(request,'admission_register.html')
+
+@app.get('/register/legacy', response_class=HTMLResponse)
+def legacy_register_page(request: Request):
+    # Existing school-issued, unclaimed records can still be securely claimed.
+    return render(request,'academy_signup.html')
 
 @app.post('/login')
 def login(request: Request, admission_no: str=Form(...), password: str=Form(...)):
+    return _sign_in(request,admission_no,password)
+
+@app.post('/parent/login')
+def parent_login(request: Request, admission_no: str=Form(...), password: str=Form(...)):
+    return _sign_in(request,admission_no,password,parent_only=True)
+
+def _sign_in(request: Request, admission_no: str, password: str, parent_only: bool=False):
+    login_path='/parent/login' if parent_only else '/login'
     admission_no=admission_no.strip().upper()[:32]
     key=_attempt_key('login',request,admission_no); ip_key=_attempt_key('login-ip',request,'*')
     with connect() as conn:
+        # Serialize parent sign-ins with password reset/disable, including sign-in
+        # through the existing shared form, so old credentials cannot create a
+        # new session after an administrator has revoked them.
+        if parent_only or admission_no.startswith('P-'): conn.execute('BEGIN IMMEDIATE')
         if _rate_limited(conn,key,8,15) or _rate_limited(conn,ip_key,30,15):
-            return flash_redirect('/login','Too many sign-in attempts. Please wait 15 minutes and try again.','error')
+            return flash_redirect(login_path,'Too many sign-in attempts. Please wait 15 minutes and try again.','error')
         u=conn.execute('SELECT * FROM users WHERE admission_no=?',(admission_no,)).fetchone()
-        if not u or not u['password_hash'] or not verify_password(password,u['password_hash']):
+        if not u and admission_no.startswith('TMP-'):
+            u=conn.execute('SELECT u.* FROM users u JOIN student_admissions a ON a.user_id=u.id WHERE a.temporary_id=?',(admission_no,)).fetchone()
+        no_password=bool(u and not u['password_hash'])
+        if no_password or not u or not verify_password(password,u['password_hash'] or '') or (parent_only and (u['role']!='parent' or not admission_no.startswith('P-'))):
             _record_failure(conn,key); _record_failure(conn,ip_key)
-            return flash_redirect('/login','Incorrect admission number or password.','error')
-        if u['status']!='active':
+            if no_password:
+                return flash_redirect(login_path,'This account has no password yet. Ask the academy office to set one for you.','error')
+            if not u:
+                # Zero and the letter O look alike on printed IDs. Point to the
+                # stored spelling instead of leaving a confusing password error.
+                swapped=admission_no.translate(str.maketrans('O0','0O'))
+                if swapped!=admission_no:
+                    near=conn.execute('SELECT admission_no FROM users WHERE admission_no=?',(swapped,)).fetchone()
+                    if near: return flash_redirect(login_path,f'No account matches that ID. Did you mean {near["admission_no"]}?','error')
+            return flash_redirect(login_path,'Incorrect parent ID or password.' if parent_only else 'Incorrect admission number or password.','error')
+        pending_admission=conn.execute("SELECT status FROM student_admissions WHERE user_id=?",(u['id'],)).fetchone() if u['role']=='student' else None
+        if u['status']!='active' and not (u['status']=='pending' and pending_admission and pending_admission['status']=='pending'):
             _record_failure(conn,key); _record_failure(conn,ip_key)
-            return flash_redirect('/login','This account is not active. Please contact the school office.','error')
+            return flash_redirect(login_path,'This account is not active. Please contact the academy office.','error')
         _clear_failures(conn,key)
         token=new_token(); conn.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)',
             (token_hash(token),u['id'],iso_expiry(),iso_now()))
-    r=RedirectResponse('/admin' if u['role']=='admin' else '/student',303)
-    r.set_cookie('pms_session',token,httponly=True,samesite='lax',secure=os.getenv('PMS_SECURE_COOKIE','0')=='1',max_age=7*24*3600)
+        # Guardian sign-ins are recorded for academy oversight (Super Admin).
+        # Only successful sign-ins are logged, and never passwords or tokens.
+        if u['role']=='parent':
+            audit(conn,None,'parent_signed_in',f"{u['admission_no']} · {u['full_name']}")
+    destination='/admission/status' if pending_admission and (pending_admission['status']=='pending' or admission_no.startswith('TMP-')) else ('/admin' if u['role']=='admin' else '/parent' if u['role']=='parent' else '/teacher' if u['role']=='teacher' else '/student')
+    r=RedirectResponse(destination,303)
+    set_app_cookie(r,'pms_session',token,httponly=True)
     return r
 
 @app.post('/register')
-def register(request: Request, admission_no: str=Form(...), activation_code: str=Form(...), password: str=Form(...), confirm_password: str=Form(...)):
-    s=settings()
-    if s.get('registration_enabled')!='1': return flash_redirect('/register','Student registration is currently closed.','error')
-    admission_no=admission_no.strip().upper()[:32]; activation_code=activation_code.strip().upper()[:32]
-    key=_attempt_key('register',request,admission_no); ip_key=_attempt_key('register-ip',request,'*')
-    if not ADMISSION_RE.match(admission_no): return flash_redirect('/register','Use a valid admission number, for example A-6738.','error')
-    if password!=confirm_password: return flash_redirect('/register','Your passwords do not match.','error')
-    if len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password):
-        return flash_redirect('/register','Password must be 8–128 characters and include letters and numbers.','error')
+def register_legacy(request: Request):
+    # Old clients cannot skip the academy profile and grade validation.
+    return flash_redirect('/register','Please complete the academy registration form.','error')
+
+@app.post('/register/academy')
+def academy_register(request: Request, profile: str=Form(...)):
+    def fail(message, status=400):
+        return JSONResponse({'detail': message}, status_code=status)
+
+    if settings().get('registration_enabled') != '1':
+        return fail('Student registration is currently closed.')
+    try:
+        data = json.loads(profile)
+        if not isinstance(data, dict): raise ValueError()
+        required = ('fullName', 'email', 'phone', 'schoolName', 'gender', 'dob', 'guardianName', 'guardianPhone',
+                    'country', 'province', 'program', 'schoolRegion', 'schoolType', 'grade',
+                    'admissionNo', 'activationCode', 'password', 'confirmPassword')
+        optional = ('countryCode', 'section')
+        for name in required + optional:
+            value = data.get(name, '')
+            if not isinstance(value, str) or len(value) > (128 if name in ('password', 'confirmPassword') else 200):
+                raise ValueError()
+            if name in required and not value.strip(): raise ValueError()
+        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', data['email'].strip()): raise ValueError()
+        dob = datetime.strptime(data['dob'], '%Y-%m-%d').date()
+        if dob > _now().date(): raise ValueError()
+        if data['gender'] not in ('Female', 'Male', 'Non-binary', 'Prefer not to say'): raise ValueError()
+        if data['schoolType'] not in ('Public', 'Private', 'International', 'Cambridge Centre'): raise ValueError()
+        grades = {'O-Level': ('O-Level - Grade 9', 'O-Level - Grade 10', 'O-Level - Grade 11'),
+                  'A-Level': ('A-Level - AS (Grade 12)', 'A-Level - A2 (Grade 13)')}
+        if data['program'] not in grades or data['grade'] not in grades[data['program']]: raise ValueError()
+        subjects = data.get('subjects')
+        if not isinstance(subjects, list) or not subjects or any(x not in ('Maths', 'Computer Science') for x in subjects): raise ValueError()
+        if data.get('terms') is not True: raise ValueError()
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return fail('Please check your registration details and try again.')
+    admission_no = data['admissionNo'].strip().upper()
+    code = data['activationCode'].strip().upper()
+    password = data['password']
+    if not ADMISSION_RE.fullmatch(admission_no):
+        return fail('Use a valid admission number, for example A-6738.')
+    if password != data['confirmPassword']:
+        return fail('Your passwords do not match.')
+    if len(password) < 8 or not re.search(r'[A-Za-z]', password) or not re.search(r'\d', password):
+        return fail('Password must be 8–128 characters and include letters and numbers.')
+    key = _attempt_key('register', request, admission_no)
+    ip_key = _attempt_key('register-ip', request, '*')
     with connect() as conn:
-        if _rate_limited(conn,key,8,15) or _rate_limited(conn,ip_key,30,15):
-            return flash_redirect('/register','Too many activation attempts. Please wait 15 minutes and try again.','error')
-        u=conn.execute('SELECT * FROM users WHERE admission_no=?',(admission_no,)).fetchone()
-        if not u or u['role']!='student' or u['claimed'] or (u['activation_code'] or '').upper()!=activation_code:
-            _record_failure(conn,key); _record_failure(conn,ip_key)
-            return flash_redirect('/register','We could not activate this account. Check the admission number and activation code, or contact the school administrator.','error')
+        # Serialize code redemption so two requests cannot activate the same account.
+        conn.execute('BEGIN IMMEDIATE')
+        if _rate_limited(conn, key, 8, 15) or _rate_limited(conn, ip_key, 30, 15):
+            return fail('Too many activation attempts. Please wait 15 minutes and try again.', 429)
+        u = conn.execute('SELECT * FROM users WHERE admission_no=?', (admission_no,)).fetchone()
+        if not u or u['role'] != 'student' or u['status'] != 'unclaimed' or u['claimed'] or not u['activation_code'] or not hmac.compare_digest(u['activation_code'].upper().encode('utf-8'), code.encode('utf-8')):
+            _record_failure(conn, key); _record_failure(conn, ip_key)
+            return fail('We could not activate this account. Check the admission number and activation code, or contact the academy administrator.')
         if u['activation_code_expires_at'] and u['activation_code_expires_at'] < _now().isoformat():
-            _record_failure(conn,key); _record_failure(conn,ip_key)
-            return flash_redirect('/register','This activation code has expired. Ask an administrator to issue a new one.','error')
-        _clear_failures(conn,key)
-        conn.execute('UPDATE users SET password_hash=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=?',(hash_password(password),u['id']))
-        notify(conn,u['id'],'Welcome to ASCEND','Your account is active. Start completing challenges and climbing the leaderboards.')
-    return flash_redirect('/login','Account created successfully. You can now sign in.')
+            _record_failure(conn, key); _record_failure(conn, ip_key)
+            return fail('This activation code has expired. Ask an administrator to issue a new one.')
+        _clear_failures(conn, key)
+        conn.execute('UPDATE users SET password_hash=?,full_name=?,class_name=?,section_name=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=?', (hash_password(password), data['fullName'].strip(), data['grade'].strip(), data.get('section', '').strip(), u['id']))
+        # Keep submitted profile details separately from the school-managed student record.
+        saved = {name: data.get(name, '').strip() for name in ('fullName', 'email', 'phone', 'countryCode', 'gender', 'dob', 'guardianName', 'guardianPhone', 'country', 'province', 'program', 'schoolName', 'schoolRegion', 'schoolType', 'grade', 'section')}
+        saved['subjects'] = subjects
+        conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET profile_json=excluded.profile_json,created_at=excluded.created_at', (u['id'], json.dumps(saved), iso_now()))
+        notify(conn, u['id'], 'Welcome to ASCEND', 'Your account is active. Start completing challenges and climbing the leaderboards.')
+        token = new_token()
+        conn.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)', (token_hash(token), u['id'], iso_expiry(), iso_now()))
+    response = JSONResponse({'redirect': '/student'})
+    set_app_cookie(response,'pms_session',token,httponly=True)
+    return response
 
 @app.post('/logout')
 def logout(request: Request):
     token=request.cookies.get('pms_session')
     if token:
         with connect() as conn: conn.execute('DELETE FROM sessions WHERE token_hash=?',(token_hash(token),))
-    r=RedirectResponse('/login',303); r.delete_cookie('pms_session'); return r
+    r=RedirectResponse('/login',303); set_app_cookie(r,'pms_session','',httponly=True,max_age=0); return r
 
 @app.get('/student', response_class=HTMLResponse)
 def student_dashboard(request: Request):

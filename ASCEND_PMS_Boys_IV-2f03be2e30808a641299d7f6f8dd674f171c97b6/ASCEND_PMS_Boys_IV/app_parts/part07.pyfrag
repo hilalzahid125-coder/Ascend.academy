@@ -22,7 +22,7 @@ def admin_rewards(request: Request):
 @app.post('/admin/rewards/create')
 def admin_reward_create(request: Request,name:str=Form(...),description:str=Form(...),points_required:int=Form(...),quantity:Optional[int]=Form(None)):
     a=require_admin(request,'rewards')
-    if points_required<0 or points_required>1_000_000 or (quantity is not None and (quantity<0 or quantity>100000)): return flash_redirect('/admin/rewards','Reward values are invalid.','error')
+    if points_required<1 or points_required>1_000_000 or (quantity is not None and (quantity<0 or quantity>100000)): return flash_redirect('/admin/rewards','Reward values are invalid.','error')
     try: name=_clean_text(name,120); description=_clean_text(description,1500)
     except ValueError as exc: return flash_redirect('/admin/rewards',str(exc),'error')
     with connect() as conn:
@@ -43,25 +43,41 @@ def admin_reward_claim(request: Request,claim_id:int,status:str=Form(...)):
     a=require_admin(request,'rewards')
     if status not in {'pending','approved','rejected','fulfilled'}: return flash_redirect('/admin/rewards','Invalid status.','error')
     with connect() as conn:
+        # Reserve finite stock atomically when a claim is approved or fulfilled.
+        conn.execute('BEGIN IMMEDIATE')
         row=conn.execute('SELECT * FROM reward_claims WHERE id=?',(claim_id,)).fetchone()
         if row:
-            conn.execute('UPDATE reward_claims SET status=? WHERE id=?',(status,claim_id)); notify(conn,row['user_id'],'Reward claim updated',f'Your reward claim is now {status}.'); audit(conn,a['id'],'reward_claim_updated',f'{claim_id}->{status}')
+            reward=conn.execute('SELECT quantity FROM rewards WHERE id=?',(row['reward_id'],)).fetchone()
+            if status in {'approved','fulfilled'} and row['status'] not in {'approved','fulfilled'} and reward and reward['quantity'] is not None:
+                reserved=conn.execute("SELECT COUNT(*) c FROM reward_claims WHERE reward_id=? AND status IN ('approved','fulfilled')",(row['reward_id'],)).fetchone()['c']
+                if reserved >= reward['quantity']: return flash_redirect('/admin/rewards','This reward is out of stock.','error')
+            if row['status'] != status:
+                conn.execute('UPDATE reward_claims SET status=? WHERE id=?',(status,claim_id)); notify(conn,row['user_id'],'Reward claim updated',f'Your reward claim is now {status}.'); audit(conn,a['id'],'reward_claim_updated',f'{claim_id}->{status}')
     return flash_redirect('/admin/rewards','Claim updated.')
 
 @app.get('/admin/announcements', response_class=HTMLResponse)
 def admin_announcements(request: Request):
     require_admin(request,'announcements')
-    with connect() as conn: rows=conn.execute('SELECT * FROM announcements ORDER BY id DESC').fetchall()
-    return render(request,'admin_announcements.html',{'announcements':rows})
+    with connect() as conn:
+        rows=conn.execute("SELECT * FROM announcements ORDER BY (status='published') DESC,id DESC").fetchall()
+        cards=_announcement_cards(rows)
+        counts={r['id']:conn.execute('SELECT COUNT(*) c FROM notifications WHERE kind=? AND title=?',('announcement','Academy announcement: '+r['title'])).fetchone()['c'] for r in rows}
+    for card in cards: card['delivered']=counts.get(card['id'],0)
+    return render(request,'admin_announcements.html',{'announcements':cards,'audience_roles':ANNOUNCEMENT_ROLES})
 
 @app.post('/admin/announcements/create')
-def admin_announcement_create(request: Request,title:str=Form(...),body:str=Form(...),audience:str=Form('all'),class_name:str=Form(''),section_name:str=Form('')):
+def admin_announcement_create(request: Request,title:str=Form(...),body:str=Form(...),audience:str=Form('all'),class_name:str=Form(''),section_name:str=Form(''),audience_role:str=Form('all')):
     a=require_admin(request,'announcements'); audience=audience if audience in {'all','class','section'} else 'all'
+    audience_role=audience_role if audience_role in ANNOUNCEMENT_ROLES else 'all'
     try:
         title=_clean_text(title,160); body=_clean_text(body,5000); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
+        if class_name and class_name not in ACADEMY_GRADES: raise ValueError('Choose a valid academy grade.')
+        if audience == 'all': class_name = ''; section_name = ''
+        elif audience == 'class': section_name = ''
     except ValueError as exc: return flash_redirect('/admin/announcements',str(exc),'error')
     with connect() as conn:
-        conn.execute('INSERT INTO announcements(title,body,audience,class_name,section_name,status,created_by,created_at) VALUES (?,?,?,?,?,"published",?,?)',(title.strip(),body.strip(),audience,class_name or None,section_name or None,a['id'],iso_now())); audit(conn,a['id'],'announcement_published',title.strip())
+        conn.execute('INSERT INTO announcements(title,body,audience,audience_role,class_name,section_name,status,created_by,created_at) VALUES (?,?,?,?,?,?,"published",?,?)',(title.strip(),body.strip(),audience,audience_role,class_name or None,section_name or None,a['id'],iso_now())); audit(conn,a['id'],'announcement_published',title.strip())
+        deliver_announcement(conn,{'title':title.strip(),'body':body.strip(),'audience':audience,'audience_role':audience_role,'class_name':class_name or None,'section_name':section_name or None})
     return flash_redirect('/admin/announcements','Announcement published.')
 
 
@@ -75,14 +91,22 @@ def admin_announcement_status(request: Request,announcement_id:int,status:str=Fo
 
 @app.get('/admin/activity', response_class=HTMLResponse)
 def admin_activity(request: Request):
-    require_admin(request,'activity')
+    admin=require_admin(request,'activity')
+    # Activity permission alone must not disclose fee actions, amounts or payers.
+    fee_filter='' if is_super_admin(admin) or 'fees' in _admin_permissions(admin) else " AND SUBSTR(l.action,1,4)!='fee_'"
+    # Guardian activity is shown on Parent accounts, not in the administrator trail.
+    activity_filter=" WHERE SUBSTR(l.action,1,7)!='parent_'"+fee_filter
     with connect() as conn:
-        rows=conn.execute('''SELECT l.*,u.full_name admin_name FROM audit_logs l LEFT JOIN users u ON u.id=l.admin_id ORDER BY l.id DESC LIMIT 500''').fetchall()
+        rows=conn.execute('SELECT l.*,u.full_name admin_name FROM audit_logs l LEFT JOIN users u ON u.id=l.admin_id'+activity_filter+' ORDER BY l.id DESC LIMIT 500').fetchall()
     return render(request,'admin_activity.html',{'logs':rows})
 
 @app.get('/admin/settings', response_class=HTMLResponse)
 def admin_settings(request: Request):
-    require_admin(request,super_only=True); return render(request,'admin_settings.html')
+    require_admin(request,super_only=True)
+    with connect() as conn:
+        academic_session_config=_academic_session_config(conn)
+        academic_terms=conn.execute('SELECT * FROM academic_terms ORDER BY start_date DESC,id DESC').fetchall()
+    return render(request,'admin_settings.html',{'academic_session_config':academic_session_config,'academic_terms':academic_terms})
 
 @app.post('/admin/settings')
 def admin_settings_save(request: Request,school_name:str=Form(...),app_name:str=Form(...),tagline:str=Form(...),creator_credit:str=Form(...),registration_enabled:Optional[str]=Form(None)):
@@ -111,12 +135,13 @@ async def admin_logo_upload(request: Request, logo: UploadFile=File(...)):
         image=Image.open(io.BytesIO(data))
         if image.width>4000 or image.height>4000: return flash_redirect('/admin/settings','Logo dimensions are too large.','error')
         if image.mode not in {'RGB','RGBA'}: image=image.convert('RGBA')
-        out=UPLOAD_DIR/'school_logo.png'
+        out=io.BytesIO()
         image.save(out,'PNG',optimize=True)
+        save_upload('school_logo.png',out.getvalue(),'image/png')
     except Exception:
         return flash_redirect('/admin/settings','That file is not a valid supported image.','error')
     with connect() as conn:
-        conn.execute('INSERT INTO settings(key,value) VALUES ("school_logo_path",?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(f'/uploads/{out.name}',)); audit(conn,a['id'],'school_logo_updated',out.name)
+        conn.execute('INSERT INTO settings(key,value) VALUES ("school_logo_path",?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',('/uploads/school_logo.png',)); audit(conn,a['id'],'school_logo_updated','school_logo.png')
     return flash_redirect('/admin/settings','School logo updated.')
 
 @app.get('/admin/launch', response_class=HTMLResponse)
@@ -127,5 +152,6 @@ def admin_launch(request: Request):
         structure=get_settings(conn).get('competition_structure_version','0')
         student_count=conn.execute('SELECT COUNT(*) c FROM users WHERE role="student"').fetchone()['c']
     backups=list_backups()
-    db_size=DB_PATH.stat().st_size if DB_PATH.exists() else 0
-    upload_files=[x for x in UPLOAD_DIR.iterdir() if x.is_f
+    db_size=database_size()
+    upload_count=count_uploads()
+    #

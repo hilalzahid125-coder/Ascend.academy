@@ -20,7 +20,7 @@ def admin_reports(request: Request):
         }
         top=conn.execute('''SELECT u.full_name,u.admission_no,u.class_name,u.section_name,COALESCE(SUM(p.amount),0) points
                             FROM users u LEFT JOIN point_transactions p ON p.user_id=u.id
-                            WHERE u.role='student' GROUP BY u.id ORDER BY points DESC,u.full_name LIMIT 8''').fetchall()
+                            WHERE u.role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved') GROUP BY u.id ORDER BY points DESC,u.full_name LIMIT 8''').fetchall()
     return render(request,'admin_reports.html',{'stats':stats,'top':top,'report_permissions':perms})
 
 @app.get('/admin/reports/students.csv')
@@ -34,7 +34,7 @@ def admin_students_report_csv(request: Request):
             COALESCE(SUM(CASE WHEN p.category='character' THEN p.amount ELSE 0 END),0) character_points,
             COALESCE(SUM(CASE WHEN p.category='activity' THEN p.amount ELSE 0 END),0) activity_points
             FROM users u LEFT JOIN point_transactions p ON p.user_id=u.id
-            WHERE u.role='student' GROUP BY u.id ORDER BY total_points DESC,u.full_name''').fetchall()
+            WHERE u.role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved') GROUP BY u.id ORDER BY total_points DESC,u.full_name''').fetchall()
     out=io.StringIO(); w=csv.writer(out)
     w.writerow(['Admission Number','Full Name','Class','Section','Account Status','Activated','Total Points','Academic','Sports','Character','Activity'])
     for r in rows:
@@ -63,14 +63,19 @@ def admin_challenges_report_csv(request: Request):
 def admin_students(request: Request):
     require_admin(request,'students')
     with connect() as conn:
-        rows=conn.execute('''SELECT u.*,COALESCE(SUM(p.amount),0) points FROM users u LEFT JOIN point_transactions p ON p.user_id=u.id
-                             WHERE u.role='student' GROUP BY u.id ORDER BY u.id DESC''').fetchall()
-    return render(request,'admin_students.html',{'students':rows})
+        rows=conn.execute('''SELECT u.*, sp.profile_json, COALESCE(SUM(p.amount),0) points FROM users u
+                             LEFT JOIN academy_signup_profiles sp ON sp.user_id=u.id
+                             LEFT JOIN point_transactions p ON p.user_id=u.id
+                             WHERE u.role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved') GROUP BY u.id,sp.profile_json ORDER BY u.id DESC''').fetchall()
+        students=[]
+        for row in rows:
+            item=dict(row); item['academy_profile']=academy_profile_from_row(row); students.append(item)
+    return render(request,'admin_students.html',{'students':students,'academy_grades':ACADEMY_GRADES})
 
 @app.get('/admin/students/import-template.csv')
 def admin_student_import_template(request: Request):
     require_admin(request,'students')
-    content='Admission Number,Full Name,Class,Section\\nA-7001,Student Name,10,A\\n'
+    content='Admission Number,Full Name,Grade,Section\nA-7001,Student Name,O-Level - Grade 10,A\n'
     return Response(content,media_type='text/csv',headers={'Content-Disposition':'attachment; filename="ascend_student_import_template.csv"'})
 
 @app.get('/admin/students/activation-codes.csv')
@@ -111,8 +116,8 @@ async def admin_students_import(request: Request, roster: UploadFile=File(...)):
                 errors.append(f'Row {idx}: invalid admission number {adm or "(blank)"}.'); continue
             if not name or len(name)>120:
                 errors.append(f'Row {idx}: missing or invalid student name.'); continue
-            if len(cl)>40 or len(sec)>40:
-                errors.append(f'Row {idx}: class or section is too long.'); continue
+            if (cl and cl not in ACADEMY_GRADES) or len(sec)>40:
+                errors.append(f'Row {idx}: choose a valid O-Level or A-Level grade and section.'); continue
             if adm in existing or adm in seen:
                 errors.append(f'Row {idx}: {adm} already exists; skipped.'); continue
             code=new_activation_code(); expiry=activation_expiry()
@@ -124,29 +129,61 @@ async def admin_students_import(request: Request, roster: UploadFile=File(...)):
     return render(request,'admin_import_result.html',{'created':created[:200],'created_count':len(created),'errors':errors[:100],'error_count':len(errors)})
 
 @app.post('/admin/students/create')
-def admin_student_create(request: Request, admission_no:str=Form(...), full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form('')):
+def admin_student_create(request: Request, admission_no:str=Form(...), full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form(''), password:str=Form('')):
     a=require_admin(request,'students'); admission_no=admission_no.strip().upper()
-    if not ADMISSION_RE.match(admission_no): return flash_redirect('/admin/students','Admission number format is invalid.','error')
-    code=new_activation_code()
+    if not ADMISSION_RE.fullmatch(admission_no): return flash_redirect('/admin/students','Admission number format is invalid.','error')
+    if class_name.strip() and class_name.strip() not in ACADEMY_GRADES: return flash_redirect('/admin/students','Choose a valid academy grade.','error')
     try:
+        name=_clean_text(full_name,120); grade=_clean_text(class_name,40,False); section=_clean_text(section_name,40,False)
+        if password and (len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password)):
+            raise ValueError('Student password must be 8–128 characters and include letters and numbers.')
+        # Old roster integrations can still issue a code; the admin form creates
+        # an immediately usable password-based account instead.
+        code=None if password else new_activation_code()
         with connect() as conn:
-            conn.execute('''INSERT INTO users(admission_no,full_name,role,status,class_name,section_name,activation_code,activation_code_expires_at,claimed,created_at)
-                            VALUES (?,?,"student","unclaimed",?,?,?,?,0,?)''',(admission_no,_clean_text(full_name,120),_clean_text(class_name,40,False),_clean_text(section_name,40,False),code,activation_expiry(),iso_now()))
+            conn.execute('''INSERT INTO users(admission_no,full_name,password_hash,role,status,class_name,section_name,activation_code,activation_code_expires_at,claimed,created_at)
+                            VALUES (?,?,?,"student",?,?,?,?,?,?,?)''',
+                         (admission_no,name,hash_password(password) if password else None,'active' if password else 'unclaimed',grade,section,code,activation_expiry() if code else None,1 if password else 0,iso_now()))
             audit(conn,a['id'],'student_created',admission_no)
-        return flash_redirect('/admin/students',f'Student added. Activation code: {code}')
-    except sqlite3.IntegrityError:
+        return flash_redirect('/admin/students','Student account created. Share the student ID and password securely.' if password else f'Student added. Activation code: {code}')
+    except ValueError as exc:
+        return flash_redirect('/admin/students',str(exc),'error')
+    except INTEGRITY_ERRORS:
         return flash_redirect('/admin/students','That admission number already exists.','error')
 
 
 @app.post('/admin/students/{student_id}/edit')
-def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form('')):
+def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...), class_name:str=Form(''), section_name:str=Form(''),
+                       guardian_name:Optional[str]=Form(None), phone:Optional[str]=Form(None), country_code:Optional[str]=Form(None),
+                       email:Optional[str]=Form(None), country:Optional[str]=Form(None), school_name:Optional[str]=Form(None),
+                       subjects_present:Optional[str]=Form(None), subjects:Optional[List[str]]=Form(None)):
     a=require_admin(request,'students')
     try:
         full_name=_clean_text(full_name,120); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
+        supplied={'guardianName':guardian_name,'phone':phone,'countryCode':country_code,'email':email,'country':country,'schoolName':school_name}
+        supplied={k:_clean_text(v,20 if k=='countryCode' else 200,False) for k,v in supplied.items() if v is not None}
+        if subjects_present is not None and any(x not in ACADEMY_SUBJECTS for x in (subjects or [])): raise ValueError('Choose valid subjects.')
+        if supplied.get('email') and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', supplied['email']): raise ValueError('Enter a valid email address.')
     except ValueError as exc: return flash_redirect('/admin/students',str(exc),'error')
     with connect() as conn:
+        student=conn.execute('SELECT id, class_name FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
+        if not student: return flash_redirect('/admin/students','Student not found.','error')
+        # Preserve untouched legacy values; never create new unsupported grades.
+        if class_name and class_name not in ACADEMY_GRADES and class_name != (student['class_name'] or ''):
+            return flash_redirect('/admin/students','Choose a valid academy grade.','error')
         conn.execute('UPDATE users SET full_name=?,class_name=?,section_name=? WHERE id=? AND role="student"',(full_name,class_name,section_name,student_id))
-        audit(conn,a['id'],'student_updated',f'{student_id}: {full_name.strip()}')
+        row=conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(student_id,)).fetchone()
+        if row or any(supplied.values()) or subjects_present is not None:
+            profile=academy_profile_from_row(row)
+            previous_subjects=profile.get('subjects',[])
+            if subjects_present is not None:
+                profile['subjects']=[s for s in ACADEMY_SUBJECTS if s in (subjects or [])]
+                if profile['subjects'] != previous_subjects:
+                    notify(conn,student_id,'Subjects updated','Your enrolled subjects have changed. Open My Classes to see your timetable.')
+            profile.update(supplied); profile['fullName']=full_name; profile['grade']=class_name; profile['section']=section_name
+            if class_name in ACADEMY_GRADES: profile['program']='O-Level' if class_name.startswith('O-Level') else 'A-Level'
+            conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET profile_json=excluded.profile_json', (student_id,json.dumps(profile),iso_now()))
+        audit(conn,a['id'],'student_updated',f'{student_id}: {full_name}')
     return flash_redirect('/admin/students','Student details updated.')
 
 @app.post('/admin/students/{student_id}/photo')
@@ -170,10 +207,7 @@ def admin_student_photo_remove(request: Request, student_id:int):
         student=conn.execute('SELECT id,admission_no FROM users WHERE id=? AND role="student"',(student_id,)).fetchone()
         if not student: return flash_redirect('/admin/students','Student not found.','error')
         conn.execute('UPDATE users SET profile_picture_path=NULL WHERE id=?',(student_id,)); audit(conn,a['id'],'student_profile_photo_removed',student['admission_no'])
-    path=UPLOAD_DIR/f'profile_{student_id}.webp'
-    if path.exists():
-        try: path.unlink()
-        except OSError: pass
+    delete_upload(f'profile_{student_id}.webp')
     return flash_redirect('/admin/students','Student profile picture removed.')
 
 @app.post('/admin/students/{student_id}/status')
@@ -181,13 +215,32 @@ def admin_student_status(request: Request, student_id:int, status:str=Form(...))
     a=require_admin(request,'students')
     if status not in {'active','disabled','unclaimed'}: return flash_redirect('/admin/students','Invalid status.','error')
     with connect() as conn:
+        if conn.execute("SELECT 1 FROM student_admissions WHERE user_id=? AND status!='approved'",(student_id,)).fetchone(): return flash_redirect('/admin/admissions','Review this application before changing its status.','error')
         conn.execute('UPDATE users SET status=? WHERE id=? AND role="student"',(status,student_id))
         if status!='active': conn.execute('DELETE FROM sessions WHERE user_id=?',(student_id,))
         audit(conn,a['id'],'student_status_changed',f'{student_id}->{status}')
     return flash_redirect('/admin/students','Student status updated.')
 
 @app.post('/admin/students/{student_id}/reset')
-def admin_student_reset(request: Request, student_id:int):
-    a=require_admin(request,'students'); code=new_activation_code()
-    with connect() as conn:
-        conn.execute
+def admin_student_reset(request: Request, student_id:int, password:str=Form('')):
+    a=require_admin(request,'students')
+    try:
+        if password and (len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password)):
+            raise ValueError('Temporary password must be 8–128 characters and include letters and numbers.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute("SELECT 1 FROM student_admissions WHERE user_id=? AND status!='approved'",(student_id,)).fetchone(): return flash_redirect('/admin/admissions','Review this application before resetting its account.','error')
+            current=conn.execute("SELECT id,admission_no FROM users WHERE id=? AND role='student'",(student_id,)).fetchone()
+            if not current: raise HTTPException(404)
+            if password:
+                conn.execute('UPDATE users SET password_hash=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=? AND role="student"',(hash_password(password),student_id))
+                message=f'Password reset for {current["admission_no"]}. Share the new password securely; old sessions were signed out.'
+            else:
+                code=new_activation_code()
+                conn.execute('UPDATE users SET password_hash=NULL,claimed=0,status="unclaimed",activation_code=?,activation_code_expires_at=? WHERE id=? AND role="student"',(code,activation_expiry(),student_id))
+                message=f'Account reset. New activation code: {code}'
+            conn.execute('DELETE FROM sessions WHERE user_id=?',(student_id,))
+            audit(conn,a['id'],'student_password_reset',f'student_id={student_id}')
+    except ValueError as exc:
+        return flash_redirect('/admin/students',str(exc),'error')
+    return flash_redirect('/admin/students',message)

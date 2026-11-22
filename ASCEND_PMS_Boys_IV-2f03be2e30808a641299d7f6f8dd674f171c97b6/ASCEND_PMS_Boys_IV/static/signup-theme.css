@@ -1,0 +1,4 @@
+@font-face{font-family:Inter;src:url('/static/fonts/inter-latin-wght-normal.woff2') format('woff2');font-weight:100 900;font-display:swap}
+:focus-visible{outline:3px solid #39a888;outline-offset:3px}
+.signup-mascot svg{filter:hue-rotate(145deg) saturate(.7)}
+@media(max-width:1023px){.signup-mascot{visibility:hidden}}

@@ -4,7 +4,7 @@
 <div class="reward-grid">
 {% for a in achievements %}
 <article class="reward-card category-{{ a.category }}">
-  <div class="reward-symbol">✦</div>
+  <div class="reward-symbol"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons.svg#award"></use></svg></div>
   <span class="eyebrow">{{ a.category|title }} · {{ a.points_required }} pts</span>
   <h2>{{ a.name }}</h2><p>{{ a.description }}</p>
   {% set pct = (a.current_points * 100 / a.points_required)|int if a.points_required else 100 %}

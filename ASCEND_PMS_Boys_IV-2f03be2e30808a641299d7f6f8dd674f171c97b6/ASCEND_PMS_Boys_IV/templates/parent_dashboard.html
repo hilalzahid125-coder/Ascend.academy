@@ -1,0 +1,74 @@
+{% extends "base.html" %}{% block content %}
+<section class="page-head overview-banner parent-welcome">
+  <div>
+    <span class="eyebrow">PARENT WORKSPACE</span>
+    <h1>Welcome, {{ user.full_name }}.</h1>
+    <p>A clear picture of your student’s recorded academy activity — open any section from the menu.</p>
+  </div>
+  {% if children|length > 1 %}<form class="fee-period-filter" method="get" action="/parent"><label>Student<select name="child">{% for s in children %}<option value="{{ s.id }}" {{ 'selected' if s.id==child.id else '' }}>{{ s.full_name }} · {{ s.admission_no }}</option>{% endfor %}</select></label><button class="btn primary">View student</button></form>{% endif %}
+</section>
+{% if child %}
+<section class="panel academy-profile-summary parent-child-card">
+  <div class="panel-head">
+    <div>
+      <span class="eyebrow">STUDENT</span>
+      <h2>{{ child.full_name }}</h2>
+    </div>
+    <div class="fee-actions">
+      <a class="btn primary small" href="/parent/children/{{ child.id }}/report">View progress report</a>
+      <a class="btn ghost small" href="/parent/children/{{ child.id }}/report.pdf" download>Download report</a>
+    </div>
+  </div>
+  <div class="academy-details-grid">
+    <div><span>Student ID</span><strong>{{ child.admission_no }}</strong></div>
+    <div><span>Grade / section</span><strong>{{ child.class_name or 'Not set' }}{% if child.section_name %} · {{ child.section_name }}{% endif %}</strong></div>
+    <div><span>Assigned teachers</span><strong>{{ teachers|join(', ') or 'Not assigned' }}</strong></div>
+    <div><span>Academic session</span><strong>{% if academic_session %}{{ academic_session.name }}{% else %}Not set for today{% endif %}</strong>{% if academic_session %}<small>{{ academic_session.start }} – {{ academic_session.end }}</small>{% endif %}</div>
+  </div>
+</section>
+
+<section class="panel parent-overview-panel" aria-labelledby="parent-overview-heading">
+  <div class="panel-head">
+    <div><span class="eyebrow">AT A GLANCE</span><h2 id="parent-overview-heading">{{ child.full_name }}’s overview</h2></div>
+  </div>
+  <div class="fee-stats parent-overview-stats">
+    <div class="ov-stat"><span>Overall performance</span><strong class="{{ 'good' if academic_performance is not none and academic_performance >= 75 else '' }}">{{ (academic_performance|string ~ '%') if academic_performance is not none else 'Not recorded' }}</strong><small>Average of approved assessment percentages</small></div>
+    <div class="ov-stat"><span>Attendance</span><strong class="{{ 'good' if present+missed and (present*100/(present+missed)) >= 90 else '' }}">{{ ((present*100/(present+missed))|round|int|string ~ '%') if present+missed else 'Not recorded' }}</strong><small>Completed sessions marked present or late</small></div>
+    <div class="ov-stat"><span>Current learning streak</span><strong>{{ learning_streak }} {{ 'day' if learning_streak==1 else 'days' }}</strong><small>Consecutive recorded class days attended</small></div>
+    <div class="ov-stat"><span>Total achievements</span><strong>{{ achievements|length }}</strong><small>Achievements earned</small></div>
+    <div class="ov-stat"><span>Teacher feedback</span><strong class="{{ 'warn' if feedback_open }}">{{ feedback_open }} awaiting reply</strong><small>{{ feedback_threads|length }} approved note{{ '' if feedback_threads|length==1 else 's' }} · <a href="/parent/children/{{ child.id }}/feedback">Open feedback</a></small></div>
+    <div class="ov-stat"><span>Total points</span><strong>{{ points }}</strong><small>From the academy points ledger</small></div>
+    <div class="ov-stat"><span>Leaderboard position</span><strong class="{{ 'good' if ranks['Overall'] and ranks['Overall'] <= 10 else '' }}">{{ '#' ~ ranks['Overall'] if ranks['Overall'] else 'Not available' }}</strong><small>Overall points ranking</small></div>
+    <div class="ov-stat"><span>Pending assignments</span><strong>{{ progress_counts.assignments_pending }}</strong><small>Approved teacher records</small></div>
+    <div class="ov-stat"><span>Outstanding fee balance</span>{% if totals %}{% for currency,total in totals %}<strong class="{{ 'warn' if total.balance > 0 else 'good' }}">{{ currency }} {{ total.balance|fee_money }}</strong>{% endfor %}<small>Approved payments and waivers deducted</small>{% else %}<strong>Not assigned</strong><small>No fee records</small>{% endif %}</div>
+  </div>
+  <p class="muted parent-overview-note">Figures come from approved academy records. Streaks count recorded class days: a non-holiday absence breaks the streak; late counts as attended, and holiday absences, excused-only or unmarked days do not.</p>
+</section>
+
+<div class="parent-overview-grid">
+  <section class="panel parent-notices-panel" aria-labelledby="parent-notices-heading">
+    <div class="panel-head">
+      <div><span class="eyebrow">UPDATES</span><h2 id="parent-notices-heading">Recent notifications</h2></div>
+      <a class="panel-link" href="/parent/notifications">View all{% if parent_unread %} · {{ parent_unread }} unread{% endif %}</a>
+    </div>
+    {% for n in parent_notices %}<article class="notification-row {{ '' if n.is_read else 'unread' }}"><div class="notification-dot" aria-hidden="true"></div><div class="grow"><div class="notification-head"><strong>{{ n.title }}</strong><span class="notif-cat">{{ n.kind|title }}</span></div><p>{{ n.body }}</p><small>{{ n.created_at[:16].replace('T',' ') }}</small></div></article>{% else %}<div class="empty compact">No notifications yet.</div>{% endfor %}
+  </section>
+
+  <section class="panel parent-classes-panel" aria-labelledby="parent-classes-heading">
+    <div class="panel-head">
+      <div><span class="eyebrow">TIMETABLE</span><h2 id="parent-classes-heading">Upcoming classes</h2></div>
+      <a class="panel-link" href="/parent/children/{{ child.id }}/classes">View timetable</a>
+    </div>
+    <div class="schedule-list">{% for s in upcoming_classes[:5] %}<article class="schedule-card"><div class="schedule-main"><div class="schedule-subject"><strong>{{ s.subject }}</strong><span>{{ s.grade }}</span></div><div><span class="class-label">DAY</span><strong>{{ s.day_label }}</strong></div><div><span class="class-label">TIME</span><strong>{{ s.start_time }} – {{ s.end_time }}</strong></div><div><span class="class-label">TEACHER</span><strong>{{ s.teacher_name }}</strong></div></div></article>{% else %}<div class="class-empty">No current classes are assigned to this student.</div>{% endfor %}</div>
+  </section>
+
+  <section class="panel parent-announce-panel" aria-labelledby="parent-announce-heading">
+    <div class="panel-head">
+      <div><span class="eyebrow">ACADEMY UPDATES</span><h2 id="parent-announce-heading">Announcements</h2></div>
+      <a class="btn tiny ghost" href="/parent/announcements">View all</a>
+    </div>
+    {% for a in announcements %}<article class="notice"><strong>{{ a.title }}</strong><p>{{ a.body }}</p><small>{{ a.created_at[:10] }}</small></article>{% else %}<div class="empty compact">No announcements at this time.</div>{% endfor %}
+  </section>
+</div>
+{% else %}<section class="panel"><div class="empty"><strong>No student linked yet</strong><p>Ask the academy Super Admin to link your account to your child.</p></div></section>{% endif %}
+{% endblock %}

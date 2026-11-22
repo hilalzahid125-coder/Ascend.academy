@@ -1,0 +1,45 @@
+{% extends "base.html" %}{% block title %}Feedback conversation · {{ settings.app_name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><span class="eyebrow">{{ 'ACADEMY OFFICE' if staff_role=='admin' else 'TEACHING' }}</span><h1>{{ thread.title }}</h1>
+  <p>{{ thread.student_name }} · {{ thread.admission_no }}{% if thread.class_name %} · {{ thread.class_name }}{% endif %} · {{ thread.subject }} · {{ thread.record_date }}</p></div>
+  <a class="btn ghost" href="{{ feedback_root }}">Back to feedback</a>
+</section>
+
+<section class="feedback-thread{{ ' awaiting' if thread.awaiting_staff }}">
+  <header class="feedback-head">
+    <div><span class="feedback-badge">{{ feedback_labels.get(thread.feedback_type,'General feedback') }}</span>
+      <p class="feedback-meta">Written by {{ thread.teacher_name }}{% if thread.period_start and thread.period_end %} · covers {{ thread.period_start }} – {{ thread.period_end }}{% endif %}</p></div>
+    <span class="feedback-state {{ 'open' if thread.awaiting_staff else 'done' }}">{{ 'Parent replied' if thread.awaiting_staff else ('No reply yet' if not thread.reply_count else 'Answered') }}</span>
+  </header>
+  <p class="feedback-help">{{ feedback_help.get(thread.feedback_type,'') }}</p>
+  <div class="feedback-body">{{ thread.details }}</div>
+
+  {% if thread.ack %}
+  <div class="feedback-ack">
+    <div><span>The family replied</span><strong>{{ thread.ack.label }}</strong><small>{{ thread.ack.author_name }} · {{ thread.ack.created_at[:16]|replace('T',' ') }}</small></div>
+  </div>
+  {% else %}
+  <p class="muted feedback-waiting">The family has not replied yet. Their one-tap answer appears here.</p>
+  {% endif %}
+
+  {% if thread.updates %}
+  <h3 class="feedback-subhead">Follow-up notes</h3>
+  <ol class="feedback-messages">
+    {% for m in thread.updates %}
+    <li class="fm {{ m.author_role }}">
+      <div class="fm-head"><strong>{{ m.author_name }}</strong><span>{{ 'Academy office' if m.author_role=='admin' else 'Teacher' }} · {{ m.created_at[:16]|replace('T',' ') }}</span></div>
+      <p>{{ m.body }}</p>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+
+  <form class="feedback-reply" method="post" action="{{ feedback_root }}/{{ thread.id }}/reply">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Add a follow-up note<textarea name="body" rows="3" maxlength="1200" required placeholder="Anything more the family should know about this note…"></textarea></label>
+    <button class="btn primary">Send note to family</button>
+  </form>
+</section>
+<p class="feedback-footnote">The family sees this note and can answer with one tap. Notes and answers are visible to the linked parents, the teacher who wrote the original note and the academy office; the original feedback stays unchanged.</p>
+{% endblock %}
