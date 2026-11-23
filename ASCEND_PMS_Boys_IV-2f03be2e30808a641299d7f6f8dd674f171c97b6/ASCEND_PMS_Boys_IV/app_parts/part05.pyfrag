@@ -156,7 +156,8 @@ def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...)
         full_name=_clean_text(full_name,120); class_name=_clean_text(class_name,40,False); section_name=_clean_text(section_name,40,False)
         supplied={'guardianName':guardian_name,'phone':phone,'countryCode':country_code,'email':email,'country':country,'schoolName':school_name}
         supplied={k:_clean_text(v,20 if k=='countryCode' else 200,False) for k,v in supplied.items() if v is not None}
-        if subjects_present is not None and any(x not in ACADEMY_SUBJECTS for x in (subjects or [])): raise ValueError('Choose valid subjects.')
+        valid_subjects = get_subjects()  # opens its own connection; conn is not open yet
+        if subjects_present is not None and any(x not in valid_subjects for x in (subjects or [])): raise ValueError('Choose valid subjects.')
         if supplied.get('email') and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', supplied['email']): raise ValueError('Enter a valid email address.')
     except ValueError as exc: return flash_redirect('/admin/students',str(exc),'error')
     with connect() as conn:
@@ -171,7 +172,7 @@ def admin_student_edit(request: Request, student_id:int, full_name:str=Form(...)
             profile=academy_profile_from_row(row)
             previous_subjects=profile.get('subjects',[])
             if subjects_present is not None:
-                profile['subjects']=[s for s in ACADEMY_SUBJECTS if s in (subjects or [])]
+                profile['subjects']=[s for s in valid_subjects if s in (subjects or [])]
                 if profile['subjects'] != previous_subjects:
                     notify(conn,student_id,'Subjects updated','Your enrolled subjects have changed. Open My Classes to see your timetable.')
             profile.update(supplied); profile['fullName']=full_name; profile['grade']=class_name; profile['section']=section_name

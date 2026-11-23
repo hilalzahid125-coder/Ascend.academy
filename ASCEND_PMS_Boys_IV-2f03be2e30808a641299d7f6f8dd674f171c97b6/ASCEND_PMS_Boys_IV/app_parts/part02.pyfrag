@@ -229,6 +229,9 @@ async def security_middleware(request: Request, call_next):
             length=0
         if length > MAX_POST_BYTES:
             return JSONResponse({'detail':'Request too large.'}, status_code=413)
+    # Subject lists are memoised per request (see db.get_subjects); start each
+    # request from a clean slate so an admin edit is visible immediately.
+    clear_subjects_cache()
     # Pending applicants may use only the isolated demo and account status.
     # Enforce this before routing, including APIs, files and unsafe methods.
     path=request.url.path
@@ -361,6 +364,9 @@ def _sign_in(request: Request, admission_no: str, password: str, parent_only: bo
                     if near: return flash_redirect(login_path,f'No account matches that ID. Did you mean {near["admission_no"]}?','error')
             return flash_redirect(login_path,'Incorrect parent ID or password.' if parent_only else 'Incorrect admission number or password.','error')
         pending_admission=conn.execute("SELECT status FROM student_admissions WHERE user_id=?",(u['id'],)).fetchone() if u['role']=='student' else None
+        # A disabled account cannot sign in. A rejected applicant is disabled by
+        # design, so the decision is communicated by the academy office rather
+        # than by reopening the account.
         if u['status']!='active' and not (u['status']=='pending' and pending_admission and pending_admission['status']=='pending'):
             _record_failure(conn,key); _record_failure(conn,ip_key)
             return flash_redirect(login_path,'This account is not active. Please contact the academy office.','error')
@@ -409,7 +415,8 @@ def academy_register(request: Request, profile: str=Form(...)):
                   'A-Level': ('A-Level - AS (Grade 12)', 'A-Level - A2 (Grade 13)')}
         if data['program'] not in grades or data['grade'] not in grades[data['program']]: raise ValueError()
         subjects = data.get('subjects')
-        if not isinstance(subjects, list) or not subjects or any(x not in ('Maths', 'Computer Science') for x in subjects): raise ValueError()
+        allowed_subjects = get_subjects()
+        if not isinstance(subjects, list) or not subjects or any(x not in allowed_subjects for x in subjects): raise ValueError()
         if data.get('terms') is not True: raise ValueError()
     except (ValueError, TypeError, json.JSONDecodeError):
         return fail('Please check your registration details and try again.')

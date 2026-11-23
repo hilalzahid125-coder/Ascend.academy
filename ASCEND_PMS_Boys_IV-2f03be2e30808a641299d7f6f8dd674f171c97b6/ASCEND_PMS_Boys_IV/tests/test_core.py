@@ -3421,3 +3421,169 @@ def test_sign_in_guidance_for_missing_password_and_o_zero_typo():
     r=post(client,'/login',{'admission_no':'ADMIN-001','password':'LetterOAdmin123'})
     assert 'Did%20you%20mean%20ADMIN-OO1' in r.headers['location']
     assert 'Incorrect' not in r.headers['location']
+
+
+def test_application_status_shows_real_details_and_date():
+    """A new applicant's status page reports what they actually submitted."""
+    import json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from db import init_db
+    init_db()
+    with connect() as c:
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        c.execute('DELETE FROM auth_attempts')
+    applicant=TestClient(app); csrf(applicant,'/register')
+    data={'full_name':'Status Applicant','email':'status@example.com','phone':'03001112222',
+          'grade':'A-Level - AS (Grade 12)','subject':'Maths','subjects':['Maths','Computer Science'],
+          'guardian_name':'Guardian Name','guardian_phone':'03003334444',
+          'password':'StudentPass123','confirm_password':'StudentPass123','terms':'yes'}
+    r=post(applicant,'/admission/register',data)
+    assert r.status_code==303 and r.headers['location']=='/admission/status'
+    page=applicant.get('/admission/status')
+    assert page.status_code==200
+    html=page.text
+    # Real details, not placeholder copy.
+    for expected in ('Status Applicant','status@example.com','03001112222','Guardian Name',
+                     'A-Level','Grade 12','Application submitted','Submitted on'):
+        assert expected in html, expected
+    # Every chosen subject is shown, not just the first.
+    assert 'Maths' in html and 'Computer Science' in html
+    # The submission date is rendered from the stored timestamp.
+    with connect() as c:
+        row=c.execute("SELECT a.created_at,a.subjects,a.full_name,u.admission_no FROM student_admissions a JOIN users u ON u.id=a.user_id WHERE a.full_name='Status Applicant'").fetchone()
+        temporary=row['admission_no']
+    stamp=datetime.fromisoformat(row['created_at'].replace('Z','+00:00')).astimezone(ZoneInfo('Asia/Karachi'))
+    assert stamp.strftime('%d %B %Y') in html
+    assert json.loads(row['subjects'])==['Maths','Computer Science']
+    assert temporary in html
+    # A single-subject post (older clients) still records and displays correctly.
+    legacy=TestClient(app); csrf(legacy,'/register')
+    r=post(legacy,'/admission/register',{'full_name':'Legacy Applicant','email':'legacy@example.com',
+        'phone':'1234567','grade':'O-Level - Grade 9','subject':'Maths','password':'StudentPass123',
+        'confirm_password':'StudentPass123','terms':'yes'})
+    assert r.status_code==303
+    legacy_html=legacy.get('/admission/status').text
+    assert 'Legacy Applicant' in legacy_html and 'Maths' in legacy_html and 'Submitted on' in legacy_html
+    # After approval the same page shows the permanent ID and unlocks the workspace.
+    owner=TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    with connect() as c: uid=c.execute("SELECT id FROM users WHERE full_name='Status Applicant'").fetchone()['id']
+    assert post(owner,f'/admin/admissions/{uid}/review',{'decision':'approve'}).status_code==303
+    approved=applicant.get('/admission/status').text
+    with connect() as c: permanent=c.execute('SELECT admission_no FROM users WHERE id=?',(uid,)).fetchone()['admission_no']
+    assert permanent in approved and 'Welcome aboard' in approved and 'Approved on' in approved
+    assert applicant.get('/student').status_code==200
+
+
+def test_admission_register_validates_subject_choices():
+    """The endpoint accepts many subjects but never an empty or unknown one."""
+    with connect() as c:
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        c.execute('DELETE FROM auth_attempts')
+    base={'full_name':'Validation Applicant','email':'validate@example.com','phone':'1234567',
+          'grade':'O-Level - Grade 9','password':'StudentPass123','confirm_password':'StudentPass123','terms':'yes'}
+    client=TestClient(app); csrf(client,'/register')
+    for label, payload in (
+        ('none', {'subject':''}),
+        ('unknown', {'subject':'Underwater Basket Weaving'}),
+        ('mixed', {'subject':'Maths','subjects':['Maths','Not A Subject']}),
+        ('empty list', {'subject':'','subjects':[]}),
+    ):
+        r=post(client,'/admission/register',{**base,**payload})
+        assert r.status_code==303, label
+        assert r.headers['location'].startswith('/register?msg='), label
+        assert 'Choose%20a%20valid%20grade' in r.headers['location'], label
+    with connect() as c:
+        assert c.execute("SELECT COUNT(*) n FROM users WHERE full_name='Validation Applicant'").fetchone()['n']==0
+
+
+def test_super_admin_can_manage_subjects_everywhere():
+    """A subject added in the panel appears in every subject list immediately."""
+    with connect() as c:
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        c.execute('DELETE FROM auth_attempts')
+    owner=TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    assert owner.get('/admin/subjects').status_code==200
+    page=owner.get('/admin/subjects').text
+    assert 'Academy subjects' in page and 'Maths' in page and 'Computer Science' in page
+    # Add Physics; it must show up without any further code change.
+    r=post(owner,'/admin/subjects/create',{'name':'Physics'})
+    assert r.status_code==303 and 'Physics' in owner.get('/admin/subjects').text
+    wizard=owner.get('/api/subjects')
+    assert wizard.status_code==200 and 'Physics' in wizard.json()['subjects']
+    # Every screen that offers a subject dropdown lists it, because the shared
+    # template context now reads the database instead of a frozen constant.
+    for path in ('/admin/challenges','/admin/students','/admin/my-classes'):
+        body=owner.get(path)
+        assert body.status_code==200, path
+        assert 'Physics' in body.text, path
+    # Duplicate names are rejected case-insensitively.
+    r=post(owner,'/admin/subjects/create',{'name':'physics'})
+    assert r.headers['location'].startswith('/admin/subjects?msg=') and 'already' in r.headers['location'].lower()
+    # A free subject can be renamed, then deleted.
+    with connect() as c: subject_id=c.execute("SELECT id FROM academy_subjects WHERE name='Physics'").fetchone()['id']
+    assert post(owner,'/admin/subjects/rename',{'subject_id':subject_id,'name':'Natural Sciences'}).status_code==303
+    assert 'Natural Sciences' in owner.get('/admin/subjects').text
+    assert 'Natural Sciences' in owner.get('/api/subjects').json()['subjects']
+    assert 'Physics' not in owner.get('/api/subjects').json()['subjects']
+    assert post(owner,'/admin/subjects/remove',{'subject_id':subject_id}).status_code==303
+    assert 'Natural Sciences' not in owner.get('/admin/subjects').text
+    assert 'Natural Sciences' not in owner.get('/api/subjects').json()['subjects']
+    # A subject used by a real record can be retired but never deleted.
+    with connect() as c:
+        c.execute("INSERT INTO challenges(title,description,subject,status,created_at) VALUES ('In-use Challenge','Covers the Maths syllabus','Maths','draft',?)",(iso_now(),))
+    with connect() as c: maths_id=c.execute("SELECT id FROM academy_subjects WHERE name='Maths'").fetchone()['id']
+    r=post(owner,'/admin/subjects/remove',{'subject_id':maths_id})
+    assert 'Retire' in r.headers['location'] or 'retire' in r.headers['location']
+    assert 'Maths' in owner.get('/api/subjects').text
+    assert post(owner,'/admin/subjects/toggle',{'subject_id':maths_id,'activate':'0'}).status_code==303
+    assert 'Maths' not in owner.get('/api/subjects').json()['subjects']
+    # The last active subject can never be retired.
+    with connect() as c:
+        c.execute('UPDATE academy_subjects SET is_active=0 WHERE name<>?',('Computer Science',))
+    remaining=owner.get('/api/subjects').json()['subjects']
+    assert remaining==['Computer Science']
+    with connect() as c: cs_id=c.execute("SELECT id FROM academy_subjects WHERE name='Computer Science'").fetchone()['id']
+    r=post(owner,'/admin/subjects/toggle',{'subject_id':cs_id,'activate':'0'})
+    assert 'at%20least%20one' in r.headers['location']
+    assert post(owner,'/admin/subjects/toggle',{'subject_id':cs_id,'activate':'0'})
+    assert owner.get('/api/subjects').json()['subjects']==['Computer Science']
+    # Restore state for later tests.
+    with connect() as c:
+        c.execute("UPDATE academy_subjects SET is_active=1")
+        c.execute("DELETE FROM challenges WHERE title='In-use Challenge'")
+    from db import clear_subjects_cache
+    clear_subjects_cache()
+
+
+def test_subject_management_is_super_admin_only():
+    with connect() as c:
+        c.execute('DELETE FROM auth_attempts')
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,admin_level,admin_permissions,created_at) VALUES ('A-778899','Limited Admin',?,'admin','active',1,'staff','students',?)",(hash_password('LimitedAdmin123'),iso_now()))
+    limited=TestClient(app); csrf(limited); post(limited,'/login',{'admission_no':'A-778899','password':'LimitedAdmin123'})
+    assert limited.get('/admin/subjects').status_code==403
+    assert post(limited,'/admin/subjects/create',{'name':'Biology'}).status_code==403
+    with connect() as c:
+        assert not c.execute("SELECT 1 FROM academy_subjects WHERE name='Biology'").fetchone()
+    # Guests are sent to sign in, never shown the panel.
+    guest=TestClient(app)
+    assert guest.get('/admin/subjects',follow_redirects=False).status_code in (303,401,403)
+
+
+def test_admin_admissions_lists_every_requested_subject():
+    """Reviewers must see the full subject choice, not just the first one."""
+    from db import init_db
+    init_db()
+    with connect() as c:
+        c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+        c.execute('DELETE FROM auth_attempts')
+    applicant=TestClient(app); csrf(applicant,'/register')
+    post(applicant,'/admission/register',{'full_name':'Two Subjects Applicant','email':'two@example.com',
+        'phone':'1234567','grade':'O-Level - Grade 10','subject':'Maths',
+        'subjects':['Maths','Computer Science'],'password':'StudentPass123',
+        'confirm_password':'StudentPass123','terms':'yes'})
+    owner=TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    page=owner.get('/admin/admissions').text
+    assert 'Two Subjects Applicant' in page
+    marker=page.split('Two Subjects Applicant',1)[1].split('</article>',1)[0]
+    assert 'Maths' in marker and 'Computer Science' in marker

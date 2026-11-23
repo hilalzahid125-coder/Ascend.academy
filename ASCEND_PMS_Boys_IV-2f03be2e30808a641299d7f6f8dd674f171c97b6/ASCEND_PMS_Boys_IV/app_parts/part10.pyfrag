@@ -44,6 +44,17 @@ def _fee_format(value):
 templates.env.filters['fee_money']=_fee_format
 templates.env.filters['fee_input']=lambda value: f'{int(value)//100}.{int(value)%100:02d}'
 
+def _long_date(value):
+    """Render a stored ISO timestamp as e.g. '19 November 2026' (Pakistan time)."""
+    if not value: return ''
+    try:
+        stamp=datetime.fromisoformat(str(value).replace('Z','+00:00'))
+        if stamp.tzinfo is None: stamp=stamp.replace(tzinfo=timezone.utc)
+        return stamp.astimezone(ZoneInfo('Asia/Karachi')).strftime('%d %B %Y')
+    except (ValueError, TypeError):
+        return str(value)
+templates.env.filters['long_date']=_long_date
+
 def _fee_rows(conn, student_id=None):
     query='''SELECT f.*,u.full_name,u.admission_no,u.class_name,
        COALESCE((SELECT SUM(p.amount) FROM fee_payments p WHERE p.fee_id=f.id AND p.status='approved'),0) paid,

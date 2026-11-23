@@ -1,0 +1,44 @@
+{% extends "base.html" %}{% block content %}
+<section class="page-head overview-banner"><div><span class="eyebrow">SUPER ADMIN</span><h1>Academy subjects</h1><p>Subjects are used by student registration, class scheduling, challenges, teaching progress and parent reports. Add one here and it appears everywhere immediately.</p></div><div class="action-row"><a class="btn ghost" href="/register" target="_blank" rel="noopener">Preview sign-up form</a></div></section>
+
+<section class="fee-section"><h2>Add a subject</h2>
+<form method="post" action="/admin/subjects/create" class="fee-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="fee-form-grid"><label>Subject name<input name="name" maxlength="40" required placeholder="e.g. Physics" autocomplete="off"></label></div>
+<button class="btn primary">Add subject</button></form>
+<small class="muted">Names are unique. Adding a subject never changes existing student records.</small></section>
+
+<section class="fee-section"><h2>Current subjects</h2>
+{% for s in subjects %}
+<article class="fee-entry">
+  <div class="fee-entry-head">
+    <div>
+      <h3>{{ s.name }}{% if not s.is_active %} <span class="badge disabled">retired</span>{% endif %}</h3>
+      <p>{{ s.usage }} {{ 'student' if s.usage == 1 else 'students' }} · {{ s.classes }} {{ 'class' if s.classes == 1 else 'classes' }} · {{ s.challenges }} {{ 'challenge' if s.challenges == 1 else 'challenges' }}</p>
+    </div>
+    <div class="action-row">
+      <form method="post" action="/admin/subjects/rename" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="subject_id" value="{{ s.id }}">
+        <input name="name" value="{{ s.name }}" maxlength="40" required aria-label="Rename {{ s.name }}" class="table-search">
+        <button class="btn ghost small">Rename</button></form>
+      {% if s.is_active %}
+      <form method="post" action="/admin/subjects/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="subject_id" value="{{ s.id }}"><input type="hidden" name="activate" value="0"><button class="btn ghost small">Retire</button></form>
+      {% else %}
+      <form method="post" action="/admin/subjects/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="subject_id" value="{{ s.id }}"><input type="hidden" name="activate" value="1"><button class="btn ghost small">Restore</button></form>
+      {% endif %}
+      {% if s.usage or s.classes or s.challenges or s.progress %}
+        <span class="muted small" title="Subjects attached to real records can only be retired, never deleted, so no history is orphaned.">In use — retire instead</span>
+      {% else %}
+      <form method="post" action="/admin/subjects/remove"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="subject_id" value="{{ s.id }}"><button class="btn danger small" onclick="return confirm('Delete {{ s.name }}? This cannot be undone.')">Delete</button></form>
+      {% endif %}
+    </div>
+  </div>
+</article>
+{% else %}<div class="fee-empty">No subjects yet. Add the first one above.</div>{% endfor %}
+</section>
+
+<section class="fee-section"><h2>How this works</h2>
+<ul class="muted" style="line-height:1.9;margin:0;padding-left:1.1rem">
+  <li><strong>Retire</strong> hides a subject from new registrations and every dropdown while keeping past records intact. You can restore it any time.</li>
+  <li><strong>Delete</strong> is only offered for subjects that no student, class, challenge or progress record references — so nothing is ever orphaned.</li>
+  <li>Grades (O-Level and A-Level) are fixed to the school's exam structure and are not editable here.</li>
+</ul></section>
+{% endblock %}

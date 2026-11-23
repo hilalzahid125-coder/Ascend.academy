@@ -36,7 +36,7 @@ const countryStateMap: Record<string, string[]> = {
 }
 
 const programOptions = ["O-Level", "A-Level"]
-const subjectOptions = ["Maths", "Computer Science"]
+const DEFAULT_SUBJECTS = ["Maths", "Computer Science"]
 const gradeOptionsByProgram: Record<string, string[]> = {
   "O-Level": ["O-Level - Grade 9", "O-Level - Grade 10", "O-Level - Grade 11"],
   "A-Level": ["A-Level - AS (Grade 12)", "A-Level - A2 (Grade 13)"],
@@ -61,6 +61,23 @@ export default function App() {
   const [step, setStep] = useState(1)
 
   useEffect(() => { document.title = `Join ${APP_NAME}` }, [])
+
+  /* Subjects are administrator-managed. Load the live list so anything the
+     academy adds shows up here without a rebuild; fall back to the defaults
+     if the request fails so the form always works. */
+  const [subjectOptions, setSubjectOptions] = useState<string[]>(DEFAULT_SUBJECTS)
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/subjects", { headers: { Accept: "application/json" }, credentials: "same-origin" })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (cancelled || !data || !Array.isArray(data.subjects)) return
+        const clean = data.subjects.filter((x: unknown) => typeof x === "string" && x.length > 0)
+        if (clean.length) setSubjectOptions(clean)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
   const [focusedField, setFocusedField] = useState<string | null>(null)
   const [showSuccessConfetti, setShowSuccessConfetti] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -517,6 +534,9 @@ export default function App() {
     body.append("email", formData.email.trim())
     body.append("phone", (formData.countryCode + " " + formData.phone).trim())
     body.append("grade", formData.grade)
+    /* Send every chosen subject; the wizard allows more than one. The first
+       is repeated in "subject" so older servers keep working unchanged. */
+    for (const subject of formData.subjects) body.append("subjects", subject)
     body.append("subject", formData.subjects[0] || "Maths")
     body.append("guardian_name", formData.guardianName.trim())
     body.append("guardian_phone", formData.guardianPhone.trim())
@@ -665,12 +685,12 @@ export default function App() {
   const availableGrades = formData.program ? gradeOptionsByProgram[formData.program] || [] : [...gradeOptionsByProgram["O-Level"], ...gradeOptionsByProgram["A-Level"]]
 
   return (
-    <div className="min-h-screen bg-white text-[#1A1A1A] selection:bg-[#C20A0A] selection:text-white overflow-x-hidden" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
+    <div className="min-h-screen bg-white text-[#1A1A1A] selection:bg-[#0B7F61] selection:text-white overflow-x-hidden" style={{ fontFamily: "Inter, system-ui, sans-serif" }}>
       {/* Ambient page light (pure white base + soft premium tint) */}
       <div className="pointer-events-none fixed inset-0 z-0">
-        <div className="absolute -top-40 -left-32 w-[520px] h-[520px] rounded-full bg-[#C20A0A]/[0.055] blur-[110px]" />
+        <div className="absolute -top-40 -left-32 w-[520px] h-[520px] rounded-full bg-[#0B7F61]/[0.055] blur-[110px]" />
         <div className="absolute top-[30%] -right-40 w-[480px] h-[480px] rounded-full bg-[#F59E0B]/[0.06] blur-[120px]" />
-        <div className="absolute bottom-0 left-1/3 w-[420px] h-[420px] rounded-full bg-[#C20A0A]/[0.04] blur-[120px]" />
+        <div className="absolute bottom-0 left-1/3 w-[420px] h-[420px] rounded-full bg-[#0B7F61]/[0.04] blur-[120px]" />
       </div>
 
       {/* ══════ FREE-FLYING MASCOT — portalled straight into <body> so it
@@ -765,15 +785,15 @@ export default function App() {
         <div className="mx-auto max-w-[1280px] px-4 sm:px-6 lg:px-8 h-[64px] flex items-center justify-between">
           <div className="flex items-center gap-8">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-[#C20A0A] flex items-center justify-center text-white font-black text-[16px] tracking-tighter shadow-[0_6px_16px_rgba(194,10,10,0.28)]">E</div>
+              <div className="w-9 h-9 rounded-xl bg-[#0B7F61] flex items-center justify-center text-white font-black text-[16px] tracking-tighter shadow-[0_6px_16px_rgba(11,127,97,0.28)]">{APP_NAME.charAt(0)}</div>
               <span className="font-extrabold text-[18px] tracking-tight" style={{ fontFamily: "var(--font-display)" }}>{APP_NAME}</span>
               <span className="hidden sm:inline text-[11px] font-bold tracking-widest text-black/40 ml-1">ACADEMY</span>
             </div>
             <nav className="hidden lg:flex items-center gap-6 text-[13px] font-semibold text-black/60">
-              <a className="text-black">Admission</a>
-              <a>Programs</a>
-              <a>Campus</a>
-              <a>Support</a>
+              <a href="/register" className="text-black" aria-current="page">Join</a>
+              <a href="/explore" className="hover:text-black">Explore</a>
+              <a href="/about" className="hover:text-black">About</a>
+              <a href="/privacy" className="hover:text-black">Privacy</a>
             </nav>
           </div>
           <div className="flex items-center gap-3">
@@ -781,12 +801,12 @@ export default function App() {
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               Admissions open — O & A Levels
             </div>
-            <button className="hidden sm:inline-flex px-4 py-2 rounded-full border border-black/10 text-[13px] font-bold">Sign in</button>
-            <button className="px-4 py-2 rounded-full bg-[#C20A0A] text-white text-[13px] font-bold shadow-[0_8px_20px_rgba(194,10,10,0.25)]">Apply now</button>
+            <a href="/login" className="hidden sm:inline-flex px-4 py-2 rounded-full border border-black/10 text-[13px] font-bold hover:bg-black/[0.03] transition">Sign in</a>
+            <a href="/" className="px-4 py-2 rounded-full bg-[#0B7F61] text-white text-[13px] font-bold shadow-[0_8px_20px_rgba(11,127,97,0.25)] hover:bg-[#066B53] transition">Home</a>
           </div>
         </div>
         <div className="h-[3px] bg-black/[0.06] w-full">
-          <div ref={progressRef} className="h-full bg-[#C20A0A] w-[20%]" />
+          <div ref={progressRef} className="h-full bg-[#0B7F61] w-[20%]" />
         </div>
       </header>
 
@@ -798,12 +818,12 @@ export default function App() {
               <div className="px-6 sm:px-8 pt-6 sm:pt-8 pb-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="px-2.5 py-1 rounded-full bg-[#FFF0F0] border border-[#C20A0A]/20 text-[#C20A0A] text-[11px] font-extrabold tracking-widest">STEP {step} OF 4</span>
+                    <span className="px-2.5 py-1 rounded-full bg-[#FFF0F0] border border-[#0B7F61]/20 text-[#0B7F61] text-[11px] font-extrabold tracking-widest">STEP {step} OF 4</span>
                     <span className="hidden sm:inline text-[12px] font-semibold text-black/40">• {step === 3 ? "O/A Levels only" : "Registration"}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     {[1, 2, 3, 4].map(i => (
-                      <div key={i} className={`h-1.5 rounded-full transition-all duration-500 ${i === step ? "w-8 bg-[#C20A0A]" : i < step ? "w-6 bg-[#C20A0A]/60" : "w-6 bg-black/10"}`} />
+                      <div key={i} className={`h-1.5 rounded-full transition-all duration-500 ${i === step ? "w-8 bg-[#0B7F61]" : i < step ? "w-6 bg-[#0B7F61]/60" : "w-6 bg-black/10"}`} />
                     ))}
                   </div>
                 </div>
@@ -813,14 +833,14 @@ export default function App() {
                 {step === 1 && (
                   <div className="pt-4">
                     <h1 className="text-[28px] sm:text-[32px] font-extrabold tracking-tight leading-none" style={{ fontFamily: "var(--font-display)" }}>
-                      Create your <span className="text-[#C20A0A]">profile</span>
+                      Create your <span className="text-[#0B7F61]">profile</span>
                     </h1>
                     <p className="text-[13.5px] text-black/60 font-medium mt-2">Tell us about yourself — our bird will peek when you type! 🐦</p>
 
                     <div className="mt-7 space-y-4">
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">FULL NAME *</label>
-                        <div className={`mt-1.5 relative flex items-center border-2 rounded-xl px-3 py-2.5 bg-white transition-all ${focusedField === "fullName" ? "border-[#C20A0A] shadow-[0_0_0_4px_rgba(194,10,10,0.08)]" : errors.fullName ? "border-red-400" : "border-black/10"}`}>
+                        <div className={`mt-1.5 relative flex items-center border-2 rounded-xl px-3 py-2.5 bg-white transition-all ${focusedField === "fullName" ? "border-[#0B7F61] shadow-[0_0_0_4px_rgba(11,127,97,0.08)]" : errors.fullName ? "border-red-400" : "border-black/10"}`}>
                           <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3 text-black/60">◉</span>
                           <input onFocus={e => onFieldFocus("fullName", e.currentTarget)} onBlur={onFieldBlur} value={formData.fullName} onChange={e => updateField("fullName", e.target.value)} placeholder="Alex Morgan" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                         </div>
@@ -829,7 +849,7 @@ export default function App() {
 
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">EMAIL ADDRESS *</label>
-                        <div className={`mt-1.5 relative flex items-center border-2 rounded-xl px-3 py-2.5 bg-white transition-all ${focusedField === "email" ? "border-[#C20A0A] shadow-[0_0_0_4px_rgba(194,10,10,0.08)]" : errors.email ? "border-red-400" : "border-black/10"}`}>
+                        <div className={`mt-1.5 relative flex items-center border-2 rounded-xl px-3 py-2.5 bg-white transition-all ${focusedField === "email" ? "border-[#0B7F61] shadow-[0_0_0_4px_rgba(11,127,97,0.08)]" : errors.email ? "border-red-400" : "border-black/10"}`}>
                           <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3 text-black/60">✉</span>
                           <input onFocus={e => onFieldFocus("email", e.currentTarget)} onBlur={onFieldBlur} value={formData.email} onChange={e => updateField("email", e.target.value)} placeholder="alex@email.com" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" type="email" />
                         </div>
@@ -838,7 +858,7 @@ export default function App() {
 
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">PHONE NUMBER (OPTIONAL)</label>
-                        <div className={`mt-1.5 flex items-center border-2 rounded-xl bg-white overflow-hidden transition-all ${focusedField === "phone" ? "border-[#C20A0A] shadow-[0_0_0_4px_rgba(194,10,10,0.08)]" : "border-black/10"}`}>
+                        <div className={`mt-1.5 flex items-center border-2 rounded-xl bg-white overflow-hidden transition-all ${focusedField === "phone" ? "border-[#0B7F61] shadow-[0_0_0_4px_rgba(11,127,97,0.08)]" : "border-black/10"}`}>
                           <select value={formData.countryCode} onChange={e => updateField("countryCode", e.target.value)} className="px-3 py-2.5 bg-black/[0.04] border-r border-black/10 text-[13px] font-bold outline-none">
                             <option>+1</option><option>+44</option><option>+91</option><option>+61</option><option>+971</option>
                           </select>
@@ -849,7 +869,7 @@ export default function App() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                           <label className="text-[11px] font-extrabold tracking-widest text-black/60">GENDER *</label>
-                          <div className={`mt-1.5 relative border-2 rounded-xl px-3 py-2.5 flex items-center justify-between bg-white ${focusedField === "gender" ? "border-[#C20A0A]" : errors.gender ? "border-red-400" : "border-black/10"}`}>
+                          <div className={`mt-1.5 relative border-2 rounded-xl px-3 py-2.5 flex items-center justify-between bg-white ${focusedField === "gender" ? "border-[#0B7F61]" : errors.gender ? "border-red-400" : "border-black/10"}`}>
                             <select onFocus={e => onFieldFocus("gender", e.currentTarget)} onBlur={onFieldBlur} value={formData.gender} onChange={e => updateField("gender", e.target.value)} className="flex-1 bg-transparent outline-none text-[14px] font-semibold text-black/80">
                               <option value="">Select gender</option>
                               <option>Female</option><option>Male</option><option>Non-binary</option><option>Prefer not to say</option>
@@ -859,17 +879,17 @@ export default function App() {
                         </div>
                         <div>
                           <label className="text-[11px] font-extrabold tracking-widest text-black/60">DATE OF BIRTH *</label>
-                          <div className={`mt-1.5 border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "dob" ? "border-[#C20A0A]" : errors.dob ? "border-red-400" : "border-black/10"}`}>
+                          <div className={`mt-1.5 border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "dob" ? "border-[#0B7F61]" : errors.dob ? "border-red-400" : "border-black/10"}`}>
                             <input onFocus={e => onFieldFocus("dob", e.currentTarget)} onBlur={onFieldBlur} value={formData.dob} onChange={e => updateField("dob", e.target.value)} type="date" className="w-full bg-transparent outline-none text-[14px] font-semibold" />
                           </div>
                           {errors.dob && <p className="text-[11px] text-red-500 font-bold mt-1">{errors.dob}</p>}
                         </div>
                       </div>
 
-                      <button onClick={handleContinue} className="w-full mt-2 h-[52px] rounded-xl bg-[#C20A0A] text-white font-extrabold text-[14px] tracking-wide shadow-[0_10px_24px_rgba(194,10,10,0.3)] hover:bg-[#A80808] active:scale-[0.99] transition-all">
+                      <button onClick={handleContinue} className="w-full mt-2 h-[52px] rounded-xl bg-[#0B7F61] text-white font-extrabold text-[14px] tracking-wide shadow-[0_10px_24px_rgba(11,127,97,0.3)] hover:bg-[#066B53] active:scale-[0.99] transition-all">
                         Continue →
                       </button>
-                      <p className="text-center text-[11px] font-semibold text-black/40">Fly with us — O & A Levels only 🐦</p>
+                      <p className="text-center text-[11px] font-semibold text-black/40">O &amp; A Level programmes 🐦</p>
                     </div>
                   </div>
                 )}
@@ -880,15 +900,15 @@ export default function App() {
                     <p className="text-[13px] text-black/60 font-medium mt-1">Guardian details + location. State list adapts to your country ✨</p>
 
                     <div className="mt-6 space-y-5">
-                      <div className="rounded-2xl bg-[#FFF6F6] border border-[#C20A0A]/10 p-4">
+                      <div className="rounded-2xl bg-[#F1FAF6] border border-[#0B7F61]/10 p-4">
                         <div className="flex items-center gap-2">
-                          <span className="w-7 h-7 rounded-full bg-[#C20A0A] text-white flex items-center justify-center text-[12px] font-black">1</span>
+                          <span className="w-7 h-7 rounded-full bg-[#0B7F61] text-white flex items-center justify-center text-[12px] font-black">1</span>
                           <h3 className="text-[13px] font-extrabold tracking-wide">Guardian / Parent Details</h3>
                         </div>
                         <div className="mt-4 space-y-3">
                           <div>
                             <label className="text-[11px] font-extrabold tracking-widest text-black/60">FATHER'S / GUARDIAN'S NAME *</label>
-                            <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "guardianName" ? "border-[#C20A0A]" : errors.guardianName ? "border-red-400" : "border-black/10"}`}>
+                            <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "guardianName" ? "border-[#0B7F61]" : errors.guardianName ? "border-red-400" : "border-black/10"}`}>
                               <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3">👤</span>
                               <input onFocus={e => onFieldFocus("guardianName", e.currentTarget)} onBlur={onFieldBlur} value={formData.guardianName} onChange={e => updateField("guardianName", e.target.value)} placeholder="Sarah Johnson" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                             </div>
@@ -896,7 +916,7 @@ export default function App() {
                           </div>
                           <div>
                             <label className="text-[11px] font-extrabold tracking-widest text-black/60">GUARDIAN CONTACT NUMBER *</label>
-                            <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "guardianPhone" ? "border-[#C20A0A]" : errors.guardianPhone ? "border-red-400" : "border-black/10"}`}>
+                            <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "guardianPhone" ? "border-[#0B7F61]" : errors.guardianPhone ? "border-red-400" : "border-black/10"}`}>
                               <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3">📞</span>
                               <input onFocus={e => onFieldFocus("guardianPhone", e.currentTarget)} onBlur={onFieldBlur} value={formData.guardianPhone} onChange={e => updateField("guardianPhone", e.target.value)} placeholder="+1 (555) 123-4567" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                             </div>
@@ -909,7 +929,7 @@ export default function App() {
                         <div className="flex items-center gap-2">
                           <span className="w-7 h-7 rounded-full bg-black text-white flex items-center justify-center text-[12px] font-black">2</span>
                           <h3 className="text-[13px] font-extrabold tracking-wide">Where you're from</h3>
-                          <span className="ml-auto text-[10px] font-black tracking-widest bg-[#FFF0F0] text-[#C20A0A] px-2 py-1 rounded-full">{formData.country ? `${availableStates.length} states` : "Pick country first"}</span>
+                          <span className="ml-auto text-[10px] font-black tracking-widest bg-[#FFF0F0] text-[#0B7F61] px-2 py-1 rounded-full">{formData.country ? `${availableStates.length} states` : "Pick country first"}</span>
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
                           <div>
@@ -934,7 +954,7 @@ export default function App() {
 
                       <div className="flex gap-3 pt-2">
                         <button onClick={() => animateStepChange(1)} className="px-6 h-[48px] rounded-xl border border-black/10 bg-white font-bold text-[13px]">Previous</button>
-                        <button onClick={handleContinue} className="flex-1 h-[48px] rounded-xl bg-[#C20A0A] text-white font-extrabold text-[14px] shadow-[0_10px_24px_rgba(194,10,10,0.25)] hover:bg-[#A80808] transition">Continue →</button>
+                        <button onClick={handleContinue} className="flex-1 h-[48px] rounded-xl bg-[#0B7F61] text-white font-extrabold text-[14px] shadow-[0_10px_24px_rgba(11,127,97,0.25)] hover:bg-[#066B53] transition">Continue →</button>
                       </div>
                     </div>
                   </div>
@@ -943,13 +963,13 @@ export default function App() {
                 {step === 3 && (
                   <div className="pt-4">
                     <h2 className="text-[22px] sm:text-[26px] font-extrabold tracking-tight leading-tight" style={{ fontFamily: "var(--font-display)" }}>Program, School & Subjects</h2>
-                    <p className="text-[12.5px] text-black/55 font-medium mt-2 leading-relaxed">Step 2 of 3 — <span className="text-[#C20A0A] font-bold">Only O-Level & A-Level</span>. Subjects limited to <span className="font-bold">Maths & Computer Science</span>.</p>
+                    <p className="text-[12.5px] text-black/55 font-medium mt-2 leading-relaxed">Step 2 of 3 — <span className="text-[#0B7F61] font-bold">Only O-Level & A-Level</span>. Subjects limited to <span className="font-bold">Maths & Computer Science</span>.</p>
 
                     <div className="mt-5">
                       <label className="text-[11px] font-extrabold tracking-widest text-black/60">PROGRAM * — Choose one</label>
                       <div className="mt-2 grid grid-cols-2 gap-3">
                         {programOptions.map(p => (
-                          <button key={p} onClick={() => selectProgram(p)} type="button" className={`rounded-xl border-2 px-4 py-3 text-left transition ${formData.program === p ? "border-[#C20A0A] bg-[#FFF0F0] shadow-[0_4px_12px_rgba(194,10,10,0.12)]" : "border-black/10 bg-white hover:border-black/20"}`}>
+                          <button key={p} onClick={() => selectProgram(p)} type="button" className={`rounded-xl border-2 px-4 py-3 text-left transition ${formData.program === p ? "border-[#0B7F61] bg-[#FFF0F0] shadow-[0_4px_12px_rgba(11,127,97,0.12)]" : "border-black/10 bg-white hover:border-black/20"}`}>
                             <p className="text-[11px] font-black tracking-widest text-black/50">{p === "O-Level" ? "CAMBRIDGE O-LEVEL" : "CAMBRIDGE A-LEVEL"}</p>
                             <p className="text-[14px] font-extrabold mt-1">{p}</p>
                             <p className="text-[11px] font-semibold text-black/50 mt-0.5">{p === "O-Level" ? "Grades 9-11" : "AS & A2"}</p>
@@ -965,7 +985,7 @@ export default function App() {
                         {subjectOptions.map(sub => {
                           const active = formData.subjects.includes(sub)
                           return (
-                            <button key={sub} onClick={() => toggleSubject(sub)} className={`flex-1 py-2.5 rounded-full text-[13.5px] font-extrabold border-2 transition flex items-center justify-center gap-2 ${active ? "bg-[#C20A0A] text-white border-[#C20A0A] shadow-[0_6px_16px_rgba(194,10,10,0.25)]" : "bg-white text-black/50 border-black/10"}`}>
+                            <button key={sub} onClick={() => toggleSubject(sub)} className={`flex-1 py-2.5 rounded-full text-[13.5px] font-extrabold border-2 transition flex items-center justify-center gap-2 ${active ? "bg-[#0B7F61] text-white border-[#0B7F61] shadow-[0_6px_16px_rgba(11,127,97,0.25)]" : "bg-white text-black/50 border-black/10"}`}>
                               {active ? "✓ " : "+ "}{sub}
                             </button>
                           )
@@ -975,12 +995,12 @@ export default function App() {
                       {errors.subjects && <p className="text-[11px] text-red-500 font-bold mt-1">{errors.subjects}</p>}
                     </div>
 
-                    <div className="mt-5 p-4 rounded-2xl border border-black/10 bg-[#FFFBFB]">
+                    <div className="mt-5 p-4 rounded-2xl border border-black/10 bg-[#F7FBF9]">
                       <h4 className="text-[12px] font-extrabold tracking-widest text-black/70">WHERE YOU STUDY</h4>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
                         <div>
                           <label className="text-[11px] font-bold text-black/60">School state / region *</label>
-                          <input value={formData.schoolRegion} onChange={e => updateField("schoolRegion", e.target.value)} onFocus={e => onFieldFocus("schoolRegion", e.currentTarget)} onBlur={onFieldBlur} placeholder="e.g. California" className={`mt-1.5 w-full border-2 rounded-xl px-3 py-2.5 text-[13px] font-semibold outline-none bg-white ${focusedField === "schoolRegion" ? "border-[#C20A0A]" : errors.schoolRegion ? "border-red-400" : "border-black/10"}`} />
+                          <input value={formData.schoolRegion} onChange={e => updateField("schoolRegion", e.target.value)} onFocus={e => onFieldFocus("schoolRegion", e.currentTarget)} onBlur={onFieldBlur} placeholder="e.g. California" className={`mt-1.5 w-full border-2 rounded-xl px-3 py-2.5 text-[13px] font-semibold outline-none bg-white ${focusedField === "schoolRegion" ? "border-[#0B7F61]" : errors.schoolRegion ? "border-red-400" : "border-black/10"}`} />
                           {errors.schoolRegion && <p className="text-[11px] text-red-500 font-bold mt-1">{errors.schoolRegion}</p>}
                         </div>
                         <div>
@@ -1011,7 +1031,7 @@ export default function App() {
 
                     <div className="flex gap-3 mt-6">
                       <button onClick={() => animateStepChange(2)} className="px-6 h-[48px] rounded-xl border border-black/10 bg-white font-bold text-[13px]">← Previous</button>
-                      <button onClick={handleContinue} className="flex-1 h-[48px] rounded-xl bg-[#C20A0A] text-white font-extrabold text-[14px] shadow-[0_10px_24px_rgba(194,10,10,0.25)]">Continue →</button>
+                      <button onClick={handleContinue} className="flex-1 h-[48px] rounded-xl bg-[#0B7F61] text-white font-extrabold text-[14px] shadow-[0_10px_24px_rgba(11,127,97,0.25)]">Continue →</button>
                     </div>
                   </div>
                 )}
@@ -1024,7 +1044,7 @@ export default function App() {
                     <div className="mt-6 space-y-4">
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">PASSWORD *</label>
-                        <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "password" ? "border-[#C20A0A]" : errors.password ? "border-red-400" : "border-black/10"}`}>
+                        <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "password" ? "border-[#0B7F61]" : errors.password ? "border-red-400" : "border-black/10"}`}>
                           <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3">🔒</span>
                           <input type="password" onFocus={e => onFieldFocus("password", e.currentTarget)} onBlur={onFieldBlur} value={formData.password} onChange={e => updateField("password", e.target.value)} placeholder="Create a strong password" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                         </div>
@@ -1034,7 +1054,7 @@ export default function App() {
 
                       <div>
                         <label className="text-[11px] font-extrabold tracking-widest text-black/60">CONFIRM PASSWORD *</label>
-                        <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "confirmPassword" ? "border-[#C20A0A]" : errors.confirmPassword ? "border-red-400" : "border-black/10"}`}>
+                        <div className={`mt-1.5 flex items-center border-2 rounded-xl px-3 py-2.5 bg-white ${focusedField === "confirmPassword" ? "border-[#0B7F61]" : errors.confirmPassword ? "border-red-400" : "border-black/10"}`}>
                           <span className="w-8 h-8 rounded-lg bg-black/[0.04] flex items-center justify-center mr-3">🔒</span>
                           <input type="password" onFocus={e => onFieldFocus("confirmPassword", e.currentTarget)} onBlur={onFieldBlur} value={formData.confirmPassword} onChange={e => updateField("confirmPassword", e.target.value)} placeholder="Repeat password" className="flex-1 outline-none text-[14px] font-semibold placeholder:text-black/30 bg-transparent" />
                         </div>
@@ -1042,18 +1062,18 @@ export default function App() {
                         {errors.confirmPassword && <p className="text-[11px] text-red-500 font-bold">{errors.confirmPassword}</p>}
                       </div>
 
-                      <label className="flex items-start gap-3 p-3 rounded-xl border border-black/10 bg-[#FFFBFB] cursor-pointer">
-                        <input type="checkbox" checked={formData.terms} onChange={e => updateField("terms", e.target.checked)} className="mt-1 w-4 h-4 accent-[#C20A0A]" />
-                        <span className="text-[12.5px] font-semibold leading-relaxed">I accept the <a className="text-[#C20A0A] underline font-bold">terms and conditions</a> and <a className="text-[#C20A0A] underline font-bold">privacy policy</a>. *</span>
+                      <label className="flex items-start gap-3 p-3 rounded-xl border border-black/10 bg-[#F7FBF9] cursor-pointer">
+                        <input type="checkbox" checked={formData.terms} onChange={e => updateField("terms", e.target.checked)} className="mt-1 w-4 h-4 accent-[#0B7F61]" />
+                        <span className="text-[12.5px] font-semibold leading-relaxed">I accept the <a className="text-[#0B7F61] underline font-bold">terms and conditions</a> and <a className="text-[#0B7F61] underline font-bold">privacy policy</a>. *</span>
                       </label>
                       {errors.terms && <p className="text-[11px] text-red-500 font-bold -mt-2">{errors.terms}</p>}
 
                       <div className="rounded-xl border-2 border-black/10 bg-white p-4 flex items-center justify-between gap-4">
                         <div>
                           <p className="text-[11px] font-extrabold tracking-widest text-black/60">SECURITY CHECK *</p>
-                          <p className="text-[16px] font-black mt-1">{captchaA} + {captchaB} = <span className="text-[#C20A0A]">?</span></p>
+                          <p className="text-[16px] font-black mt-1">{captchaA} + {captchaB} = <span className="text-[#0B7F61]">?</span></p>
                         </div>
-                        <input value={formData.captcha} onChange={e => updateField("captcha", e.target.value)} placeholder="Answer" onFocus={e => onFieldFocus("captcha", e.currentTarget)} onBlur={onFieldBlur} className={`w-24 h-12 rounded-xl border-2 text-center text-[16px] font-black outline-none bg-[#FFF6F6] ${errors.captcha ? "border-red-400" : focusedField === "captcha" ? "border-[#C20A0A]" : "border-black/10"}`} />
+                        <input value={formData.captcha} onChange={e => updateField("captcha", e.target.value)} placeholder="Answer" onFocus={e => onFieldFocus("captcha", e.currentTarget)} onBlur={onFieldBlur} className={`w-24 h-12 rounded-xl border-2 text-center text-[16px] font-black outline-none bg-[#F1FAF6] ${errors.captcha ? "border-red-400" : focusedField === "captcha" ? "border-[#0B7F61]" : "border-black/10"}`} />
                       </div>
                       {errors.captcha && <p className="text-[11px] text-red-500 font-bold">{errors.captcha}</p>}
 
@@ -1062,26 +1082,26 @@ export default function App() {
                       )}
                       <div className="flex gap-3 pt-2">
                         <button onClick={() => animateStepChange(3)} className="px-6 h-[48px] rounded-xl border border-black/10 bg-white font-bold text-[13px]">← Previous</button>
-                        <button onClick={handleContinue} disabled={submitting} className="flex-1 h-[56px] rounded-xl bg-[#C20A0A] text-white font-black text-[15px] tracking-wide shadow-[0_12px_28px_rgba(194,10,10,0.3)] hover:bg-[#A80808] transition disabled:opacity-70 disabled:cursor-not-allowed">{submitting ? "Sending\u2026" : "Get Started \u2728"}</button>
+                        <button onClick={handleContinue} disabled={submitting} className="flex-1 h-[56px] rounded-xl bg-[#0B7F61] text-white font-black text-[15px] tracking-wide shadow-[0_12px_28px_rgba(11,127,97,0.3)] hover:bg-[#066B53] transition disabled:opacity-70 disabled:cursor-not-allowed">{submitting ? "Sending\u2026" : "Get Started \u2728"}</button>
                       </div>
                     </div>
                   </div>
                 )}
               </div>
             </div>
-            <p className="text-center text-[11px] font-semibold text-black/30 mt-4">🔒 Encrypted & secure • O & A Levels • Trusted by 50k+ students</p>
+            <p className="text-center text-[11px] font-semibold text-black/30 mt-4">🔒 Secure sign-up • O &amp; A Level programmes</p>
           </div>
         ) : (
           <div className="relative">
             {showSuccessConfetti && (
               <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
                 {Array.from({ length: 42 }).map((_, i) => (
-                  <div key={i} className="absolute w-2 h-6 rounded-full animate-bounce" style={{ left: `${Math.random() * 100}%`, top: `-10px`, background: ["#C20A0A", "#F4452F", "#FFC145", "#2F6BFF", "#FF8C00"][i % 5], animationDelay: `${Math.random() * 1.2}s`, animationDuration: `${1 + Math.random()}s`, transform: `rotate(${Math.random() * 360}deg)` }} />
+                  <div key={i} className="absolute w-2 h-6 rounded-full animate-bounce" style={{ left: `${Math.random() * 100}%`, top: `-10px`, background: ["#0B7F61", "#16B389", "#A3D64B", "#2F6BFF", "#FF8C00"][i % 5], animationDelay: `${Math.random() * 1.2}s`, animationDuration: `${1 + Math.random()}s`, transform: `rotate(${Math.random() * 360}deg)` }} />
                 ))}
               </div>
             )}
             <div className="bg-white rounded-[28px] border border-black/[0.06] shadow-[0_24px_80px_rgba(0,0,0,0.10)] overflow-hidden">
-              <div className="bg-gradient-to-r from-[#C20A0A] to-[#E11D48] px-6 sm:px-10 py-8 text-white relative overflow-hidden">
+              <div className="bg-gradient-to-r from-[#0B7F61] to-[#E11D48] px-6 sm:px-10 py-8 text-white relative overflow-hidden">
                 <div className="absolute top-0 right-0 w-72 h-72 bg-white/10 rounded-full blur-3xl -translate-y-20 translate-x-20" />
                 <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-6">
                   <div>
@@ -1104,7 +1124,7 @@ export default function App() {
               <div className="grid lg:grid-cols-[1.2fr_0.8fr] gap-8 p-6 sm:p-10">
                 <div>
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-[#C20A0A] text-white flex items-center justify-center font-black text-[12px]">✓</div>
+                    <div className="w-8 h-8 rounded-full bg-[#0B7F61] text-white flex items-center justify-center font-black text-[12px]">✓</div>
                     <h3 className="font-extrabold text-[16px]">Timeline</h3>
                     <span className="ml-auto px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-black">O/A PIPELINE</span>
                   </div>
@@ -1133,26 +1153,26 @@ export default function App() {
                     </div>
                   </div>
                   <div className="mt-8 flex gap-3">
-                    <button onClick={() => setStep(1)} className="px-5 h-11 rounded-xl border border-black/10 bg-white font-bold text-[13px]">← Back to start</button>
-                    <button className="flex-1 h-11 rounded-xl bg-[#1A1A1A] text-white font-bold text-[13px]">📧 Check email for updates</button>
+                    <a href="/admission/status" className="flex-1 h-11 rounded-xl bg-[#0B7F61] text-white font-bold text-[13px] inline-flex items-center justify-center hover:bg-[#066B53] transition">View my application status →</a>
+                    <button onClick={() => setStep(1)} className="px-5 h-11 rounded-xl border border-black/10 bg-white font-bold text-[13px]">Start another application</button>
                   </div>
                 </div>
                 <div className="space-y-4">
-                  <div className="rounded-2xl border border-black/10 p-5 bg-[#FFFBFB]">
+                  <div className="rounded-2xl border border-black/10 p-5 bg-[#F7FBF9]">
                     <h4 className="font-extrabold text-[13px]">What happens next?</h4>
                     <ul className="mt-3 space-y-2.5 text-[13px] font-medium text-black/70">
-                      <li className="flex gap-2"><span className="text-[#C20A0A] font-black">1.</span> Admissions reviews your O/A Level profile</li>
-                      <li className="flex gap-2"><span className="text-[#C20A0A] font-black">2.</span> You’ll get an email + SMS when approved</li>
-                      <li className="flex gap-2"><span className="text-[#C20A0A] font-black">3.</span> Log in to access your focused Maths & CS track</li>
+                      <li className="flex gap-2"><span className="text-[#0B7F61] font-black">1.</span> Admissions reviews your O/A Level profile</li>
+                      <li className="flex gap-2"><span className="text-[#0B7F61] font-black">2.</span> You’ll get an email + SMS when approved</li>
+                      <li className="flex gap-2"><span className="text-[#0B7F61] font-black">3.</span> Log in to access your focused Maths & CS track</li>
                     </ul>
                   </div>
-                  <div className="rounded-[20px] bg-gradient-to-br from-[#FFF1EC] to-[#FFF7E6] border border-black/10 p-6 flex flex-col items-center text-center relative overflow-hidden">
-                    <div className="absolute -top-6 -right-6 w-24 h-24 bg-[#C20A0A]/10 rounded-full blur-2xl" />
+                  <div className="rounded-[20px] bg-gradient-to-br from-[#ECF8F2] to-[#F3FBF6] border border-black/10 p-6 flex flex-col items-center text-center relative overflow-hidden">
+                    <div className="absolute -top-6 -right-6 w-24 h-24 bg-[#0B7F61]/10 rounded-full blur-2xl" />
                     <div className="w-20 h-20 rounded-3xl bg-white border-2 border-black/5 shadow flex items-center justify-center text-3xl animate-bounce">🐤🎉</div>
                     <p className="font-black text-[15px] mt-3">Our bird is celebrating! 🎊</p>
                     <p className="text-[12px] font-semibold text-black/50 mt-1">Doing loop-de-loops — confetti everywhere!</p>
                     <div className="mt-4 w-full h-2 bg-black/5 rounded-full overflow-hidden">
-                      <div className="h-full w-[68%] bg-[#C20A0A] rounded-full" />
+                      <div className="h-full w-[68%] bg-[#0B7F61] rounded-full" />
                     </div>
                     <p className="text-[11px] font-bold text-black/40 mt-2">68% of O/A students approved in under 12h</p>
                   </div>

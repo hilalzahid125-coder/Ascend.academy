@@ -12,7 +12,8 @@ def _class_students(conn):
     rows=conn.execute("""SELECT u.id,u.full_name,u.admission_no,u.class_name,p.profile_json
         FROM users u LEFT JOIN academy_signup_profiles p ON p.user_id=u.id
         WHERE u.role='student' AND u.status='active' ORDER BY u.full_name,u.id""").fetchall()
-    return [dict(r, subjects=[x for x in academy_profile_from_row(r).get('subjects', []) if x in ACADEMY_SUBJECTS] if isinstance(academy_profile_from_row(r).get('subjects', []), list) else []) for r in rows]
+    valid = set(get_subjects())
+    return [dict(r, subjects=[x for x in academy_profile_from_row(r).get('subjects', []) if x in valid] if isinstance(academy_profile_from_row(r).get('subjects', []), list) else []) for r in rows]
 
 def _schedules(conn):
     return [dict(r) for r in conn.execute('''SELECT s.*,u.full_name teacher_name FROM class_schedules s
@@ -38,7 +39,7 @@ def _class_values(form, conn):
     recurrence=str(form.get('recurrence','')); day=str(form.get('weekday','')); class_date=str(form.get('class_date','')).strip()
     start=str(form.get('start_time','')).strip(); duration=str(form.get('duration_minutes','')).strip()
     teacher=str(form.get('teacher_id',''))
-    if grade not in ACADEMY_GRADES or subject not in ACADEMY_SUBJECTS: raise ValueError('Choose a valid grade and subject.')
+    if grade not in ACADEMY_GRADES or subject not in get_subjects(): raise ValueError('Choose a valid grade and subject.')
     if not teacher.isdigit() or not conn.execute("SELECT id FROM users WHERE id=? AND role IN ('admin','teacher') AND status='active'",(int(teacher),)).fetchone(): raise ValueError('Choose an active teacher.')
     if not re.fullmatch(r'\d{2}:\d{2}',start): raise ValueError('Enter a valid start time.')
     try: parsed=time.fromisoformat(start); mins=int(duration)
@@ -126,7 +127,7 @@ def admin_my_classes(request: Request):
                 JOIN users u ON u.id=a.student_id WHERE a.session_id IN ('''+placeholders+''') ORDER BY u.full_name,u.id''',ids).fetchall()
             for row in roster: roster_by_session[row['session_id']].append(dict(row))
         for session in sessions: session['roster']=roster_by_session[session['id']]
-    return render(request,'my_classes_admin.html',{'rows':rows,'students':students,'teachers':teachers,'subjects':ACADEMY_SUBJECTS,'weekdays':WEEKDAYS,'sessions':sessions,'filters':{'grade':grade,'subject':subject,'teacher':teacher,'time':hour,'q':query},'today':_class_now().date().isoformat()})
+    return render(request,'my_classes_admin.html',{'rows':rows,'students':students,'teachers':teachers,'subjects':get_subjects(),'weekdays':WEEKDAYS,'sessions':sessions,'filters':{'grade':grade,'subject':subject,'teacher':teacher,'time':hour,'q':query},'today':_class_now().date().isoformat()})
 
 @app.post('/admin/my-classes/create')
 async def class_create(request: Request):

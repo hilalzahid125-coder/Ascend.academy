@@ -1,4 +1,4 @@
-import os, sqlite3, hashlib, re, json
+import os, sqlite3, hashlib, re, json, threading, itertools, time
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from pathlib import Path
@@ -55,6 +55,13 @@ CREATE INDEX IF NOT EXISTS idx_class_attendance_student ON class_attendance(stud
 CREATE TABLE IF NOT EXISTS academy_holidays (
  holiday_date TEXT PRIMARY KEY, title TEXT NOT NULL,
  created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS academy_subjects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS class_live_rooms (
   session_id INTEGER PRIMARY KEY REFERENCES class_sessions(id) ON DELETE CASCADE,
@@ -171,7 +178,8 @@ CREATE TABLE IF NOT EXISTS student_admissions (
  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
  temporary_id TEXT NOT NULL UNIQUE,
  email TEXT NOT NULL, phone TEXT NOT NULL, guardian_name TEXT NOT NULL, guardian_phone TEXT NOT NULL,
- subject TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+ subject TEXT NOT NULL, subjects TEXT NOT NULL DEFAULT '[]', full_name TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
  created_at TEXT NOT NULL, reviewed_at TEXT, reviewed_by INTEGER REFERENCES users(id), review_note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS student_admissions_status_idx ON student_admissions(status,created_at);
@@ -467,6 +475,27 @@ def _migrate_sqlite_feedback_details(conn):
     if 'period_end' not in columns: conn.execute('ALTER TABLE student_progress_records ADD COLUMN period_end TEXT')
 
 
+def _migrate_sqlite_admission_details(conn):
+    """Backfill the two application-detail columns for pre-existing databases."""
+    columns={r['name'] for r in conn.execute('PRAGMA table_info(student_admissions)').fetchall()}
+    if 'subjects' not in columns:
+        conn.execute("ALTER TABLE student_admissions ADD COLUMN subjects TEXT NOT NULL DEFAULT '[]'")
+    if 'full_name' not in columns:
+        conn.execute("ALTER TABLE student_admissions ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
+    # Older rows stored a single subject; promote it into the JSON list and
+    # copy the name across so the status page always has something to show.
+    for row in conn.execute("SELECT user_id,subject,full_name FROM student_admissions WHERE subjects='[]' OR full_name=''").fetchall():
+        user=conn.execute('SELECT full_name FROM users WHERE id=?',(row['user_id'],)).fetchone()
+        name=row['full_name'] or (user['full_name'] if user else '')
+        try:
+            stored=json.loads(row['subject'])
+            subjects=stored if isinstance(stored,list) and stored else [row['subject']]
+        except (TypeError, ValueError):
+            subjects=[row['subject']] if row['subject'] else []
+        conn.execute('UPDATE student_admissions SET subjects=?,full_name=? WHERE user_id=?',
+                     (json.dumps(subjects), name, row['user_id']))
+
+
 def _migrate_sqlite_announcement_audience(conn):
     columns={r['name'] for r in conn.execute('PRAGMA table_info(announcements)').fetchall()}
     if 'audience_role' not in columns:
@@ -542,27 +571,47 @@ def _migrate_sqlite_staff_feedback_permission(conn):
             conn.execute('UPDATE users SET admin_permissions=? WHERE id=?',(json.dumps(permissions),row['id']))
 
 
+def _apply_postgres_migrations():
+    """Apply pending SQL migrations to PostgreSQL exactly once each.
+
+    psycopg's connection context commits on success and rolls back on error, so
+    the whole batch is atomic: either every pending file applies and is recorded
+    in ascend.app_schema_migrations, or nothing changes and the next cold start
+    retries from the last good revision. The advisory lock serialises concurrent
+    cold starts so two instances cannot apply the same file twice.
+    """
+    with open_postgres(DATABASE_URL) as raw:
+        raw.execute('SELECT pg_advisory_xact_lock(638418625)')
+        raw.execute('CREATE SCHEMA IF NOT EXISTS ascend')
+        raw.execute('REVOKE ALL ON SCHEMA ascend FROM PUBLIC, anon, authenticated')
+        raw.execute('CREATE TABLE IF NOT EXISTS ascend.app_schema_migrations (name TEXT PRIMARY KEY, checksum TEXT NOT NULL)')
+        raw.execute('REVOKE ALL ON ascend.app_schema_migrations FROM PUBLIC, anon, authenticated')
+        applied={r['name']:r['checksum'] for r in raw.execute('SELECT name,checksum FROM ascend.app_schema_migrations').fetchall()}
+        for migration in sorted((BASE_DIR / 'supabase/migrations').glob('*.sql')):
+            contents=migration.read_text(encoding='utf-8')
+            digest=hashlib.sha256(contents.encode('utf-8')).hexdigest()
+            if migration.name in applied:
+                if applied[migration.name]!=digest:
+                    raise RuntimeError(f'Applied migration {migration.name} has changed; add a new migration instead.')
+                continue
+            raw.execute(contents)
+            raw.execute('INSERT INTO ascend.app_schema_migrations(name,checksum) VALUES (%s,%s)',(migration.name,digest))
+
+
 def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     if DATABASE_URL:
-        with open_postgres(DATABASE_URL) as raw:
-            raw.execute('SELECT pg_advisory_xact_lock(638418625)')
-            # Infrastructure-only ledger: migrations remain atomic, and cold
-            # starts don't repeatedly execute every historical DDL statement.
-            raw.execute('CREATE SCHEMA IF NOT EXISTS ascend')
-            raw.execute('REVOKE ALL ON SCHEMA ascend FROM PUBLIC, anon, authenticated')
-            raw.execute('CREATE TABLE IF NOT EXISTS ascend.app_schema_migrations (name TEXT PRIMARY KEY, checksum TEXT NOT NULL)')
-            raw.execute('REVOKE ALL ON ascend.app_schema_migrations FROM PUBLIC, anon, authenticated')
-            applied={r['name']:r['checksum'] for r in raw.execute('SELECT name,checksum FROM ascend.app_schema_migrations').fetchall()}
-            for migration in sorted((BASE_DIR / 'supabase/migrations').glob('*.sql')):
-                contents=migration.read_text(encoding='utf-8')
-                digest=hashlib.sha256(contents.encode('utf-8')).hexdigest()
-                if migration.name in applied:
-                    if applied[migration.name]!=digest:
-                        raise RuntimeError(f'Applied migration {migration.name} has changed; add a new migration instead.')
-                    continue
-                raw.execute(contents)
-                raw.execute('INSERT INTO ascend.app_schema_migrations(name,checksum) VALUES (%s,%s)',(migration.name,digest))
+        # A cold start whose migration fails would take every request down with
+        # it, so a transient connection error is retried briefly before the
+        # exception is allowed to surface.
+        for attempt in range(3):
+            try:
+                _apply_postgres_migrations()
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
     with connect() as conn:
         if not DATABASE_URL:
             conn.executescript(SCHEMA)
@@ -578,7 +627,9 @@ def init_db():
             _migrate_sqlite_notification_categories(conn)
             _migrate_sqlite_staff_permissions(conn)
             _migrate_sqlite_announcement_audience(conn)
+            _migrate_sqlite_admission_details(conn)
             _migrate_sqlite_staff_feedback_permission(conn)
+        seed_default_subjects(conn)
         default_values=list(DEFAULT_SETTINGS.items())
         conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES '+','.join('(?,?)' for _ in default_values),
                      [value for pair in default_values for value in pair])
@@ -600,6 +651,84 @@ def get_settings(conn=None):
             return get_settings(own_conn)
     rows = conn.execute('SELECT key,value FROM settings').fetchall()
     return {r['key']: r['value'] for r in rows}
+
+
+# ---------- Academy subjects ----------
+# Subjects are administrator-managed data now, not a Python constant. These
+# helpers are the single source of truth for every screen that lists subjects.
+DEFAULT_SUBJECTS = ('Maths', 'Computer Science')
+
+
+def seed_default_subjects(conn):
+    """Make sure a database always has at least the two original subjects."""
+    if conn.execute('SELECT COUNT(*) c FROM academy_subjects').fetchone()['c']:
+        return
+    for index, name in enumerate(DEFAULT_SUBJECTS):
+        try:
+            conn.execute('INSERT INTO academy_subjects(name,sort_order,is_active,created_at) VALUES (?,?,1,?)',
+                         (name, index, iso_now()))
+        except INTEGRITY_ERRORS:
+            pass
+
+
+# Subjects are read on nearly every academy screen. Reading them inside a
+# request that already holds an open SQLite connection (or a transaction) would
+# nest a second connection and stall on the write lock, so memoise per request.
+# The counter lets a write invalidate the cache in every thread of this process,
+# not just the one that handled the request.
+_SUBJECTS_CACHE = threading.local()
+_SUBJECTS_EPOCH = itertools.count()
+_SUBJECTS_GENERATION = [0]
+
+
+def clear_subjects_cache():
+    """Drop the subject cache everywhere on the next read.
+
+    Each thread keeps its own entry, so a write handled on one worker thread
+    must not leave another thread serving the old list.
+    """
+    _SUBJECTS_GENERATION[0] = next(_SUBJECTS_EPOCH)
+    for attr in ('active', 'all', 'generation'):
+        if hasattr(_SUBJECTS_CACHE, attr):
+            delattr(_SUBJECTS_CACHE, attr)
+
+
+def _read_subjects(conn, include_retired):
+    query = 'SELECT name FROM academy_subjects'
+    if not include_retired:
+        query += ' WHERE is_active=1'
+    query += ' ORDER BY sort_order, name'
+    try:
+        rows = conn.execute(query).fetchall()
+    except Exception:
+        return list(DEFAULT_SUBJECTS)
+    names = [r['name'] for r in rows]
+    return names or list(DEFAULT_SUBJECTS)
+
+
+def get_subjects(conn=None, include_retired=False, fresh=False):
+    """Return the ordered subject list.
+
+    Falls back to DEFAULT_SUBJECTS if the table is missing (unit tests build
+    the schema on the fly) so callers never have to guard against it.
+
+    Results are cached per request in thread-local storage, so calling this
+    from inside a block that already holds a connection never opens a nested
+    one. Pass ``conn`` to read through a connection the caller owns (always
+    fresh), or ``fresh=True`` to bypass the cache after a write.
+    """
+    if conn is not None:
+        return _read_subjects(conn, include_retired)
+    attr = 'all' if include_retired else 'active'
+    generation = _SUBJECTS_GENERATION[0]
+    cached = getattr(_SUBJECTS_CACHE, attr, None)
+    if not fresh and cached is not None and getattr(_SUBJECTS_CACHE, 'generation', None) == generation:
+        return cached
+    with connect() as own_conn:
+        names = _read_subjects(own_conn, include_retired)
+    _SUBJECTS_CACHE.generation = generation
+    setattr(_SUBJECTS_CACHE, attr, names)
+    return names
 
 
 def database_size():

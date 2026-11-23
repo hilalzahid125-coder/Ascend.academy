@@ -2,16 +2,24 @@
 # Self-registration creates an isolated applicant, never an active student.
 @app.post('/admission/register')
 def submit_admission(request: Request, full_name:str=Form(...), email:str=Form(...), phone:str=Form(...),
-                     grade:str=Form(...), subject:str=Form(...), guardian_name:str=Form(''),
-                     guardian_phone:str=Form(''), password:str=Form(...), confirm_password:str=Form(...),
-                     terms:str=Form('')):
+                     grade:str=Form(...), subject:str=Form(''), subjects:Optional[List[str]]=Form(None),
+                     guardian_name:str=Form(''), guardian_phone:str=Form(''),
+                     password:str=Form(...), confirm_password:str=Form(...), terms:str=Form('')):
     if settings().get('registration_enabled')!='1':
         return flash_redirect('/register','Student registration is currently closed.','error')
     try:
         full_name=_clean_text(full_name,120); email=_clean_text(email,200); phone=_clean_text(phone,40)
         guardian_name=_clean_text(guardian_name,120,False); guardian_phone=_clean_text(guardian_phone,40,False)
         if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email): raise ValueError('Enter a valid email address.')
-        if grade not in ACADEMY_GRADES or subject not in ACADEMY_SUBJECTS: raise ValueError('Choose a valid grade and subject.')
+        valid=list(get_subjects())
+        # The wizard may post several subjects; older callers post one.
+        chosen=[x for x in (subjects or ([subject] if subject else [])) if x]
+        deduped=[]
+        for name in chosen:
+            if name not in deduped: deduped.append(name)
+        if grade not in ACADEMY_GRADES or not deduped or any(x not in valid for x in deduped):
+            raise ValueError('Choose a valid grade and at least one subject.')
+        chosen=deduped; subject=chosen[0]
         if len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password): raise ValueError('Password must be 8–128 characters and include letters and numbers.')
         if password!=confirm_password: raise ValueError('Passwords do not match.')
         if terms!='yes': raise ValueError('Please accept the privacy policy.')
@@ -25,9 +33,9 @@ def submit_admission(request: Request, full_name:str=Form(...), email:str=Form(.
         temporary_id='TMP-'+secrets.token_hex(8).upper()
         uid=conn.execute("""INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,class_name,created_at)
           VALUES (?,?,?,'student','pending',1,?,?) RETURNING id""",(temporary_id,full_name,hash_password(password),grade,iso_now())).fetchone()['id']
-        conn.execute('INSERT INTO student_admissions(user_id,temporary_id,email,phone,guardian_name,guardian_phone,subject,created_at) VALUES (?,?,?,?,?,?,?,?)',
-                     (uid,temporary_id,email,phone,guardian_name,guardian_phone,subject,iso_now()))
-        profile={'fullName':full_name,'email':email,'phone':phone,'guardianName':guardian_name,'guardianPhone':guardian_phone,'grade':grade,'subjects':[subject]}
+        conn.execute('INSERT INTO student_admissions(user_id,temporary_id,email,phone,guardian_name,guardian_phone,subject,subjects,full_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                     (uid,temporary_id,email,phone,guardian_name,guardian_phone,subject,json.dumps(chosen),full_name,iso_now()))
+        profile={'fullName':full_name,'email':email,'phone':phone,'guardianName':guardian_name,'guardianPhone':guardian_phone,'grade':grade,'subjects':chosen}
         conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?)',(uid,json.dumps(profile),iso_now()))
         for admin in conn.execute("SELECT * FROM users WHERE role='admin' AND status='active'").fetchall():
             if is_super_admin(admin) or 'students' in _admin_permissions(admin):
@@ -37,19 +45,56 @@ def submit_admission(request: Request, full_name:str=Form(...), email:str=Form(.
 
 @app.get('/admission/status',response_class=HTMLResponse)
 def admission_status(request: Request):
+    """The single screen a newly registered applicant lands on.
+
+    It shows the real application record: what was submitted, every subject
+    chosen, when it was sent, and how far it has moved through review.
+    """
     user=current_user(request)
     if not user or user['role']!='student': raise HTTPException(401)
     with connect() as conn:
         admission=conn.execute('SELECT * FROM student_admissions WHERE user_id=?',(user['id'],)).fetchone()
+        profile_row=conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(user['id'],)).fetchone()
+        reviewer=None
+        if admission and admission['reviewed_by']:
+            reviewer=conn.execute('SELECT full_name FROM users WHERE id=?',(admission['reviewed_by'],)).fetchone()
     if not admission: raise HTTPException(404)
-    return render(request,'admission_status.html',{'admission':admission})
+    profile=academy_profile_from_row(profile_row)
+    chosen=[]
+    try:
+        stored=json.loads(admission['subjects'] or '[]')
+        chosen=[x for x in stored if isinstance(x,str) and x]
+    except (TypeError, ValueError):
+        chosen=[]
+    if not chosen:
+        chosen=[x for x in (profile.get('subjects') or []) if isinstance(x,str)] or [admission['subject']]
+    grade=profile.get('grade') or (user['class_name'] if 'class_name' in user.keys() else '')
+    program='A-Level' if str(grade).startswith('A-Level') else ('O-Level' if str(grade).startswith('O-Level') else '')
+    steps=[('Application received',True),('Under review',admission['status']!='pending'),
+           ('Decision made',admission['status'] in ('approved','rejected'))]
+    return render(request,'admission_status.html',{
+        'admission':admission,'profile':profile,'subjects':chosen,'grade':grade,'program':program,
+        'applicant_name':admission['full_name'] or user['full_name'],
+        'reviewer':reviewer['full_name'] if reviewer else '',
+        'steps':steps,
+    })
 
 @app.get('/admin/admissions',response_class=HTMLResponse)
 def admin_admissions(request: Request):
     require_admin(request,'students')
     with connect() as conn:
         rows=conn.execute('''SELECT a.*,u.full_name,u.class_name,u.admission_no,u.status AS user_status FROM student_admissions a JOIN users u ON u.id=a.user_id ORDER BY CASE WHEN a.status='pending' THEN 0 ELSE 1 END,a.created_at DESC''').fetchall()
-    return render(request,'admin_admissions.html',{'admissions':rows})
+        admissions=[]
+        for row in rows:
+            item=dict(row)
+            # Show every subject the applicant asked for, not only the first.
+            try:
+                chosen=json.loads(item.get('subjects') or '[]')
+            except (TypeError, ValueError):
+                chosen=[]
+            item['subject_list']=[x for x in chosen if isinstance(x,str) and x] or ([item['subject']] if item.get('subject') else [])
+            admissions.append(item)
+    return render(request,'admin_admissions.html',{'admissions':admissions})
 
 @app.post('/admin/admissions/{user_id}/review')
 def admin_admission_review(request: Request,user_id:int,decision:str=Form(...),note:str=Form('')):
@@ -81,3 +126,167 @@ def admin_admission_review(request: Request,user_id:int,decision:str=Form(...),n
     except (ValueError, *INTEGRITY_ERRORS) as exc:
         return flash_redirect('/admin/admissions','Could not complete this review. Please try again or contact support.','error')
     return flash_redirect('/admin/admissions','Application '+('approved; student ID assigned.' if decision=='approve' else 'rejected.'))
+
+
+# ─────────────────────────── Academy subjects ───────────────────────────
+# Subjects are administrator-managed data. These screens live in the Super
+# Admin section of the sidebar, next to holidays and accounts.
+def _subject_usage(conn, name):
+    """Count every real record that references a subject, so deletion is safe."""
+    def count(table, column='subject'):
+        try:
+            row = conn.execute(f'SELECT COUNT(*) c FROM {table} WHERE {column}=?', (name,)).fetchone()
+            return row['c'] if row else 0
+        except Exception:
+            return 0
+    profile_hits = 0
+    try:
+        for row in conn.execute("SELECT profile_json FROM academy_signup_profiles WHERE profile_json LIKE ?", (f'%"{name}"%',)).fetchall():
+            try:
+                subjects = (json.loads(row['profile_json']) or {}).get('subjects') or []
+            except (TypeError, ValueError):
+                subjects = []
+            if name in subjects:
+                profile_hits += 1
+    except Exception:
+        profile_hits = 0
+    return {
+        'usage': profile_hits,
+        'classes': count('class_schedules'),
+        'challenges': count('challenges'),
+        'progress': count('student_progress_records'),
+        'sessions': count('class_sessions'),
+    }
+
+
+@app.get('/admin/subjects', response_class=HTMLResponse)
+def admin_subjects(request: Request):
+    require_admin(request, super_only=True)
+    with connect() as conn:
+        rows = conn.execute('SELECT id,name,sort_order,is_active FROM academy_subjects ORDER BY sort_order,name').fetchall()
+        subjects = []
+        for r in rows:
+            item = dict(r)
+            item.update(_subject_usage(conn, r['name']))
+            subjects.append(item)
+    return render(request, 'admin_subjects.html', {'subjects': subjects})
+
+
+@app.post('/admin/subjects/create')
+def admin_subject_create(request: Request, name: str = Form(...)):
+    admin = require_admin(request, super_only=True)
+    try:
+        clean = _clean_text(name, 40)
+        if len(clean) < 2:
+            raise ValueError('Use at least two characters for a subject name.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute('SELECT 1 FROM academy_subjects WHERE lower(name)=lower(?)', (clean,)).fetchone():
+                raise ValueError('That subject already exists.')
+            nxt = conn.execute('SELECT COALESCE(MAX(sort_order),-1)+1 n FROM academy_subjects').fetchone()['n']
+            conn.execute('INSERT INTO academy_subjects(name,sort_order,is_active,created_at) VALUES (?,?,1,?)', (clean, nxt, iso_now()))
+            audit(conn, admin['id'], 'subject_created', clean)
+        clear_subjects_cache()
+    except ValueError as exc:
+        return flash_redirect('/admin/subjects', str(exc), 'error')
+    return flash_redirect('/admin/subjects', f'{clean} added. It now appears everywhere subjects are listed.')
+
+
+@app.post('/admin/subjects/rename')
+def admin_subject_rename(request: Request, subject_id: int = Form(...), name: str = Form(...)):
+    admin = require_admin(request, super_only=True)
+    try:
+        clean = _clean_text(name, 40)
+        if len(clean) < 2:
+            raise ValueError('Use at least two characters for a subject name.')
+        with connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT name FROM academy_subjects WHERE id=?', (subject_id,)).fetchone()
+            if not row:
+                raise HTTPException(404)
+            old = row['name']
+            if old == clean:
+                return flash_redirect('/admin/subjects', 'No change made.')
+            if conn.execute('SELECT 1 FROM academy_subjects WHERE lower(name)=lower(?) AND id<>?', (clean, subject_id)).fetchone():
+                raise ValueError('Another subject already uses that name.')
+            # Rename in place, then carry every live reference across so no
+            # student, class, challenge or progress record is orphaned.
+            conn.execute('UPDATE academy_subjects SET name=? WHERE id=?', (clean, subject_id))
+            targets = []
+            for table, column in (('class_schedules', 'subject'), ('class_sessions', 'subject'),
+                                  ('challenges', 'subject'), ('student_progress_records', 'subject')):
+                try:
+                    conn.execute(f'UPDATE {table} SET {column}=? WHERE {column}=?', (clean, old))
+                    targets.append(table)
+                except Exception:
+                    pass
+            try:
+                for r in conn.execute("SELECT user_id,profile_json FROM academy_signup_profiles WHERE profile_json LIKE ?", (f'%"{old}"%',)).fetchall():
+                    try:
+                        profile = json.loads(r['profile_json']) or {}
+                    except (TypeError, ValueError):
+                        continue
+                    subjects = profile.get('subjects')
+                    if isinstance(subjects, list) and old in subjects:
+                        profile['subjects'] = [clean if x == old else x for x in subjects]
+                        conn.execute('UPDATE academy_signup_profiles SET profile_json=? WHERE user_id=?',
+                                     (json.dumps(profile), r['user_id']))
+            except Exception:
+                pass
+            audit(conn, admin['id'], 'subject_renamed', f'{old} -> {clean}')
+        clear_subjects_cache()
+    except ValueError as exc:
+        return flash_redirect('/admin/subjects', str(exc), 'error')
+    return flash_redirect('/admin/subjects', f'Renamed to {clean}. Existing records were updated too.')
+
+
+@app.post('/admin/subjects/toggle')
+def admin_subject_toggle(request: Request, subject_id: int = Form(...), activate: str = Form('0')):
+    admin = require_admin(request, super_only=True)
+    active = 1 if activate == '1' else 0
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT name FROM academy_subjects WHERE id=?', (subject_id,)).fetchone()
+        if not row:
+            raise HTTPException(404)
+        if not active:
+            remaining = conn.execute('SELECT COUNT(*) c FROM academy_subjects WHERE is_active=1 AND id<>?', (subject_id,)).fetchone()['c']
+            if not remaining:
+                return flash_redirect('/admin/subjects', 'Keep at least one active subject.', 'error')
+        conn.execute('UPDATE academy_subjects SET is_active=? WHERE id=?', (active, subject_id))
+        audit(conn, admin['id'], 'subject_' + ('restored' if active else 'retired'), row['name'])
+    clear_subjects_cache()
+    return flash_redirect('/admin/subjects', f'{row["name"]} {"restored" if active else "retired"}. Past records are unchanged.')
+
+
+@app.post('/admin/subjects/remove')
+def admin_subject_remove(request: Request, subject_id: int = Form(...)):
+    admin = require_admin(request, super_only=True)
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT name,is_active FROM academy_subjects WHERE id=?', (subject_id,)).fetchone()
+        if not row:
+            raise HTTPException(404)
+        name = row['name']
+        used = _subject_usage(conn, name)
+        total = sum(used.values())
+        if total:
+            return flash_redirect('/admin/subjects',
+                f'{name} is used by {total} record(s). Retire it instead so no history is lost.', 'error')
+        remaining = conn.execute('SELECT COUNT(*) c FROM academy_subjects WHERE is_active=1 AND id<>?', (subject_id,)).fetchone()['c']
+        if row['is_active'] and not remaining:
+            return flash_redirect('/admin/subjects', 'Keep at least one active subject.', 'error')
+        conn.execute('DELETE FROM academy_subjects WHERE id=?', (subject_id,))
+        audit(conn, admin['id'], 'subject_removed', name)
+    clear_subjects_cache()
+    return flash_redirect('/admin/subjects', f'{name} deleted.')
+
+
+@app.get('/api/subjects')
+def api_subjects(request: Request):
+    """Public, read-only subject list for the registration wizard.
+
+    The wizard used to ship its own hardcoded ['Maths', 'Computer Science'].
+    It now asks for this list so an admin-added subject appears immediately.
+    """
+    return JSONResponse({'subjects': get_subjects(fresh=True)})
