@@ -1026,3 +1026,86 @@ select:invalid,.panel table td select{color:var(--ink)}
 @media (prefers-reduced-motion:reduce){
   .overview-banner>.hero-canvas{opacity:1}
 }
+
+/* ==========================================================================
+   App surfaces — the dashboard content below the hero
+   --------------------------------------------------------------------------
+   Safety contract: nothing here can hide content on its own. The hidden state
+   is scoped to .asc-surface:not(.is-risen), and ui.js adds .asc-surface only
+   after it has registered the element with an IntersectionObserver that will
+   remove the state again. With JS blocked, disabled, or failing, no element
+   carries .asc-surface and every card renders normally at all times.
+   ========================================================================== */
+.asc-surface{
+  opacity:1;
+  transform:none;
+}
+
+/* Only animate when the browser can also un-hide, i.e. JavaScript is running. */
+.js-motion .asc-surface:not(.is-risen){
+  opacity:0;
+  transform:translateY(10px);
+}
+
+.asc-surface.is-risen{
+  opacity:1;
+  transform:none;
+  transition:
+    opacity .48s var(--ease-out) var(--rise-delay,0ms),
+    transform .48s var(--ease-out) var(--rise-delay,0ms);
+}
+
+/* Motion off / reduced motion: no travel, no stagger — just visible. */
+.ui-motion-off .asc-surface,
+.ui-motion-off .asc-surface:not(.is-risen){
+  opacity:1!important;
+  transform:none!important;
+  transition:none!important;
+}
+@media (prefers-reduced-motion:reduce){
+  .js-motion .asc-surface:not(.is-risen){opacity:1;transform:none}
+  .asc-surface.is-risen{transition:none}
+}
+
+/* ---- cursor spotlight ----------------------------------------------------
+   Uses the --mx/--my properties ui.js already set for .stat-card, so the
+   highlight speaks the same visual language as the existing hover states.
+   Painted on ::after so it cannot disturb any card's own ::before accent. */
+.asc-surface{position:relative}
+.asc-surface:not(.no-spot)::after{
+  content:"";
+  position:absolute;inset:0;z-index:0;
+  border-radius:inherit;
+  pointer-events:none;
+  opacity:0;
+  transition:opacity .35s var(--ease-out);
+  background:radial-gradient(
+    240px circle at var(--mx,50%) var(--my,50%),
+    color-mix(in srgb,var(--green-600,#0f9a73) 20%,transparent),
+    transparent 72%);
+}
+.asc-surface:not(.no-spot):hover::after{opacity:1}
+/* A hairline that warms toward the cursor, so the card reads as lit rather
+   than tinted. Kept to the border only: no layout shift, no new surface. */
+.asc-surface:not(.no-spot):hover{
+  border-color:color-mix(in srgb,var(--green-600,#0f9a73) 26%,var(--line,#e0ece7));
+}
+/* Keep the card's own children above the wash. */
+.asc-surface:not(.no-spot):hover>*{position:relative;z-index:1}
+/* Cards that already paint their own ::before edge keep it on top. */
+.asc-surface:hover::before{z-index:1}
+
+/* Tilt is applied only to the narrow set of promo-style cards and is capped
+   at ~2 degrees in JS; perspective keeps it from looking like a skew. */
+.asc-surface[style*="--tilt-x"]{
+  transform:perspective(900px) rotateX(var(--tilt-x,0deg)) rotateY(var(--tilt-y,0deg));
+  transition:transform .18s var(--ease-out);
+  will-change:transform;
+}
+
+.ui-motion-off .asc-surface::after{display:none}
+.ui-motion-off .asc-surface[style*="--tilt-x"]{transform:none}
+@media (prefers-reduced-motion:reduce){
+  .asc-surface::after{display:none}
+  .asc-surface[style*="--tilt-x"]{transform:none}
+}
