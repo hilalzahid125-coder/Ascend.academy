@@ -971,7 +971,8 @@ select:invalid,.panel table td select{color:var(--ink)}
    .overview-banner. The canvas fills it and the copy sits above it, so the
    motion reads as depth behind the page rather than a panel bolted on top.
    Nothing here changes colour, spacing or hierarchy: the banner keeps its
-   #e8f4ef surface, 1px border and 135px rhythm.
+   dark emerald gradient, mosaic, border and 135px rhythm — the canvas only
+   adds living depth behind the copy.
    ========================================================================== */
 .overview-banner>.hero-canvas{
   position:absolute;inset:0;z-index:0;width:100%;height:100%;
@@ -980,24 +981,23 @@ select:invalid,.panel table td select{color:var(--ink)}
 }
 .overview-banner.is-ready>.hero-canvas{opacity:1}
 
-/* Left-to-right wash so the headline keeps full contrast over the art.
-   Matched to the banner surface instead of a black scrim, which would turn
-   the light banner muddy.
-   banner-design.css caps .overview-banner>div at max-width:70% and raises it
-   to z-index 1; the wash must span the banner and stay under the copy, so both
-   are reset here with a two-class selector. */
+/* Contrast guard for the copy over live art.
+   ui.css renders .overview-banner as a DARK emerald gradient (it loads after
+   banner-design.css and wins), so the wash must be made of that same dark
+   gradient. The previous mint (#e8f4ef) wash was built on a wrong assumption
+   and laid a milky film over every dashboard. This version is dark-on-dark
+   and invisible except as extra depth behind the headline. */
 .overview-banner>.hero-vignette{
   position:absolute;inset:0;z-index:0;pointer-events:none;
   max-width:none;width:auto;height:auto;
   background:linear-gradient(90deg,
-    color-mix(in srgb,#e8f4ef 92%,transparent) 0%,
-    color-mix(in srgb,#e8f4ef 74%,transparent) 34%,
-    color-mix(in srgb,#e8f4ef 26%,transparent) 58%,
-    transparent 78%);
+    rgba(3,38,28,.62) 0%,
+    rgba(3,38,28,.44) 30%,
+    rgba(3,38,28,.16) 52%,
+    transparent 70%);
 }
-/* The decorative mosaic already owns the right edge; with live art behind it
-   the mosaic would read as noise, so it steps back rather than disappearing. */
-.overview-banner.is-ready:before{opacity:.10;transition:opacity .8s var(--ease-out)}
+/* The mosaic is part of the banner's original look; leave its opacity alone. */
+.overview-banner.is-ready:before{opacity:.22}
 
 /* pointer-events / z-index contract: copy and controls stay clickable and
    always paint above the art. */
@@ -1007,21 +1007,20 @@ select:invalid,.panel table td select{color:var(--ink)}
 @media (max-width:820px){
   .overview-banner>.hero-vignette{
     background:linear-gradient(90deg,
-      color-mix(in srgb,#e8f4ef 94%,transparent) 0%,
-      color-mix(in srgb,#e8f4ef 80%,transparent) 46%,
-      color-mix(in srgb,#e8f4ef 30%,transparent) 74%,
-      transparent 94%);
+      rgba(3,38,28,.68) 0%,
+      rgba(3,38,28,.50) 42%,
+      rgba(3,38,28,.20) 66%,
+      transparent 88%);
   }
 }
 @media (max-width:600px){
   /* On phones the copy spans the width, so the art moves out of its way. */
   .overview-banner>.hero-vignette{
     background:linear-gradient(90deg,
-      color-mix(in srgb,#e8f4ef 95%,transparent) 0%,
-      color-mix(in srgb,#e8f4ef 88%,transparent) 62%,
-      color-mix(in srgb,#e8f4ef 55%,transparent) 100%);
+      rgba(3,38,28,.72) 0%,
+      rgba(3,38,28,.58) 56%,
+      rgba(3,38,28,.34) 100%);
   }
-  .overview-banner.is-ready:before{opacity:.16}
 }
 @media (prefers-reduced-motion:reduce){
   .overview-banner>.hero-canvas{opacity:1}
@@ -1044,15 +1043,15 @@ select:invalid,.panel table td select{color:var(--ink)}
 /* Only animate when the browser can also un-hide, i.e. JavaScript is running. */
 .js-motion .asc-surface:not(.is-risen){
   opacity:0;
-  transform:translateY(10px);
+  transform:translateY(14px);
 }
 
 .asc-surface.is-risen{
   opacity:1;
   transform:none;
   transition:
-    opacity .48s var(--ease-out) var(--rise-delay,0ms),
-    transform .48s var(--ease-out) var(--rise-delay,0ms);
+    opacity .55s var(--ease-out) var(--rise-delay,0ms),
+    transform .55s var(--ease-out) var(--rise-delay,0ms);
 }
 
 /* Motion off / reduced motion: no travel, no stagger — just visible. */

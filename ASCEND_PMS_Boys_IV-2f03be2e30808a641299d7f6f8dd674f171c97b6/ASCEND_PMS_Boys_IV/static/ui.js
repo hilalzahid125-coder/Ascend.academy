@@ -453,8 +453,8 @@
      for reduced motion. Nothing here changes layout, colour or content.
      ====================================================================== */
 
-  var CARD_SEL = '.stat-card,.panel,.fee-entry,.rank-row,.notification-row,.challenge-card,.class-card,.achievement-card,.log-row,.activity-row';
-  var GROUP_SEL = '.stat-grid,.content-grid,.fee-list,.list-stack,.grid-cards';
+  var CARD_SEL = '.stat-card,.panel,.fee-entry,.rank-row,.notification-row,.challenge-card,.class-card,.achievement-card,.log-row,.activity-row,.home-section,.quick-actions a,.auth-card';
+  var GROUP_SEL = '.stat-grid,.content-grid,.fee-list,.list-stack,.grid-cards,.quick-actions,.challenge-grid,.reward-grid,.home-challenge-grid,.home-progress-grid,.home-reward-grid';
 
   /* Cards that get the pointer tilt. Deliberately narrow: big content panels
      should not move under the cursor while someone is reading them. */
@@ -482,7 +482,7 @@
     node.dataset.surfaceReady = '1';
     node.classList.add('asc-surface');
     var idx = Math.min(groupIndex(node), 8);
-    node.style.setProperty('--rise-delay', (idx * 45) + 'ms');
+    node.style.setProperty('--rise-delay', (idx * 50) + 'ms');
     surfaces.cards.push(node);
   }
 

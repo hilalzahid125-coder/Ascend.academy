@@ -1,6 +1,8 @@
 {% extends "base.html" %}{% block title %}Classes · {{ settings.app_name }}{% endblock %}
 {% block content %}
 <section class="page-head overview-banner">
+  <canvas id="hero-canvas" class="hero-canvas" aria-hidden="true"></canvas>
+  <div class="hero-vignette" aria-hidden="true"></div>
   <div><span class="eyebrow">PARENT WORKSPACE</span><h1>{{ child.full_name }}’s classes</h1><p>The student’s assigned timetable and teachers, as recorded by the academy.</p></div>
   <a class="btn ghost" href="/parent">Back to overview</a>
 </section>
