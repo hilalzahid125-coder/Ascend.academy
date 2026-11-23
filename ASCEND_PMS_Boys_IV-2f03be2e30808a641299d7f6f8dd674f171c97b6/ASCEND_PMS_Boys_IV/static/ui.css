@@ -688,6 +688,8 @@ html.ui-motion-off .ui-bubble{display:none}
   .page{padding:0;max-width:none}
   .panel,.stat-card{box-shadow:none;break-inside:avoid}
   body{background:#fff}
+  /* Canvas art is decorative and wasteful in print: drop it, keep the banner. */
+  .hero-canvas,.hero-vignette{display:none!important}
 }
 
 /* Motion toggle lives in the topbar; hidden until ui.js wires it up. */
@@ -962,3 +964,65 @@ select:invalid,.panel table td select{color:var(--ink)}
 /* Legal pages: keep the footer credit as plain text, not a stranded line. */
 .legal-shell .public-footer{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-top:2.5rem;border-radius:0}
 .legal-shell .public-footer small{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.04em;color:#bfe9d8}
+
+/* ==========================================================================
+   Dashboard banner heroes (parent / admin / teacher)
+   The student page has a tall hero of its own; these pages use the compact
+   .overview-banner. The canvas fills it and the copy sits above it, so the
+   motion reads as depth behind the page rather than a panel bolted on top.
+   Nothing here changes colour, spacing or hierarchy: the banner keeps its
+   #e8f4ef surface, 1px border and 135px rhythm.
+   ========================================================================== */
+.overview-banner>.hero-canvas{
+  position:absolute;inset:0;z-index:0;width:100%;height:100%;
+  display:block;pointer-events:none;opacity:0;
+  transition:opacity 1s var(--ease-out);
+}
+.overview-banner.is-ready>.hero-canvas{opacity:1}
+
+/* Left-to-right wash so the headline keeps full contrast over the art.
+   Matched to the banner surface instead of a black scrim, which would turn
+   the light banner muddy.
+   banner-design.css caps .overview-banner>div at max-width:70% and raises it
+   to z-index 1; the wash must span the banner and stay under the copy, so both
+   are reset here with a two-class selector. */
+.overview-banner>.hero-vignette{
+  position:absolute;inset:0;z-index:0;pointer-events:none;
+  max-width:none;width:auto;height:auto;
+  background:linear-gradient(90deg,
+    color-mix(in srgb,#e8f4ef 92%,transparent) 0%,
+    color-mix(in srgb,#e8f4ef 74%,transparent) 34%,
+    color-mix(in srgb,#e8f4ef 26%,transparent) 58%,
+    transparent 78%);
+}
+/* The decorative mosaic already owns the right edge; with live art behind it
+   the mosaic would read as noise, so it steps back rather than disappearing. */
+.overview-banner.is-ready:before{opacity:.10;transition:opacity .8s var(--ease-out)}
+
+/* pointer-events / z-index contract: copy and controls stay clickable and
+   always paint above the art. */
+.overview-banner>div,.overview-banner>form,.overview-banner>.btn{position:relative;z-index:2}
+.overview-banner>.hero-canvas,.overview-banner>.hero-vignette{z-index:0}
+
+@media (max-width:820px){
+  .overview-banner>.hero-vignette{
+    background:linear-gradient(90deg,
+      color-mix(in srgb,#e8f4ef 94%,transparent) 0%,
+      color-mix(in srgb,#e8f4ef 80%,transparent) 46%,
+      color-mix(in srgb,#e8f4ef 30%,transparent) 74%,
+      transparent 94%);
+  }
+}
+@media (max-width:600px){
+  /* On phones the copy spans the width, so the art moves out of its way. */
+  .overview-banner>.hero-vignette{
+    background:linear-gradient(90deg,
+      color-mix(in srgb,#e8f4ef 95%,transparent) 0%,
+      color-mix(in srgb,#e8f4ef 88%,transparent) 62%,
+      color-mix(in srgb,#e8f4ef 55%,transparent) 100%);
+  }
+  .overview-banner.is-ready:before{opacity:.16}
+}
+@media (prefers-reduced-motion:reduce){
+  .overview-banner>.hero-canvas{opacity:1}
+}
