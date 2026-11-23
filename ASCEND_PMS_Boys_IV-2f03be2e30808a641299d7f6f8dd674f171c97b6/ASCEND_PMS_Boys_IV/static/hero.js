@@ -4,7 +4,23 @@
    a strict Content-Security-Policy (script-src 'self') and must work offline,
    so the same emerald/mint depth, bloom and parallax feel is produced with a
    hand-rolled 3D projection on a single <canvas>. If anything is unsupported
-   the static SVG fallback stays visible and no error is raised.
+   the static fallback stays visible and no error is raised.
+
+   SIX SCENES, ONE LANGUAGE
+   Every scene shares the same projection, lighting and pointer easing so the
+   portals feel like one product. They differ in what they build, not how it
+   moves:
+     constellation (guest/login)  layered orbit rings + node web
+     trophy        (student)      stepped podium + floating cubes + sparks
+     orbit         (parent)       elliptical arcs + travelling pearls
+     grid          (admin)        low tessellated depth field
+     lectern       (teacher)      stacked books + rising light motes
+
+   PERFORMANCE BUDGET
+   - Device pixel ratio capped at 2 (1.35 on low-core machines).
+   - Paused entirely by the Motion toggle and when the tab is hidden.
+   - Off-screen canvases are not drawn (IntersectionObserver).
+   - Particle counts scale with hero width and hardware concurrency.
    ========================================================================== */
 (function () {
   'use strict';
@@ -13,6 +29,9 @@
   var motionOn = function () {
     return window.ASCEND_MOTION ? window.ASCEND_MOTION.isOn() : !reduceOS;
   };
+
+  var cores = (navigator.hardwareConcurrency || 8);
+  var LOW_POWER = cores <= 4 || window.innerWidth < 700;
 
   function palette() {
     var probe = document.createElement('span');
@@ -24,20 +43,70 @@
     return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [15, 154, 115];
   }
 
+  function rgba(c, alpha) {
+    return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + alpha + ')';
+  }
+
+  function lift(c, amount) {
+    return [
+      Math.min(255, c[0] + amount),
+      Math.min(255, c[1] + amount),
+      Math.min(255, c[2] + amount)
+    ];
+  }
+
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    var radius = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    ctx.lineTo(x + radius, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  }
+
+  /* ------------------------------------------------------------ composition
+     The copy column may run to 70% of a banner, so the art is anchored past
+     that line. On narrow banners the text spans nearly the full width, so the
+     composition is pushed further right and shrunk until it clears the copy. */
+  HeroScene.prototype.anchorX = function (ratio) {
+    if (!this.fill) return this.w * ratio;
+    var narrow = Math.min(1, Math.max(0, (this.w - 420) / 360));
+    var r = ratio + (0.80 - ratio) * (1 - narrow) * 0.85;
+    return this.w * Math.min(0.84, r);
+  };
+
+  /* =========================================================== THE SCENE */
   function HeroScene(canvas, host, options) {
     var opts = options || {};
     this.canvas = canvas;
     this.host = host;
     this.ctx = canvas.getContext('2d');
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.dpr = Math.min(window.devicePixelRatio || 1, LOW_POWER ? 1.35 : 2);
     this.rgb = opts.rgb || [15, 154, 115];
     this.light = opts.light || false;
     this.count = opts.count || 46;
     this.soft = !!opts.soft;
     this.speed = opts.speed || 1;
+    this.scene = opts.scene || 'constellation';
+    this.fill = !!opts.fill;
+    this.accent = opts.accent || [163, 214, 75];
     this.points = [];
+    this.sparks = [];
+    this.pearls = [];
+    this.motes = [];
+    this.gridNodes = [];
+    this.cubes = [];
     this.raf = 0;
-    this.angle = 0;
+    this.visible = true;
+    this.startAt = 0;
     this.pointer = { x: 0, y: 0, tx: 0, ty: 0 };
     this.resize();
     this.seed();
@@ -56,33 +125,125 @@
   };
 
   HeroScene.prototype.seed = function () {
-    var radius = Math.max(this.w, this.h) * 0.42;
-    this.radius = radius;
+    var w = this.w, h = this.h;
+    /* Wide, short banners (the dashboard .overview-banner) would shrink a
+       min(w,h) radius to nothing, so they scale from the height instead. */
+    this.radius = Math.min(
+      Math.max(w, h) * 0.42,
+      Math.min(w, h) * (this.fill ? 0.62 : 0.46)
+    );
+    var density = Math.min(1.35, Math.max(0.55, w / 620));
+    var i;
+
     this.points = [];
-    var total = Math.max(18, Math.round(this.count * Math.min(1.4, Math.max(0.55, this.w / 620))));
-    for (var i = 0; i < total; i++) {
+    var total = Math.max(16, Math.round(this.count * density));
+    for (i = 0; i < total; i++) {
       var theta = Math.acos(1 - 2 * ((i + 0.5) / total));
       var phi = Math.PI * (1 + Math.sqrt(5)) * i;
       this.points.push({
         x: Math.cos(phi) * Math.sin(theta),
         y: Math.cos(theta),
         z: Math.sin(phi) * Math.sin(theta),
-        r: 1.1 + Math.random() * 2.4,
+        r: 1.1 + Math.random() * 2.2,
         tw: Math.random() * Math.PI * 2
       });
     }
+
+    this.podium = [
+      { bx: -0.44, bw: 0.30, bh: 0.42, by: 0.30, delay: 0 },
+      { bx: 0.00, bw: 0.34, bh: 0.62, by: 0.10, delay: 0.14 },
+      { bx: 0.42, bw: 0.28, bh: 0.34, by: 0.38, delay: 0.28 }
+    ];
+    this.cubes = [];
+    var cubeCount = LOW_POWER ? 6 : 10;
+    for (i = 0; i < cubeCount; i++) {
+      this.cubes.push({
+        x: (Math.random() - 0.5) * 2.1,
+        y: (Math.random() - 0.5) * 1.5,
+        size: 0.055 + Math.random() * 0.085,
+        spin: Math.random() * Math.PI * 2,
+        spinSpeed: (Math.random() - 0.5) * 0.6,
+        bob: Math.random() * Math.PI * 2,
+        depth: 0.5 + Math.random() * 0.8
+      });
+    }
+    this.sparks = [];
+    var sparkCount = LOW_POWER ? 22 : 46;
+    for (i = 0; i < sparkCount; i++) {
+      this.sparks.push({
+        x: Math.random(),
+        y: Math.random(),
+        size: 0.7 + Math.random() * 1.8,
+        rise: 0.006 + Math.random() * 0.018,
+        drift: (Math.random() - 0.5) * 0.006,
+        tw: Math.random() * Math.PI * 2,
+        tone: Math.random() > 0.55 ? 'accent' : 'mint'
+      });
+    }
+
+    this.orbitRings = [
+      { rx: 0.86, ry: 0.30, rot: -0.22, speed: 0.55, alpha: 0.30 },
+      { rx: 0.66, ry: 0.22, rot: 0.16, speed: -0.78, alpha: 0.34 },
+      { rx: 1.02, ry: 0.36, rot: 0.42, speed: 0.34, alpha: 0.18 }
+    ];
+    this.pearls = [];
+    var pearlCount = LOW_POWER ? 3 : 5;
+    for (i = 0; i < pearlCount; i++) {
+      this.pearls.push({
+        ring: i % this.orbitRings.length,
+        phase: Math.random() * Math.PI * 2,
+        size: 2.4 + Math.random() * 3.4,
+        depth: 0.4 + Math.random() * 0.9
+      });
+    }
+
+    this.gridNodes = [];
+    this.gridCols = LOW_POWER ? 9 : 13;
+    this.gridRows = LOW_POWER ? 5 : 7;
+    for (var r = 0; r < this.gridRows; r++) {
+      for (var c = 0; c < this.gridCols; c++) {
+        this.gridNodes.push({
+          cx: (c / (this.gridCols - 1)) * 2 - 1,
+          cy: (r / (this.gridRows - 1)) * 2 - 1,
+          wave: Math.random() * Math.PI * 2
+        });
+      }
+    }
+
+    this.motes = [];
+    var moteCount = LOW_POWER ? 26 : 52;
+    for (i = 0; i < moteCount; i++) {
+      this.motes.push({
+        x: Math.random(),
+        y: Math.random(),
+        r: 0.8 + Math.random() * 2.1,
+        rise: 0.004 + Math.random() * 0.012,
+        drift: (Math.random() - 0.5) * 0.004,
+        tw: Math.random() * Math.PI * 2
+      });
+    }
+
+    this.density = density;
   };
 
   HeroScene.prototype.tick = function (time) {
     var self = this;
-    if (!this.raf) this.raf = 1;
-    if (!motionOn()) { this.draw(time, true); this.raf = 0; return; }
+    if (!motionOn() || !this.visible) {
+      this.draw(time || 0, true);
+      this.raf = 0;
+      return;
+    }
     this.raf = requestAnimationFrame(function (t) { self.tick(t || 0); });
+    /* Ease the pointer toward its target here rather than in a second global
+       loop: one rAF per visible hero, and the easing stops when the scene does. */
+    this.pointer.x += (this.pointer.tx - this.pointer.x) * 0.045;
+    this.pointer.y += (this.pointer.ty - this.pointer.y) * 0.045;
     this.draw(time || 0, false);
   };
 
   HeroScene.prototype.start = function () {
     if (this.raf) return;
+    if (!this.startAt) this.startAt = performance.now();
     this.host.classList.add('is-ready');
     this.canvas.style.opacity = '';
     var self = this;
@@ -91,188 +252,898 @@
   };
 
   HeroScene.prototype.stop = function () {
-    if (this.raf && this.raf !== 1) cancelAnimationFrame(this.raf);
+    if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   };
 
-  HeroScene.prototype.draw = function (time, still) {
-    var ctx = this.ctx, w = this.w, h = this.h;
-    if (!w || !h) return;
-    var t = still ? 12 : time * 0.00018 * this.speed;
-    var c = this.rgb;
-    var base = this.light ? 'rgba(238,249,244,' : 'rgba(4,26,19,';
-    ctx.clearRect(0, 0, w, h);
-
-    /* soft radial bloom behind the constellation */
-    var gx = w * 0.7, gy = h * 0.46;
-    var glow = ctx.createRadialGradient(gx, gy, 0, gx, gy, Math.max(w, h) * 0.62);
+  HeroScene.prototype.softGlow = function (w, h, gx, gy, kick) {
+    var ctx = this.ctx, c = this.rgb;
+    var span = this.fill ? this.radius * 1.55 : Math.max(w, h);
+    var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, span * (0.60 + kick));
     if (this.light) {
-      glow.addColorStop(0, 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',.20)');
-      glow.addColorStop(0.55, 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',.08)');
-      glow.addColorStop(1, 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',0)');
+      g.addColorStop(0, rgba(c, 0.16));
+      g.addColorStop(0.55, rgba(c, 0.065));
+      g.addColorStop(1, rgba(c, 0));
     } else {
-      glow.addColorStop(0, 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',.42)');
-      glow.addColorStop(0.5, 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',.14)');
-      glow.addColorStop(1, 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',0)');
+      g.addColorStop(0, rgba(c, 0.40));
+      g.addColorStop(0.5, rgba(c, 0.13));
+      g.addColorStop(1, rgba(c, 0));
     }
-    ctx.fillStyle = glow;
+    ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
+  };
 
-    /* inner core */
-    var core = ctx.createRadialGradient(gx, gy, 0, gx, gy, Math.max(w, h) * 0.24);
-    core.addColorStop(0, this.light ? 'rgba(163,214,75,.22)' : 'rgba(163,214,75,.30)');
-    core.addColorStop(1, 'rgba(163,214,75,0)');
-    ctx.fillStyle = core;
+  HeroScene.prototype.core = function (w, h, gx, gy, scale) {
+    var ctx = this.ctx;
+    var a = this.light ? 0.20 : 0.30;
+    var span = this.fill ? this.radius * 0.62 : Math.max(w, h) * 0.24;
+    var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, span * (scale || 1));
+    g.addColorStop(0, rgba(this.accent, a));
+    g.addColorStop(1, rgba(this.accent, 0));
+    ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
+  };
 
-    this.pointer.x += (this.pointer.tx - this.pointer.x) * 0.045;
-    this.pointer.y += (this.pointer.ty - this.pointer.y) * 0.045;
+  HeroScene.prototype.project = function (p, spin, tilt, cx, cy, radius) {
+    var cosA = Math.cos(spin + p.tw * 0.02);
+    var sinA = Math.sin(spin + p.tw * 0.02);
+    var x = p.x * cosA - p.z * sinA;
+    var z = p.x * sinA + p.z * cosA;
+    var cosT = Math.cos(tilt);
+    var sinT = Math.sin(tilt);
+    var y2 = p.y * cosT - z * sinT;
+    var z2 = p.y * sinT + z * cosT;
+    var depth = (z2 + 1.6) / 2.6;
+    var scale = 0.55 + depth * 0.75;
+    return {
+      x: cx + x * radius * scale,
+      y: cy + y2 * radius * scale * 0.82,
+      z: depth,
+      scale: scale,
+      r: p.r * scale,
+      tw: p.tw
+    };
+  };
 
-    var cx = w * 0.63 + this.pointer.x * 18;
-    var cy = h * 0.48 + this.pointer.y * 14;
-    var radius = Math.min(this.radius, Math.min(w, h) * 0.46);
-    var tilt = 0.34 + this.pointer.y * 0.12;
-    var spin = t * 0.55 + this.pointer.x * 0.16;
+  HeroScene.prototype.cube = function (x, y, size, spin, depth, alpha) {
+    var ctx = this.ctx;
+    var c = this.rgb;
+    var top = lift(c, 130);
+    var left = lift(c, 40);
+    var right = lift(c, 85);
+    var s = size;
+    var wob = Math.sin(spin) * s * 0.22;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.lineTo(s * 0.86, -s * 0.5);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(-s * 0.86, -s * 0.5);
+    ctx.closePath();
+    ctx.fillStyle = rgba(top, alpha * 0.86);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.86, -s * 0.5);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(0, s * 1.05 + wob);
+    ctx.lineTo(-s * 0.86, s * 0.55 + wob);
+    ctx.closePath();
+    ctx.fillStyle = rgba(left, alpha * 0.68);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(s * 0.86, -s * 0.5);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(0, s * 1.05 + wob);
+    ctx.lineTo(s * 0.86, s * 0.55 + wob);
+    ctx.closePath();
+    ctx.fillStyle = rgba(right, alpha * (0.42 + depth * 0.34));
+    ctx.fill();
+    ctx.restore();
+  };
+
+  /* ============================================ TONE TABLE (light vs dark)
+     The login showcase is a deep emerald panel; every dashboard hero is a
+     light mint banner. Painting light-theme emerald on top of a mint surface
+     produces the washed-out haze these scenes started with, so light mode
+     draws *ink* (deep emerald) for geometry and *white glass* for solids,
+     and only the glow layer stays tinted. */
+  HeroScene.prototype.tones = function () {
+    if (this.light) {
+      return {
+        ink: this.rgb,                       /* deep emerald for structure */
+        deep: lift(this.rgb, 18),
+        solid: [255, 255, 255],              /* glassy white cubes/pearls */
+        accent: this.accent,
+        dust: this.rgb
+      };
+    }
+    return {
+      ink: lift(this.rgb, 70),
+      deep: lift(this.rgb, 130),
+      solid: lift(this.accent, 60),
+      accent: this.accent,
+      dust: lift(this.rgb, 90)
+    };
+  };
+
+  HeroScene.prototype.softGlow = function (w, h, gx, gy, kick) {
+    var ctx = this.ctx, c = this.rgb;
+    var span = this.fill ? this.radius * 1.9 : Math.max(w, h);
+    var fade = Math.max(span * (0.60 + kick), Math.min(w, h) * 0.55);
+    var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, fade);
+    if (this.light) {
+      g.addColorStop(0, rgba(lift(c, 40), 0.13));
+      g.addColorStop(0.5, rgba(lift(c, 70), 0.05));
+      g.addColorStop(1, rgba(c, 0));
+    } else {
+      g.addColorStop(0, rgba(lift(c, 30), 0.30));
+      g.addColorStop(0.35, rgba(c, 0.20));
+      g.addColorStop(1, rgba(c, 0));
+    }
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  };
+
+  HeroScene.prototype.core = function (w, h, gx, gy, scale) {
+    var ctx = this.ctx;
+    var span = this.fill ? this.radius * 0.9 : Math.max(w, h) * 0.17;
+    var a = this.light ? 0.13 : 0.34;
+    var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, span * (scale || 1));
+    g.addColorStop(0, rgba(this.accent, a));
+    g.addColorStop(1, rgba(this.accent, 0));
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  };
+
+  /* Sparkle / node dot. Light mode needs a dark ink dot: a pale one vanishes. */
+  HeroScene.prototype.dot = function (x, y, r, alpha, tone) {
+    var ctx = this.ctx, t = this.tones();
+    var c = tone || t.ink;
+    ctx.fillStyle = rgba(c, alpha);
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(0.55, r), 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  HeroScene.prototype.halo = function (x, y, r, alpha, tone) {
+    var ctx = this.ctx, t = this.tones();
+    var c = tone || t.accent;
+    var g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, rgba(c, alpha));
+    g.addColorStop(0.45, rgba(c, alpha * 0.40));
+    g.addColorStop(1, rgba(c, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  /* Isometric cube. Light: white top, mint-grey flanks, emerald edge.
+     Dark: emerald top, deep flanks, lime edge. */
+  HeroScene.prototype.cube = function (x, y, size, spin, depth, alpha) {
+    var ctx = this.ctx, t = this.tones();
+    var top, left, right, edge;
+    if (this.light) {
+      top = [255, 255, 255];
+      left = lift(this.rgb, 118);
+      right = lift(this.rgb, 86);
+      edge = this.rgb;
+    } else {
+      top = lift(this.rgb, 165);
+      left = lift(this.rgb, 70);
+      right = lift(this.rgb, 120);
+      edge = this.accent;
+    }
+    var s = size;
+    var wob = Math.sin(spin) * s * 0.16;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.lineTo(s * 0.86, -s * 0.5);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(-s * 0.86, -s * 0.5);
+    ctx.closePath();
+    ctx.fillStyle = rgba(top, alpha);
+    ctx.fill();
+    ctx.strokeStyle = rgba(edge, alpha * 0.30);
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.86, -s * 0.5);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(0, s * 1.02 + wob);
+    ctx.lineTo(-s * 0.86, s * 0.52 + wob);
+    ctx.closePath();
+    ctx.fillStyle = rgba(left, alpha * (this.light ? 0.55 : 0.85));
+    ctx.fill();
+    ctx.strokeStyle = rgba(edge, alpha * 0.22);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(s * 0.86, -s * 0.5);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(0, s * 1.02 + wob);
+    ctx.lineTo(s * 0.86, s * 0.52 + wob);
+    ctx.closePath();
+    ctx.fillStyle = rgba(right, alpha * (this.light ? 0.45 : 0.72));
+    ctx.fill();
+    ctx.strokeStyle = rgba(edge, alpha * 0.20);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  /* ---------------------------------------------------------- SCENE: trophy
+     Student portal. Three stepped rises on a floor disc, a light beam above
+     the tallest, white glass cubes drifting in front, lime sparks rising. */
+  HeroScene.prototype.drawTrophy = function (time, still) {
+    var ctx = this.ctx, w = this.w, h = this.h, t0 = this.tones(), c = this.rgb;
+    var t = still ? 0.62 : time * 0.001 * this.speed;
+    var gx = this.anchorX(0.73) + this.pointer.x * 18;
+    var gy = h * 0.44 + this.pointer.y * 12;
+    var radius = this.radius * (this.fill && w < 620 ? 0.80 : 1);
+
+    this.softGlow(w, h, gx, gy, 0.04);
+    this.core(w, h, gx, gy, 1.0);
+
+    var floorY = h * 0.82;
+    var floorR = radius * 1.05;
+    ctx.save();
+    ctx.translate(gx, floorY);
+    ctx.scale(1, 0.24);
+    var disc = ctx.createRadialGradient(0, 0, 0, 0, 0, floorR);
+    disc.addColorStop(0, rgba(lift(c, 60), this.light ? 0.22 : 0.26));
+    disc.addColorStop(0.55, rgba(c, 0.12));
+    disc.addColorStop(1, rgba(c, 0));
+    ctx.fillStyle = disc;
+    ctx.beginPath();
+    ctx.arc(0, 0, floorR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = rgba(c, this.light ? 0.20 : 0.24);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(0, 0, floorR * 0.92, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+
+    var beam = ctx.createLinearGradient(0, h * 0.02, 0, floorY);
+    beam.addColorStop(0, rgba(this.accent, 0));
+    beam.addColorStop(0.6, rgba(this.accent, this.light ? 0.07 : 0.12));
+    beam.addColorStop(1, rgba(lift(c, 80), this.light ? 0.12 : 0.22));
+    ctx.fillStyle = beam;
+    ctx.beginPath();
+    ctx.moveTo(gx - radius * 0.26, h * 0.02);
+    ctx.lineTo(gx + radius * 0.26, h * 0.02);
+    ctx.lineTo(gx + radius * 0.62, floorY);
+    ctx.lineTo(gx - radius * 0.62, floorY);
+    ctx.closePath();
+    ctx.fill();
+
+    var appear = still ? 1 : Math.min(1, (time - this.startAt) / 900);
+    for (var p = 0; p < this.podium.length; p++) {
+      var step = this.podium[p];
+      var local = Math.max(0, Math.min(1, (appear - step.delay) / (1 - step.delay || 1)));
+      if (local <= 0) continue;
+      var ease = easeOutCubic(local);
+      var bw = step.bw * radius * 1.5;
+      var bh = step.bh * radius * 1.25;
+      var bx = gx + step.bx * radius * 1.35;
+      var baseY = floorY + step.by * radius * 0.10;
+      var rise = (1 - ease) * 22;
+
+      /* Podium sides: white in light mode with an emerald edge so the steps
+         read as glass plinths rather than pale blobs. */
+      var face = ctx.createLinearGradient(0, baseY - bh + rise, 0, baseY + rise);
+      if (this.light) {
+        /* Deep emerald solids with a light top: on a mint banner, pale shapes
+           disappear. Contrast comes from the ink, not from the fill. */
+        face.addColorStop(0, rgba(lift(c, 40), 0.92 * ease));
+        face.addColorStop(0.65, rgba(c, 0.93 * ease));
+        face.addColorStop(1, rgba(lift(c, -26), 0.92 * ease));
+      } else {
+        face.addColorStop(0, rgba(lift(c, 155), 0.92 * ease));
+        face.addColorStop(1, rgba(lift(c, 70), 0.88 * ease));
+      }
+      ctx.fillStyle = face;
+      roundRect(ctx, bx - bw / 2, baseY - bh + rise, bw, bh, 4);
+      ctx.fill();
+      ctx.strokeStyle = rgba(lift(c, 60), this.light ? 0.55 * ease : 0.30 * ease);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = this.light
+        ? rgba([255, 255, 255], 0.96 * ease)
+        : rgba(lift(c, 200), 0.95 * ease);
+      ctx.beginPath();
+      ctx.ellipse(bx, baseY - bh + rise, bw / 2, bw / 6.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = rgba(c, this.light ? 0.32 * ease : 0.26 * ease);
+      ctx.stroke();
+
+      /* front edge highlight */
+      ctx.strokeStyle = rgba([255, 255, 255], this.light ? 0.9 * ease : 0.34 * ease);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(bx - bw / 2 + 2, baseY - bh + rise + 3);
+      ctx.lineTo(bx - bw / 2 + 2, baseY + rise - 1);
+      ctx.stroke();
+    }
+
+    for (var i = 0; i < this.cubes.length; i++) {
+      var cube = this.cubes[i];
+      var bob = Math.sin(t * 0.9 + cube.bob) * 0.05;
+      var cxp = gx + (cube.x + this.pointer.x * 0.10) * radius * 1.30;
+      var cyp = gy + (cube.y + bob + this.pointer.y * 0.08) * radius * 0.95 - radius * 0.10;
+      var size = cube.size * radius * (0.55 + cube.depth * 0.5);
+      this.cube(cxp, cyp, size, t * cube.spinSpeed + cube.spin, cube.depth,
+        (this.light ? 0.72 : 0.62) * (0.55 + cube.depth * 0.45));
+    }
+
+    for (var s = 0; s < this.sparks.length; s++) {
+      var sp = this.sparks[s];
+      var sy = still ? sp.y : (sp.y - (t * 0.16 * sp.rise * 100) % 1 + 1) % 1;
+      var sx = sp.x + Math.sin(t * 0.6 + sp.tw) * 0.012;
+      var twinkle = 0.45 + Math.sin(t * 1.6 + sp.tw) * 0.55;
+      var tone = sp.tone === 'accent' ? this.accent : t0.dust;
+      var spAlpha = twinkle * (this.light ? 0.30 : 0.62);
+      if (sp.size > 1.9) this.halo(w * (0.44 + sx * 0.34), h * (0.12 + sy * 0.66), sp.size * 5, spAlpha * 0.5, tone);
+      this.dot(w * (0.44 + sx * 0.34), h * (0.12 + sy * 0.66), sp.size, spAlpha, tone);
+    }
+
+    this.drawDust(w, h, gx, gy, radius, t, still, 0.85);
+  };
+
+  /* ----------------------------------------------------------- SCENE: orbit
+     Parent portal. Concentric elliptical arcs with tick dashes, white pearls
+     travelling the rings, one emerald core with a lime centre. */
+  HeroScene.prototype.drawOrbit = function (time, still) {
+    var ctx = this.ctx, w = this.w, h = this.h, c = this.rgb;
+    var t = still ? 0.5 : time * 0.001 * this.speed;
+    var gx = this.anchorX(0.73) + this.pointer.x * 16;
+    var gy = h * 0.50 + this.pointer.y * 12;
+    var radius = this.radius * (this.fill && w < 620 ? 0.80 : 1);
+
+    this.softGlow(w, h, gx, gy, 0.0);
+    this.core(w, h, gx, gy, 0.85);
+
+    for (var r = 0; r < this.orbitRings.length; r++) {
+      var ring = this.orbitRings[r];
+      var phase = t * ring.speed;
+      ctx.save();
+      ctx.translate(gx, gy);
+      ctx.rotate(ring.rot + Math.sin(t * 0.22 + r) * 0.045 + this.pointer.x * 0.045);
+      ctx.scale(1, ring.ry / ring.rx);
+
+      ctx.strokeStyle = rgba(c, this.light ? 0.55 * ring.alpha + 0.24 : ring.alpha);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius * ring.rx, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.setLineDash([2, 10]);
+      ctx.lineDashOffset = -phase * 18;
+      ctx.strokeStyle = rgba(c, this.light ? 0.34 : 0.20);
+      ctx.beginPath();
+      ctx.arc(0, 0, radius * ring.rx * 0.84, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    var coreR = Math.max(10, radius * 0.26);
+    if (this.light) {
+      this.halo(gx, gy, coreR * 2.8, 0.34, c);
+      var disc = ctx.createRadialGradient(gx - coreR * 0.35, gy - coreR * 0.40, 0, gx, gy, coreR);
+      disc.addColorStop(0, rgba([255, 255, 255], 1));
+      disc.addColorStop(0.72, rgba([255, 255, 255], 0.98));
+      disc.addColorStop(1, rgba(lift(c, 120), 0.98));
+    } else {
+      var disc2 = ctx.createRadialGradient(gx - coreR * 0.35, gy - coreR * 0.40, 0, gx, gy, coreR);
+      disc2.addColorStop(0, rgba(lift(c, 190), 0.40));
+      disc2.addColorStop(1, rgba(lift(c, 110), 0.22));
+      disc = disc2;
+    }
+    ctx.fillStyle = disc;
+    ctx.beginPath();
+    ctx.arc(gx, gy, coreR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = rgba(c, this.light ? 0.75 : 0.30);
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+
+    ctx.fillStyle = rgba(this.accent, this.light ? 0.92 : 0.72);
+    ctx.beginPath();
+    ctx.arc(gx, gy, coreR * 0.30, 0, Math.PI * 2);
+    ctx.fill();
+
+    for (var p = 0; p < this.pearls.length; p++) {
+      var pearl = this.pearls[p];
+      var pr = this.orbitRings[pearl.ring];
+      var angle = t * pr.speed * 2.0 + pearl.phase;
+      var px = Math.cos(angle) * radius * pr.rx;
+      var py = Math.sin(angle) * radius * pr.ry;
+      var rot = pr.rot + Math.sin(t * 0.22 + pearl.ring) * 0.045 + this.pointer.x * 0.045;
+      var rx = px * Math.cos(rot) - py * Math.sin(rot);
+      var ry = px * Math.sin(rot) + py * Math.cos(rot);
+      var front = Math.sin(angle) > 0;
+      var size = pearl.size * (0.95 + pearl.depth * 0.75) * (front ? 1 : 0.70);
+      var alpha = (front ? 0.95 : 0.45) * (this.light ? 0.95 : 0.9);
+
+      this.halo(gx + rx, gy + ry, size * 4.6, alpha * 0.42, this.accent);
+      ctx.fillStyle = this.light
+        ? rgba([255, 255, 255], alpha)
+        : rgba(lift(this.accent, 120), alpha);
+      ctx.beginPath();
+      ctx.arc(gx + rx, gy + ry, size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = rgba(c, this.light ? alpha * 0.45 : 0);
+      ctx.lineWidth = 0.9;
+      ctx.stroke();
+    }
+
+    this.drawDust(w, h, gx, gy, radius, t, still, 0.55);
+  };
+
+  /* ------------------------------------------------------------ SCENE: grid
+     Admin portal. A slow radar sweep over a polar lattice: concentric ranges,
+     faint spokes, and nodes that light up as the beam passes. It reads as
+     oversight at a glance and stays calm because only the beam moves. */
+  HeroScene.prototype.drawGrid = function (time, still) {
+    var ctx = this.ctx, w = this.w, h = this.h, c = this.rgb;
+    var t = still ? 0.5 : time * 0.001 * this.speed;
+    var gx = this.anchorX(0.74) + this.pointer.x * 12;
+    var gy = h * 0.52 + this.pointer.y * 9;
+    /* Sized from the banner height so the dial never clips the top or bottom
+       edge, and never eats the copy column on narrow screens. */
+    var R = Math.min(h * 0.40, w * (this.fill && w < 620 ? 0.15 : 0.19));
+
+    this.softGlow(w, h, gx, gy, -0.15);
+    this.core(w, h, gx, gy, 0.42);
+
+    var rings = 3;
+    for (var r = 1; r <= rings; r++) {
+      var rr = (R * r) / rings;
+      ctx.strokeStyle = rgba(c, this.light ? 0.26 : 0.16);
+      ctx.lineWidth = 1;
+      ctx.setLineDash(r === rings ? [] : [3, 7]);
+      ctx.beginPath();
+      ctx.arc(gx, gy, rr, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    var spokes = 12;
+    for (var sp = 0; sp < spokes; sp++) {
+      var a = (sp / spokes) * Math.PI * 2;
+      ctx.strokeStyle = rgba(c, this.light ? 0.12 : 0.08);
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(gx + Math.cos(a) * R * 0.10, gy + Math.sin(a) * R * 0.10);
+      ctx.lineTo(gx + Math.cos(a) * R, gy + Math.sin(a) * R);
+      ctx.stroke();
+    }
+
+    /* rotating beam */
+    var sweep = (still ? 1.1 : t * 0.55) % (Math.PI * 2);
+    ctx.save();
+    ctx.translate(gx, gy);
+    ctx.rotate(sweep);
+    var beam = ctx.createLinearGradient(0, 0, R, 0);
+    beam.addColorStop(0, rgba(this.accent, this.light ? 0.34 : 0.30));
+    beam.addColorStop(1, rgba(this.accent, 0));
+    ctx.fillStyle = beam;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, R, -0.42, 0.02);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = rgba(this.accent, this.light ? 0.55 : 0.42);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(R, 0);
+    ctx.stroke();
+    ctx.restore();
+
+    /* nodes: brightness rises as the beam passes, then decays */
+    for (var i = 0; i < this.gridNodes.length; i++) {
+      var node = this.gridNodes[i];
+      var ang = node.wave;
+      var dist = 0.28 + (Math.abs(node.cx) * 0.5 + 0.5) * 0.68;
+      var px = gx + Math.cos(ang) * R * dist;
+      var py = gy + Math.sin(ang) * R * dist * 0.98;
+
+      var delta = ((sweep - ang) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+      var live = delta < 1.5 ? Math.exp(-Math.pow(delta * 1.5, 2)) : 0;
+      var base = this.light ? 0.24 : 0.26;
+      var size = (1.1 + dist * 1.4) * (0.85 + live * 0.7);
+
+      if (live > 0.5) this.halo(px, py, size * 7, live * 0.34, this.accent);
+      this.dot(px, py, size, base + live * 0.60, live > 0.4 ? this.accent : (this.light ? c : lift(c, 60)));
+    }
+
+    /* centre pin */
+    this.dot(gx, gy, 2.4, this.light ? 0.75 : 0.7, c);
+    this.halo(gx, gy, R * 0.55, this.light ? 0.10 : 0.16, c);
+
+    this.drawDust(w, h, gx, gy, this.radius, t, still, 0.36);
+  };
+
+  /* --------------------------------------------------------- SCENE: lectern
+     Teacher portal. Three stacked books, a lime page-light above them, and
+     motes drifting up like read pages. */
+  HeroScene.prototype.drawLectern = function (time, still) {
+    var ctx = this.ctx, w = this.w, h = this.h, t0 = this.tones(), c = this.rgb;
+    var t = still ? 0.6 : time * 0.001 * this.speed;
+    var gx = this.anchorX(0.73) + this.pointer.x * 16;
+    var gy = h * 0.40 + this.pointer.y * 12;
+    var radius = this.radius * (this.fill && w < 620 ? 0.78 : 1);
+
+    this.softGlow(w, h, gx, gy, 0.02);
+    this.core(w, h, gx, gy, 0.8);
+
+    var appear = still ? 1 : Math.min(1, (time - this.startAt) / 850);
+    var bookW = radius * 1.30;
+    var bookH = Math.max(9, radius * 0.205);
+    var baseY = gy + radius * 0.66;
+
+    for (var b = 0; b < 3; b++) {
+      var local = Math.max(0, Math.min(1, (appear - b * 0.16) / 0.68));
+      if (local <= 0) continue;
+      var ease = easeOutCubic(local);
+      var bwid = bookW * (1 - b * 0.085);
+      var y = baseY - b * bookH * 1.02;
+      var rot = (still ? 0 : Math.sin(t * 0.8 + b) * 0.004) + (b % 2 ? 0.014 : -0.011) + this.pointer.x * 0.012;
+      var alpha = ease;
+
+      ctx.save();
+      ctx.translate(gx, y + (1 - ease) * 16);
+      ctx.rotate(rot);
+
+      /* Three faces so each book reads as a slab, not a stacked plate. */
+      var ddx = bwid * 0.055;
+      var ddy = bookH * 0.55;
+
+      var side = ctx.createLinearGradient(bwid / 2, 0, bwid / 2 + 8, 0);
+      if (this.light) {
+        side.addColorStop(0, rgba(lift(c, -28), 0.94 * alpha));
+        side.addColorStop(1, rgba(lift(c, -44), 0.92 * alpha));
+      } else {
+        side.addColorStop(0, rgba(lift(c, 70), 0.92 * alpha));
+        side.addColorStop(1, rgba(lift(c, 45), 0.90 * alpha));
+      }
+      ctx.fillStyle = side;
+      ctx.beginPath();
+      ctx.moveTo(bwid / 2, -bookH);
+      ctx.lineTo(bwid / 2, 0);
+      ctx.lineTo(bwid / 2 + ddx, -ddy);
+      ctx.lineTo(bwid / 2 + ddx, -bookH - ddy);
+      ctx.closePath();
+      ctx.fill();
+
+      var grad = ctx.createLinearGradient(-bwid / 2, 0, bwid / 2, bookH);
+      if (this.light) {
+        grad.addColorStop(0, rgba(lift(c, 12), alpha));
+        grad.addColorStop(0.72, rgba(c, 0.95 * alpha));
+        grad.addColorStop(1, rgba(lift(c, -22), 0.94 * alpha));
+      } else {
+        grad.addColorStop(0, rgba(lift(c, 160), 0.94 * alpha));
+        grad.addColorStop(1, rgba(lift(c, 70), 0.90 * alpha));
+      }
+      ctx.fillStyle = grad;
+      roundRect(ctx, -bwid / 2, -bookH, bwid, bookH, 2.5);
+      ctx.fill();
+      ctx.strokeStyle = rgba(c, this.light ? 0.34 * alpha : 0.28 * alpha);
+      ctx.lineWidth = 0.9;
+      ctx.stroke();
+
+      /* page block on the top face */
+      ctx.fillStyle = rgba([255, 255, 255], this.light ? 0.90 * alpha : 0.34 * alpha);
+      ctx.beginPath();
+      ctx.moveTo(-bwid / 2, -bookH);
+      ctx.lineTo(bwid / 2, -bookH);
+      ctx.lineTo(bwid / 2 + ddx, -bookH - ddy);
+      ctx.lineTo(-bwid / 2 + ddx, -bookH - ddy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = rgba(c, this.light ? 0.26 * alpha : 0.22 * alpha);
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+
+      /* spine light */
+      ctx.fillStyle = rgba(this.light ? this.accent : [255, 255, 255], this.light ? 0.95 * alpha : 0.40 * alpha);
+      roundRect(ctx, -bwid / 2 + 5, -bookH + 2.5, 3, bookH - 5, 1.2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    this.halo(gx, baseY - bookH * 3.15, radius * 0.55, this.light ? 0.16 : 0.26, this.accent);
+
+    for (var i = 0; i < this.motes.length; i++) {
+      var m = this.motes[i];
+      var my = still ? m.y : (m.y - (t * 0.10 * m.rise * 100) % 1 + 1) % 1;
+      var mx = m.x + Math.sin(t * 0.5 + m.tw) * 0.018;
+      var twinkle = 0.40 + Math.sin(t * 1.4 + m.tw) * 0.60;
+      var tone = m.r > 2 ? this.accent : t0.dust;
+      var alpha2 = twinkle * (this.light ? 0.34 : 0.50);
+      var mxp = w * (0.40 + mx * 0.36), myp = h * (0.06 + my * 0.74);
+      if (m.r > 2) this.halo(mxp, myp, m.r * 5, alpha2 * 0.4, tone);
+      this.dot(mxp, myp, m.r, alpha2, tone);
+    }
+
+    this.drawDust(w, h, gx, gy, radius, t, still, 0.55);
+  };
+
+  /* --------------------------------------------------- SCENE: constellation
+     Guest / login showcase. Orbiting node web with a soft horizon and a few
+     accent nodes catching light. */
+  HeroScene.prototype.drawConstellation = function (time, still) {
+    var ctx = this.ctx, w = this.w, h = this.h, c = this.rgb;
+    var t = still ? 0.6 : time * 0.001 * this.speed;
+    var gx = w * 0.58 + this.pointer.x * 20;
+    var gy = h * 0.50 + this.pointer.y * 14;
+    var radius = this.radius;
+
+    this.softGlow(w, h, gx, gy, 0.02);
+    this.core(w, h, gx, gy, 0.30);
+
+    /* Horizon as an elliptical bloom: a straight band left visible rectangle
+       edges where it met the panel, which read as a rendering fault. */
+    var horizonY = gy + radius * 0.74;
+    ctx.save();
+    ctx.translate(gx, horizonY);
+    ctx.scale(1, 0.055);
+    var hz = ctx.createRadialGradient(0, 0, 0, 0, 0, radius * 1.25);
+    hz.addColorStop(0, rgba(lift(c, 150), this.light ? 0.42 : 0.42));
+    hz.addColorStop(0.45, rgba(lift(c, 120), this.light ? 0.16 : 0.20));
+    hz.addColorStop(1, rgba(c, 0));
+    ctx.fillStyle = hz;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius * 1.25, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    for (var r = 0; r < 2; r++) {
+      ctx.save();
+      ctx.translate(gx, gy);
+      ctx.rotate(t * (r ? -0.10 : 0.14) + this.pointer.x * 0.04);
+      ctx.scale(1, 0.24 + r * 0.10);
+      ctx.strokeStyle = rgba(lift(c, 110), (this.light ? 0.26 : 0.34) - r * 0.09);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius * (0.80 + r * 0.24), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    var tilt = 0.30 + this.pointer.y * 0.12;
+    var spin = t * 0.22 + this.pointer.x * 0.18;
     var projected = [];
-    var i, p, cosA, sinA, cosT, sinT, x, y, z, scale, depth, px, py;
-
+    var i, p;
     for (i = 0; i < this.points.length; i++) {
-      p = this.points[i];
-      cosA = Math.cos(spin + p.tw * 0.02);
-      sinA = Math.sin(spin + p.tw * 0.02);
-      x = p.x * cosA - p.z * sinA;
-      z = p.x * sinA + p.z * cosA;
-      y = p.y;
-      cosT = Math.cos(tilt);
-      sinT = Math.sin(tilt);
-      y = y * cosT - z * sinT;
-      z = y * sinT + z * cosT;
-      depth = (z + 1.6) / 2.6;
-      scale = 0.55 + depth * 0.75;
-      px = cx + x * radius * scale;
-      py = cy + y * radius * scale * 0.82;
-      projected.push({ x: px, y: py, z: depth, r: p.r * scale, tw: p.tw });
+      projected.push(this.project(this.points[i], spin, tilt, gx, gy, radius));
     }
 
-    /* links between nearby nodes */
     for (i = 0; i < projected.length; i++) {
-      for (var j = i + 1; j < projected.length; j++) {
-        var a = projected[i], b = projected[j];
-        var dist = Math.hypot(a.x - b.x, a.y - b.y);
-        var limit = Math.min(w, h) * 0.24;
-        if (dist > limit) continue;
-        var alpha = (1 - dist / limit) * (this.soft ? 0.16 : 0.30) * Math.min(a.z, b.z);
-        ctx.strokeStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + alpha.toFixed(3) + ')';
-        ctx.lineWidth = 0.8;
+      for (var k = 1; k <= 2; k++) {
+        var q = projected[(i + k * 3) % projected.length];
+        var near = 1 - Math.min(1, Math.hypot(projected[i].x - q.x, projected[i].y - q.y) / (radius * 0.50));
+        if (near <= 0) continue;
+        ctx.strokeStyle = rgba(lift(c, 80), near * (this.light ? 0.16 : 0.13));
+        ctx.lineWidth = 0.7;
         ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
+        ctx.moveTo(projected[i].x, projected[i].y);
+        ctx.lineTo(q.x, q.y);
         ctx.stroke();
       }
     }
 
-    /* orbit rings */
-    var rings = 3;
-    for (i = 0; i < rings; i++) {
-      var ringR = radius * (0.62 + i * 0.17);
-      ctx.strokeStyle = this.light
-        ? 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + (0.16 - i * 0.035) + ')'
-        : 'rgba(' + Math.min(255, c[0] + 90) + ',' + Math.min(255, c[1] + 80) + ',' + Math.min(255, c[2] + 60) + ',' + (0.20 - i * 0.045) + ')';
-      ctx.lineWidth = 1.1;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, ringR, ringR * (0.30 + i * 0.03), spin * 0.4 + i * 0.6, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    /* nodes */
     for (i = 0; i < projected.length; i++) {
       p = projected[i];
-      var twinkle = 0.65 + Math.sin((still ? 1 : time * 0.0022) + p.tw) * 0.35;
-      var alpha2 = (0.25 + p.z * 0.75) * twinkle * (this.soft ? 0.7 : 1);
-      var size = Math.max(0.9, p.r * (1 + p.z * 0.5));
-      var nodeFill = this.light
-        ? 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + (alpha2 * 0.85).toFixed(3) + ')'
-        : 'rgba(' + Math.min(255, c[0] + 120) + ',' + Math.min(255, c[1] + 60) + ',' + Math.min(255, c[2] + 40) + ',' + alpha2.toFixed(3) + ')';
-      ctx.fillStyle = nodeFill;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
-      ctx.fill();
-      if (p.z > 0.72) {
-        ctx.fillStyle = this.light ? 'rgba(163,214,75,' + (alpha2 * 0.5).toFixed(3) + ')' : 'rgba(255,255,255,' + (alpha2 * 0.65).toFixed(3) + ')';
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, size * 0.42, 0, Math.PI * 2);
-        ctx.fill();
+      var twinkle = 0.60 + Math.sin((still ? 1 : t * 1.9) + p.tw) * 0.40;
+      var alpha = (0.18 + p.z * 0.85) * twinkle;
+      if (p.z > 0.84) {
+        this.halo(p.x, p.y, p.r * 5.0, alpha * 0.34, this.accent);
+        this.dot(p.x, p.y, p.r * 0.8, alpha, lift(this.accent, 90));
+      } else {
+        this.dot(p.x, p.y, Math.max(0.6, p.r * 0.62), alpha * (this.light ? 0.9 : 1), lift(c, 55));
       }
     }
-
-    /* horizon line for depth */
-    var horizon = ctx.createLinearGradient(0, h * 0.72, 0, h);
-    horizon.addColorStop(0, this.light ? 'rgba(238,249,244,0)' : base + '0)');
-    horizon.addColorStop(1, this.light ? 'rgba(238,249,244,.35)' : base + '.55)');
-    ctx.fillStyle = horizon;
-    ctx.fillRect(0, h * 0.72, w, h * 0.28);
   };
 
-  /* -------------------------------------------------------------- mounting */
+  HeroScene.prototype.drawDust = function (w, h, cx, cy, radius, t, still, strength) {
+    var ctx = this.ctx;
+    var dust = this.tones().dust;
+    var tilt = 0.34 + this.pointer.y * 0.10;
+    var spin = t * 0.55 + this.pointer.x * 0.14;
+    for (var i = 0; i < this.points.length; i++) {
+      var p = this.project(this.points[i], spin, tilt, cx, cy, radius * 0.9);
+      var twinkle = 0.62 + Math.sin((still ? 1 : t * 2.2) + p.tw) * 0.38;
+      var alpha = (0.10 + p.z * 0.34) * twinkle * strength * (this.light ? 1 : 1.15);
+      this.dot(p.x, p.y, Math.max(0.6, p.r * 0.55), alpha, dust);
+    }
+  };
+
+  HeroScene.prototype.draw = function (time, still) {
+    var ctx = this.ctx;
+    if (!this.startAt && time) this.startAt = time;
+    if (!this.startAt) this.startAt = performance.now();
+    ctx.clearRect(0, 0, this.w, this.h);
+    switch (this.scene) {
+      case 'trophy': this.drawTrophy(time, still); break;
+      case 'orbit': this.drawOrbit(time, still); break;
+      case 'grid': this.drawGrid(time, still); break;
+      case 'lectern': this.drawLectern(time, still); break;
+      default: this.drawConstellation(time, still);
+    }
+  };
+
+  /* ========================================================== MOUNTING */
   var scenes = [];
+
+  /* Any of these hosts may contain a <canvas class="hero-canvas">. The banner is
+     last so a richer hero inside it always wins via closest(). */
+  var HOST_SEL = '.auth-showcase,.student-home-hero,.asc-hero,.ui-hero,[data-hero],.overview-banner';
+
+  var ROLE_OPTS = {
+    student: { scene: 'trophy', speed: 1.00, light: true },
+    parent: { scene: 'orbit', speed: 0.90, light: true },
+    admin: { scene: 'grid', speed: 0.85, light: true, count: 30 },
+    teacher: { scene: 'lectern', speed: 0.95, light: true },
+    guest: { scene: 'constellation', speed: 1.05, light: false, count: 62 }
+  };
+
+  /* body carries role-student for student, parent AND teacher pages, so the
+     role-parent / role-teacher markers decide between them. */
+  function roleName() {
+    var body = document.body;
+    if (!body) return '';
+    var list = body.classList;
+    if (list.contains('role-admin')) return 'admin';
+    if (list.contains('role-parent')) return 'parent';
+    if (list.contains('role-teacher')) return 'teacher';
+    if (list.contains('role-student')) {
+      /* base.html renders role-student for students, parents and teachers, so
+         the URL is the only reliable discriminator for the teaching portal. */
+      return /^\/teacher(\/|$)/.test(location.pathname) ? 'teacher' : 'student';
+    }
+    return '';
+  }
+
+  function primaryHero() {
+    /* A purpose-built hero wins over the generic dashboard banner even when the
+       banner comes first in the DOM. */
+    var groups = ['.student-home-hero,.auth-showcase,.asc-hero,.ui-hero,[data-hero]', '.overview-banner'];
+    for (var g = 0; g < groups.length; g++) {
+      var list = document.querySelectorAll(groups[g]);
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].querySelector('canvas.hero-canvas')) return list[i];
+      }
+    }
+    return null;
+  }
+
   function mount(id, options) {
-    var canvas = document.getElementById(id);
-    if (!canvas) return null;
-    var host = canvas.closest('.auth-showcase,.student-home-hero,.asc-hero,.ui-hero,[data-hero]');
+    var canvas = typeof id === 'string' ? document.getElementById(id) : id;
+    if (!canvas || canvas.tagName !== 'CANVAS' || canvas.__heroScene) {
+      return canvas && canvas.__heroScene;
+    }
+    if (!canvas.getContext) return null;
+    var host = canvas.closest(HOST_SEL) || canvas.parentElement;
     if (!host) return null;
-    if (host === document.body) return null;
-    var fallback = host.querySelector('.hero-fallback');
+
+    var opts = {};
+    for (var key in options) if (options.hasOwnProperty(key)) opts[key] = options[key];
+    if (host.dataset.heroScene) opts.scene = host.dataset.heroScene;
+    if (canvas.dataset.heroScene) opts.scene = canvas.dataset.heroScene;
+    if (!opts.rgb) opts.rgb = palette();
+
     var scene;
     try {
-      scene = new HeroScene(canvas, host, options);
-    } catch (error) {
-      if (window.console && console.warn) console.warn('[ASCEND hero] canvas unavailable:', error);
-      if (fallback) fallback.hidden = false;
+      scene = new HeroScene(canvas, host, opts);
+    } catch (err) {
+      /* Canvas is decorative: if it cannot run, hide it and leave the hero's
+         CSS fallback untouched rather than leaving a black rectangle. */
+      canvas.style.display = 'none';
       return null;
     }
-    scene.fallback = fallback;
-    if (!motionOn()) {
-      host.classList.add('is-ready');
-      canvas.style.opacity = '1';
-      scene.draw(0, true);
-    } else {
-      scene.start();
+    canvas.__heroScene = scene;
+    scenes.push(scene);
+    scene.start();
+
+    if ('IntersectionObserver' in window) {
+      scene.io = new IntersectionObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          scene.visible = entries[i].isIntersecting;
+          if (scene.visible) scene.start();
+          else scene.stop();
+        }
+      }, { rootMargin: '120px' });
+      scene.io.observe(host);
     }
-    host.addEventListener('pointermove', function (event) {
-      var box = host.getBoundingClientRect();
-      scene.pointer.tx = ((event.clientX - box.left) / Math.max(box.width, 1) - 0.5) * 2;
-      scene.pointer.ty = ((event.clientY - box.top) / Math.max(box.height, 1) - 0.5) * 2;
-    }, { passive: true });
-    host.addEventListener('pointerleave', function () { scene.pointer.tx = 0; scene.pointer.ty = 0; });
+
+    if (window.ASCEND_MOTION) {
+      try {
+        window.ASCEND_MOTION.onChange(function (on) {
+          if (on) scene.start();
+          else { scene.stop(); scene.draw(performance.now(), true); }
+        });
+      } catch (err) { /* keep the scene running */ }
+    }
+
     var resizeTimer = 0;
     var onResize = function () {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(function () {
         scene.resize();
-        scene.draw(0, !motionOn());
-        if (window.ASCEND_UI && window.ASCEND_UI.Motion) window.ASCEND_UI.Motion.onChange(function (on) { if (!on) scene.draw(0, true); });
+        scene.draw(performance.now(), !motionOn() || !scene.visible);
       }, 160);
     };
     window.addEventListener('resize', onResize, { passive: true });
-    if (window.ASCEND_MOTION) {
-      window.ASCEND_MOTION.onChange(function (on) {
-        if (on) scene.start(); else { scene.stop(); scene.draw(0, true); }
-      });
-    }
-    scenes.push(scene);
+    window.addEventListener('orientationchange', onResize, { passive: true });
     return scene;
   }
 
   function boot() {
-    var rgb = palette();
-    var guest = document.body.classList.contains('role-guest');
-    var light = document.body.classList.contains('role-student') || document.body.classList.contains('role-parent');
-    var scene = mount('hero-canvas', guest
-      ? { rgb: rgb, light: false, count: 68, speed: 1.15 }
-      : { rgb: rgb, light: light, count: 34, speed: 0.85, soft: true });
-    window.ASCEND_HERO = { webgl: false, canvas: true, scenes: scene ? [scene] : [] };
+    var role = roleName();
+    var hero = primaryHero();
+    if (!hero) return;
+    var host = hero.dataset.heroScene;
+    var roleOpts = ROLE_OPTS[role] || ROLE_OPTS.guest || {};
+
+    /* The dashboard banner is wide and short, and its text already occupies the
+       left two thirds: scale from the height and pull the composition left. */
+    var banner = hero.classList.contains('overview-banner');
+    var opts = {
+      scene: host || roleOpts.scene || 'constellation',
+      light: !hero.classList.contains('auth-showcase'),
+      fill: banner,
+      soft: !banner,
+      speed: roleOpts.speed || 1,
+      count: roleOpts.count
+    };
+    if (banner) opts.speed = (roleOpts.speed || 1) * 0.85;
+
+    mount('hero-canvas', opts);
+    if (window.ASCEND_HERO) window.ASCEND_HERO.scenes = scenes;
   }
+
+  /* One passive listener and one easing loop for the whole document: scenes
+     read the shared pointer target, so adding hero canvases costs no extra
+     listeners. */
+  var target = { x: 0, y: 0 };
+  document.addEventListener('pointermove', function (e) {
+    if (e.pointerType === 'touch') return;
+    target.x = (e.clientX / window.innerWidth - 0.5) * 2;
+    target.y = (e.clientY / window.innerHeight - 0.5) * 2;
+    for (var i = 0; i < scenes.length; i++) {
+      scenes[i].pointer.tx = target.x;
+      scenes[i].pointer.ty = target.y;
+    }
+  }, { passive: true });
+
+  document.addEventListener('visibilitychange', function () {
+    for (var i = 0; i < scenes.length; i++) {
+      if (document.hidden) scenes[i].stop();
+      else if (scenes[i].visible) scenes[i].start();
+    }
+  });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
+
+  /* Public API. boot() only fills api.scenes, so the surface stays intact no
+     matter when the DOM becomes ready. */
+  var api = window.ASCEND_HERO || {};
+  api.webgl = false;
+  api.canvas = true;
+  api.scenes = scenes;
+  api.mount = mount;
+  api.boot = boot;
+  api.HeroScene = HeroScene;
+  api.palette = palette;
+  window.ASCEND_HERO = api;
 })();
