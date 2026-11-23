@@ -52,6 +52,12 @@
     toggle: function () { return this.set(!this.isOn()); }
   };
 
+  /* This class is the safety gate for every entrance animation in ui.css:
+     the hidden state is scoped to .js-motion, and only this script adds it.
+     If JS is blocked, fails to parse, or is disabled, the class never lands
+     and all content renders immediately. */
+  root.classList.add('js-motion');
+
   root.classList.toggle('ui-motion-off', !Motion.isOn());
   document.addEventListener('DOMContentLoaded', function () {
     document.body.classList.toggle('ui-motion-off', !Motion.isOn());
@@ -429,6 +435,170 @@
     sync();
   }
 
+
+  /* ======================================================== APP SURFACES
+     The dashboard pages were static: the hero moved, then everything below it
+     sat still. Rather than sprinkle data-attributes through 71 templates, the
+     surfaces that already exist in every page are discovered by class and
+     given a restrained set of behaviours:
+
+       1. rise-in on first paint, staggered per group (never hides content
+          permanently — the observer only animates what is already visible)
+       2. a cursor spotlight on cards, using the --mx/--my custom properties
+          that .stat-card already defined, so no new visual language
+       3. a one-shot tilt on the few "hero" cards, capped at ~2 degrees
+
+     Everything is built on IntersectionObserver + a single shared rAF, all
+     guarded, and every behaviour is skipped when Motion is off or the OS asks
+     for reduced motion. Nothing here changes layout, colour or content.
+     ====================================================================== */
+
+  var CARD_SEL = '.stat-card,.panel,.fee-entry,.rank-row,.notification-row,.challenge-card,.class-card,.achievement-card,.log-row,.activity-row';
+  var GROUP_SEL = '.stat-grid,.content-grid,.fee-list,.list-stack,.grid-cards';
+
+  /* Cards that get the pointer tilt. Deliberately narrow: big content panels
+     should not move under the cursor while someone is reading them. */
+  var TILT_SEL = '.stat-card,.challenge-card,.class-card,.achievement-card';
+
+  var surfaces = { cards: [], observer: null, tiltReady: false };
+
+  function groupIndex(node) {
+    /* Stagger within the nearest group so a row of cards cascades instead of
+       all appearing at once; standalone cards just use their own position.
+       Counting siblings by class avoids :scope, which older engines reject. */
+    var parent = node.parentElement;
+    if (!parent || !parent.closest(GROUP_SEL)) return 0;
+    var i = 0, kids = parent.children;
+    for (var k = 0; k < kids.length; k++) {
+      if (!kids[k].matches || !kids[k].matches(CARD_SEL)) continue;
+      if (kids[k] === node) return i;
+      i++;
+    }
+    return 0;
+  }
+
+  function markSurface(node) {
+    if (node.dataset.surfaceReady) return;
+    node.dataset.surfaceReady = '1';
+    node.classList.add('asc-surface');
+    var idx = Math.min(groupIndex(node), 8);
+    node.style.setProperty('--rise-delay', (idx * 45) + 'ms');
+    surfaces.cards.push(node);
+  }
+
+  function initSurfaces(scope) {
+    var nodes = (scope || document).querySelectorAll(CARD_SEL);
+    Array.prototype.forEach.call(nodes, markSurface);
+    if (!nodes.length) return;
+
+    if (!('IntersectionObserver' in window)) {
+      nodes.forEach(function (n) { n.classList.add('is-risen'); });
+      return;
+    }
+    if (!surfaces.observer) {
+      surfaces.observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          surfaces.observer.unobserve(entry.target);
+          if (Motion.isOn()) entry.target.classList.add('is-risen');
+          else entry.target.classList.add('is-risen', 'no-anim');
+        });
+      }, { rootMargin: '0px 0px -8% 0px', threshold: 0.12 });
+    }
+    nodes.forEach(function (n) {
+      if (n.classList.contains('is-risen')) return;
+      surfaces.observer.observe(n);
+    });
+  }
+
+  /* Spotlight: one delegated pointermove per document, throttled to a frame.
+     Cards only read the custom properties; CSS decides what to do with them. */
+  function initSpotlight() {
+    if (surfaces.tiltReady) return;
+    surfaces.tiltReady = true;
+    var pending = null, raf = 0;
+
+    var flush = function () {
+      raf = 0;
+      var event = pending;
+      pending = null;
+      if (!event || !Motion.isOn()) return;
+      var card = event.target.closest ? event.target.closest(CARD_SEL) : null;
+      if (!card || !card.dataset.surfaceReady) return;
+      var box = card.getBoundingClientRect();
+      if (!box.width || !box.height) return;
+      var mx = clamp(((event.clientX - box.left) / box.width) * 100, 0, 100);
+      var my = clamp(((event.clientY - box.top) / box.height) * 100, 0, 100);
+      card.style.setProperty('--mx', mx.toFixed(1) + '%');
+      card.style.setProperty('--my', my.toFixed(1) + '%');
+
+      if (card.matches && card.matches(TILT_SEL)) {
+        /* Capped so text stays crisp and the card never feels loose. */
+        var tx = ((mx - 50) / 50) * 1.8;
+        var ty = ((my - 50) / 50) * -1.4;
+        card.style.setProperty('--tilt-x', ty.toFixed(2) + 'deg');
+        card.style.setProperty('--tilt-y', tx.toFixed(2) + 'deg');
+      }
+    };
+
+    document.addEventListener('pointermove', function (event) {
+      if (event.pointerType === 'touch') return;
+      pending = event;
+      if (raf) return;
+      raf = requestAnimationFrame(flush);
+    }, { passive: true });
+
+    document.addEventListener('pointerout', function (event) {
+      var card = event.target && event.target.closest ? event.target.closest(CARD_SEL) : null;
+      if (!card) return;
+      if (card.contains(event.relatedTarget)) return;
+      card.style.removeProperty('--tilt-x');
+      card.style.removeProperty('--tilt-y');
+    }, { passive: true });
+  }
+
+  /* Watchdog. If an entrance animation is registered but never reports
+     visibility (a stuck observer, a scroll container we cannot see, an
+     engine quirk), content must not stay invisible. After a short grace
+     period anything still hidden is revealed. This is deliberately blunt:
+     losing a fade is acceptable, losing content is not. */
+  (function surfaceWatchdog() {
+    var reveal = function () {
+      var stuck = document.querySelectorAll('.asc-surface:not(.is-risen)');
+      if (!stuck.length) return true;
+      /* Only rescue cards that are actually in the viewport. Below-the-fold
+         cards keep their entrance for when they are scrolled to. */
+      var vh = window.innerHeight || 800;
+      for (var i = 0; i < stuck.length; i++) {
+        try {
+          var box = stuck[i].getBoundingClientRect();
+          if (box.top < vh && box.bottom > 0) stuck[i].classList.add('is-risen', 'no-anim');
+        } catch (_) {
+          stuck[i].classList.add('is-risen', 'no-anim');
+        }
+      }
+      return false;
+    };
+    setTimeout(reveal, 1200);
+    setTimeout(reveal, 3000);
+    window.addEventListener('load', function () { setTimeout(reveal, 400); });
+  })();
+
+  /* Re-run when a page is swapped in without a reload (the app does this in a
+     few places) and when the Motion toggle changes. */
+  document.addEventListener('ascend:page-loaded', function () {
+    initSurfaces(document);
+  });
+  document.addEventListener('ascend:motionchange', function () {
+    if (Motion.isOn()) {
+      Array.prototype.forEach.call(document.querySelectorAll('.asc-surface'), function (n) {
+        if (!n.classList.contains('is-risen')) initSurfaces(document);
+      });
+    } else {
+      document.querySelectorAll('.asc-surface').forEach(function (n) { n.classList.add('is-risen'); });
+    }
+  });
+
   /* --------------------------------------------------------------- debug HUD */
   function initDebug() {
     if (!debug) return;
@@ -462,6 +632,8 @@
     initWords(scope);
     initLetters(scope);
     initStickyHero(scope);
+    initSurfaces(scope);
+    initSpotlight();
     initSidebar(scope);
     watchDialogs();
     initDebug();
