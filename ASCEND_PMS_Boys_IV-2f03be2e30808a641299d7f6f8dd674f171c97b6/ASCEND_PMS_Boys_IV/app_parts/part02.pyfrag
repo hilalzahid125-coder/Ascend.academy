@@ -306,12 +306,24 @@ def parent_login_page(request: Request):
     return render(request,'auth.html',{'mode':'parent_login'})
 
 @app.get('/register', response_class=HTMLResponse)
-def register_page(request: Request): return render(request,'admission_register.html')
+def register_page(request: Request):
+    # The mascot-guided wizard is the one and only way to join the academy.
+    # It is a prebuilt single-file bundle served from /static so the CSP stays
+    # 'self' only; it posts to /admission/register below.
+    if settings().get('registration_enabled') != '1':
+        return render(request,'registration_closed.html')
+    page = (BASE_DIR / 'static' / 'academy-signup' / 'index.html').read_text(encoding='utf-8')
+    csrf = request.cookies.get('pms_csrf') or new_token(24)
+    response = HTMLResponse(page)
+    if not request.cookies.get('pms_csrf'):
+        set_app_cookie(response, 'pms_csrf', csrf)
+    return response
 
-@app.get('/register/legacy', response_class=HTMLResponse)
+@app.get('/register/legacy')
 def legacy_register_page(request: Request):
-    # Existing school-issued, unclaimed records can still be securely claimed.
-    return render(request,'academy_signup.html')
+    # The activation-code claim flow has been retired; send old links to the
+    # wizard rather than 404 so any bookmarked URL still works.
+    return RedirectResponse('/register', status_code=301)
 
 @app.post('/login')
 def login(request: Request, admission_no: str=Form(...), password: str=Form(...)):

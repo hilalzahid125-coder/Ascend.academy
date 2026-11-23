@@ -78,18 +78,6 @@ def admin_student_import_template(request: Request):
     content='Admission Number,Full Name,Grade,Section\nA-7001,Student Name,O-Level - Grade 10,A\n'
     return Response(content,media_type='text/csv',headers={'Content-Disposition':'attachment; filename="ascend_student_import_template.csv"'})
 
-@app.get('/admin/students/activation-codes.csv')
-def admin_activation_codes_export(request: Request):
-    require_admin(request,'students')
-    with connect() as conn:
-        rows=conn.execute('''SELECT admission_no,full_name,class_name,section_name,activation_code,activation_code_expires_at
-                             FROM users WHERE role='student' AND claimed=0 AND activation_code IS NOT NULL ORDER BY class_name,section_name,full_name''').fetchall()
-    out=io.StringIO(); w=csv.writer(out)
-    w.writerow(['Admission Number','Full Name','Class','Section','Activation Code','Expires At'])
-    for r in rows:
-        w.writerow([_csv_safe(r['admission_no']),_csv_safe(r['full_name']),_csv_safe(r['class_name']),_csv_safe(r['section_name']),_csv_safe(r['activation_code']),_csv_safe(r['activation_code_expires_at'])])
-    return Response(out.getvalue(),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="ascend_activation_codes.csv"'})
-
 @app.post('/admin/students/import')
 async def admin_students_import(request: Request, roster: UploadFile=File(...)):
     a=require_admin(request,'students')
@@ -120,10 +108,12 @@ async def admin_students_import(request: Request, roster: UploadFile=File(...)):
                 errors.append(f'Row {idx}: choose a valid O-Level or A-Level grade and section.'); continue
             if adm in existing or adm in seen:
                 errors.append(f'Row {idx}: {adm} already exists; skipped.'); continue
-            code=new_activation_code(); expiry=activation_expiry()
-            conn.execute('''INSERT INTO users(admission_no,full_name,role,status,class_name,section_name,activation_code,activation_code_expires_at,claimed,created_at)
-                            VALUES (?,?,'student','unclaimed',?,?,?,?,0,?)''',(adm,name,cl,sec,code,expiry,iso_now()))
-            created.append({'admission_no':adm,'full_name':name,'class_name':cl,'section_name':sec,'activation_code':code,'expires_at':expiry})
+            # Activation codes are retired: imported students get a randomly
+            # generated first password that the office hands over securely.
+            first_password=new_activation_code(10)
+            conn.execute('''INSERT INTO users(admission_no,full_name,password_hash,role,status,class_name,section_name,claimed,created_at)
+                            VALUES (?,?,?,'student','active',?,?,1,?)''',(adm,name,hash_password(first_password),cl,sec,iso_now()))
+            created.append({'admission_no':adm,'full_name':name,'class_name':cl,'section_name':sec,'password':first_password})
             seen.add(adm)
         audit(conn,a['id'],'student_bulk_import',f'created={len(created)}, skipped={len(errors)}')
     return render(request,'admin_import_result.html',{'created':created[:200],'created_count':len(created),'errors':errors[:100],'error_count':len(errors)})
@@ -137,15 +127,19 @@ def admin_student_create(request: Request, admission_no:str=Form(...), full_name
         name=_clean_text(full_name,120); grade=_clean_text(class_name,40,False); section=_clean_text(section_name,40,False)
         if password and (len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password)):
             raise ValueError('Student password must be 8–128 characters and include letters and numbers.')
-        # Old roster integrations can still issue a code; the admin form creates
-        # an immediately usable password-based account instead.
-        code=None if password else new_activation_code()
+        # Accounts are always password-based now. With no password supplied we
+        # mint a random temporary one and show it once to the administrator.
+        issued = password
+        if not issued:
+            issued = new_activation_code(10)
         with connect() as conn:
-            conn.execute('''INSERT INTO users(admission_no,full_name,password_hash,role,status,class_name,section_name,activation_code,activation_code_expires_at,claimed,created_at)
-                            VALUES (?,?,?,"student",?,?,?,?,?,?,?)''',
-                         (admission_no,name,hash_password(password) if password else None,'active' if password else 'unclaimed',grade,section,code,activation_expiry() if code else None,1 if password else 0,iso_now()))
+            conn.execute('''INSERT INTO users(admission_no,full_name,password_hash,role,status,class_name,section_name,claimed,created_at)
+                            VALUES (?,?,?,"student",?,?,?,1,?)''',
+                         (admission_no,name,hash_password(issued),'active',grade,section,iso_now()))
             audit(conn,a['id'],'student_created',admission_no)
-        return flash_redirect('/admin/students','Student account created. Share the student ID and password securely.' if password else f'Student added. Activation code: {code}')
+        if password:
+            return flash_redirect('/admin/students','Student account created. Share the student ID and password securely.')
+        return flash_redirect('/admin/students',f'Student added. Temporary password: {issued} — share it securely.')
     except ValueError as exc:
         return flash_redirect('/admin/students',str(exc),'error')
     except INTEGRITY_ERRORS:
@@ -236,9 +230,9 @@ def admin_student_reset(request: Request, student_id:int, password:str=Form(''))
                 conn.execute('UPDATE users SET password_hash=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=? AND role="student"',(hash_password(password),student_id))
                 message=f'Password reset for {current["admission_no"]}. Share the new password securely; old sessions were signed out.'
             else:
-                code=new_activation_code()
-                conn.execute('UPDATE users SET password_hash=NULL,claimed=0,status="unclaimed",activation_code=?,activation_code_expires_at=? WHERE id=? AND role="student"',(code,activation_expiry(),student_id))
-                message=f'Account reset. New activation code: {code}'
+                temp_password=new_activation_code(10)
+                conn.execute('UPDATE users SET password_hash=?,claimed=1,status="active",activation_code=NULL,activation_code_expires_at=NULL WHERE id=? AND role="student"',(hash_password(temp_password),student_id))
+                message=f'Account reset. New temporary password: {temp_password}'
             conn.execute('DELETE FROM sessions WHERE user_id=?',(student_id,))
             audit(conn,a['id'],'student_password_reset',f'student_id={student_id}')
     except ValueError as exc:

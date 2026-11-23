@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Registration closed · {{ settings.app_name }}{% endblock %}
+{% block auth_content %}
+<div class="legal-shell" id="main-content">
+  <header class="legal-top">
+    <a class="public-brand" href="/"><img src="/static/app-logo.svg" alt="{{ settings.app_name }}"><strong>{{ settings.app_name }}</strong></a>
+    <a href="/login">Sign in</a>
+  </header>
+  <section class="panel auth-card" style="max-width:640px;margin:2rem auto">
+    <span class="eyebrow">STUDENT APPLICATION</span>
+    <h1>Registration is currently closed</h1>
+    <p class="muted">The academy is not accepting new student applications right now. If you were expecting to register, contact the academy office and they will let you know when applications reopen.</p>
+    <p><a class="btn ghost" href="/">Back to home</a> <a class="btn ghost" href="/login">Sign in</a></p>
+  </section>
+</div>
+{% endblock %}
