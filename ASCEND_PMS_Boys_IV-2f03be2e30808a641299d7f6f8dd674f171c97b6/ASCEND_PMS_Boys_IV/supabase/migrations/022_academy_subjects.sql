@@ -27,3 +27,6 @@ VALUES ('Computer Science', 1, 1, '2026-01-01T00:00:00+00:00')
 ON CONFLICT (name) DO NOTHING;
 
 REVOKE ALL ON ascend.academy_subjects FROM PUBLIC, anon, authenticated;
+-- The app reaches this table with its own database role, never through the
+-- Supabase REST API. RLS stays on so the REST surface has no rows to expose.
+ALTER TABLE ascend.academy_subjects ENABLE ROW LEVEL SECURITY;
