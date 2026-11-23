@@ -1,5 +1,7 @@
 {% extends "base.html" %}{% from "_fee_currency.html" import currency_picker %}{% block content %}
-<section class="page-head overview-banner"><div><span class="eyebrow">FINANCE WORKSPACE</span><h1>Fee Management</h1><p>Assign fees, configure payment details and verify receipts.</p></div></section>
+<section class="page-head overview-banner">
+  <canvas id="hero-canvas" class="hero-canvas" aria-hidden="true"></canvas>
+  <div class="hero-vignette" aria-hidden="true"></div><div><span class="eyebrow">FINANCE WORKSPACE</span><h1>Fee Management</h1><p>Assign fees, configure payment details and verify receipts.</p></div></section>
 <form method="get" action="/admin/fees" class="fee-period-filter"><label>Fee period <select name="period"><option value="">All periods</option>{% for period in periods %}<option value="{{ period }}" {{ 'selected' if period==selected_period else '' }}>{{ period }}</option>{% endfor %}</select></label><button class="btn ghost">Apply filter</button></form>
 {% include '_fee_totals.html' %}<div class="fee-student-count"><span>Students with outstanding balances</span><strong>{{ pending_students }}</strong></div>
 {% if missing_currencies %}<div class="fee-warning" role="status"><strong>Payment method needed</strong><p>Outstanding fees in {{ missing_currencies|join(', ') }} have no active matching payment method. Students cannot submit receipts for those currencies until an authorized admin adds or activates a matching method below.</p></div>{% endif %}

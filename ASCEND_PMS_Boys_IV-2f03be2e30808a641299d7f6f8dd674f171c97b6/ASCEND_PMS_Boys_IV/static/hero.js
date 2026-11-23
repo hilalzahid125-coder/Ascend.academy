@@ -236,8 +236,8 @@
     this.raf = requestAnimationFrame(function (t) { self.tick(t || 0); });
     /* Ease the pointer toward its target here rather than in a second global
        loop: one rAF per visible hero, and the easing stops when the scene does. */
-    this.pointer.x += (this.pointer.tx - this.pointer.x) * 0.045;
-    this.pointer.y += (this.pointer.ty - this.pointer.y) * 0.045;
+    this.pointer.x += (this.pointer.tx - this.pointer.x) * 0.060;
+    this.pointer.y += (this.pointer.ty - this.pointer.y) * 0.060;
     this.draw(time || 0, false);
   };
 
@@ -254,34 +254,6 @@
   HeroScene.prototype.stop = function () {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
-  };
-
-  HeroScene.prototype.softGlow = function (w, h, gx, gy, kick) {
-    var ctx = this.ctx, c = this.rgb;
-    var span = this.fill ? this.radius * 1.55 : Math.max(w, h);
-    var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, span * (0.60 + kick));
-    if (this.light) {
-      g.addColorStop(0, rgba(c, 0.16));
-      g.addColorStop(0.55, rgba(c, 0.065));
-      g.addColorStop(1, rgba(c, 0));
-    } else {
-      g.addColorStop(0, rgba(c, 0.40));
-      g.addColorStop(0.5, rgba(c, 0.13));
-      g.addColorStop(1, rgba(c, 0));
-    }
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-  };
-
-  HeroScene.prototype.core = function (w, h, gx, gy, scale) {
-    var ctx = this.ctx;
-    var a = this.light ? 0.20 : 0.30;
-    var span = this.fill ? this.radius * 0.62 : Math.max(w, h) * 0.24;
-    var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, span * (scale || 1));
-    g.addColorStop(0, rgba(this.accent, a));
-    g.addColorStop(1, rgba(this.accent, 0));
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
   };
 
   HeroScene.prototype.project = function (p, spin, tilt, cx, cy, radius) {
@@ -305,49 +277,13 @@
     };
   };
 
-  HeroScene.prototype.cube = function (x, y, size, spin, depth, alpha) {
-    var ctx = this.ctx;
-    var c = this.rgb;
-    var top = lift(c, 130);
-    var left = lift(c, 40);
-    var right = lift(c, 85);
-    var s = size;
-    var wob = Math.sin(spin) * s * 0.22;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.beginPath();
-    ctx.moveTo(0, -s);
-    ctx.lineTo(s * 0.86, -s * 0.5);
-    ctx.lineTo(0, 0);
-    ctx.lineTo(-s * 0.86, -s * 0.5);
-    ctx.closePath();
-    ctx.fillStyle = rgba(top, alpha * 0.86);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.86, -s * 0.5);
-    ctx.lineTo(0, 0);
-    ctx.lineTo(0, s * 1.05 + wob);
-    ctx.lineTo(-s * 0.86, s * 0.55 + wob);
-    ctx.closePath();
-    ctx.fillStyle = rgba(left, alpha * 0.68);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(s * 0.86, -s * 0.5);
-    ctx.lineTo(0, 0);
-    ctx.lineTo(0, s * 1.05 + wob);
-    ctx.lineTo(s * 0.86, s * 0.55 + wob);
-    ctx.closePath();
-    ctx.fillStyle = rgba(right, alpha * (0.42 + depth * 0.34));
-    ctx.fill();
-    ctx.restore();
-  };
-
   /* ============================================ TONE TABLE (light vs dark)
-     The login showcase is a deep emerald panel; every dashboard hero is a
-     light mint banner. Painting light-theme emerald on top of a mint surface
-     produces the washed-out haze these scenes started with, so light mode
-     draws *ink* (deep emerald) for geometry and *white glass* for solids,
-     and only the glow layer stays tinted. */
+     The login showcase and every .overview-banner are deep emerald panels;
+     only .student-home-hero is a light mint banner. Painting light-theme
+     emerald on top of a mint surface produces a washed-out haze, so light
+     mode draws *ink* (deep emerald) for geometry and *white glass* for
+     solids, and only the glow layer stays tinted. Dark mode paints luminous
+     emerald, pale-mint solids and lime accents that read on dark green. */
   HeroScene.prototype.tones = function () {
     if (this.light) {
       return {
@@ -369,16 +305,19 @@
 
   HeroScene.prototype.softGlow = function (w, h, gx, gy, kick) {
     var ctx = this.ctx, c = this.rgb;
-    var span = this.fill ? this.radius * 1.9 : Math.max(w, h);
-    var fade = Math.max(span * (0.60 + kick), Math.min(w, h) * 0.55);
+    /* A short banner cannot carry a big radial bloom: past a certain size it
+       stops reading as light and becomes a flat glowing disc. Cap it hard when
+       the scene is filling a banner. */
+    var span = this.fill ? this.radius * 1.05 : Math.max(w, h);
+    var fade = this.fill ? span : Math.max(span * (0.60 + kick), Math.min(w, h) * 0.55);
     var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, fade);
     if (this.light) {
       g.addColorStop(0, rgba(lift(c, 40), 0.13));
       g.addColorStop(0.5, rgba(lift(c, 70), 0.05));
       g.addColorStop(1, rgba(c, 0));
     } else {
-      g.addColorStop(0, rgba(lift(c, 30), 0.30));
-      g.addColorStop(0.35, rgba(c, 0.20));
+      g.addColorStop(0, rgba(lift(c, 10), this.fill ? 0.16 : 0.30));
+      g.addColorStop(0.4, rgba(c, this.fill ? 0.08 : 0.20));
       g.addColorStop(1, rgba(c, 0));
     }
     ctx.fillStyle = g;
@@ -387,8 +326,8 @@
 
   HeroScene.prototype.core = function (w, h, gx, gy, scale) {
     var ctx = this.ctx;
-    var span = this.fill ? this.radius * 0.9 : Math.max(w, h) * 0.17;
-    var a = this.light ? 0.13 : 0.34;
+    var span = this.fill ? this.radius * 0.5 : Math.max(w, h) * 0.17;
+    var a = this.light ? 0.13 : (this.fill ? 0.16 : 0.34);
     var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, span * (scale || 1));
     g.addColorStop(0, rgba(this.accent, a));
     g.addColorStop(1, rgba(this.accent, 0));
@@ -481,8 +420,8 @@
   HeroScene.prototype.drawTrophy = function (time, still) {
     var ctx = this.ctx, w = this.w, h = this.h, t0 = this.tones(), c = this.rgb;
     var t = still ? 0.62 : time * 0.001 * this.speed;
-    var gx = this.anchorX(0.73) + this.pointer.x * 18;
-    var gy = h * 0.44 + this.pointer.y * 12;
+    var gx = this.anchorX(0.73) + this.pointer.x * 26;
+    var gy = h * 0.44 + this.pointer.y * 16;
     var radius = this.radius * (this.fill && w < 620 ? 0.80 : 1);
 
     this.softGlow(w, h, gx, gy, 0.04);
@@ -578,7 +517,7 @@
       var cyp = gy + (cube.y + bob + this.pointer.y * 0.08) * radius * 0.95 - radius * 0.10;
       var size = cube.size * radius * (0.55 + cube.depth * 0.5);
       this.cube(cxp, cyp, size, t * cube.spinSpeed + cube.spin, cube.depth,
-        (this.light ? 0.72 : 0.62) * (0.55 + cube.depth * 0.45));
+        (this.light ? 0.72 : 0.72) * (0.55 + cube.depth * 0.45));
     }
 
     for (var s = 0; s < this.sparks.length; s++) {
@@ -588,7 +527,7 @@
       var twinkle = 0.45 + Math.sin(t * 1.6 + sp.tw) * 0.55;
       var tone = sp.tone === 'accent' ? this.accent : t0.dust;
       var spAlpha = twinkle * (this.light ? 0.30 : 0.62);
-      if (sp.size > 1.9) this.halo(w * (0.44 + sx * 0.34), h * (0.12 + sy * 0.66), sp.size * 5, spAlpha * 0.5, tone);
+      if (sp.size > 1.9 && !this.fill) this.halo(w * (0.44 + sx * 0.34), h * (0.12 + sy * 0.66), sp.size * 5, spAlpha * 0.5, tone);
       this.dot(w * (0.44 + sx * 0.34), h * (0.12 + sy * 0.66), sp.size, spAlpha, tone);
     }
 
@@ -601,8 +540,8 @@
   HeroScene.prototype.drawOrbit = function (time, still) {
     var ctx = this.ctx, w = this.w, h = this.h, c = this.rgb;
     var t = still ? 0.5 : time * 0.001 * this.speed;
-    var gx = this.anchorX(0.73) + this.pointer.x * 16;
-    var gy = h * 0.50 + this.pointer.y * 12;
+    var gx = this.anchorX(0.73) + this.pointer.x * 24;
+    var gy = h * 0.50 + this.pointer.y * 16;
     var radius = this.radius * (this.fill && w < 620 ? 0.80 : 1);
 
     this.softGlow(w, h, gx, gy, 0.0);
@@ -613,7 +552,7 @@
       var phase = t * ring.speed;
       ctx.save();
       ctx.translate(gx, gy);
-      ctx.rotate(ring.rot + Math.sin(t * 0.22 + r) * 0.045 + this.pointer.x * 0.045);
+      ctx.rotate(ring.rot + Math.sin(t * 0.22 + r) * 0.055 + this.pointer.x * 0.060);
       ctx.scale(1, ring.ry / ring.rx);
 
       ctx.strokeStyle = rgba(c, this.light ? 0.55 * ring.alpha + 0.24 : ring.alpha);
@@ -624,7 +563,7 @@
 
       ctx.setLineDash([2, 10]);
       ctx.lineDashOffset = -phase * 18;
-      ctx.strokeStyle = rgba(c, this.light ? 0.34 : 0.20);
+      ctx.strokeStyle = rgba(c, this.light ? 0.34 : 0.13);
       ctx.beginPath();
       ctx.arc(0, 0, radius * ring.rx * 0.84, 0, Math.PI * 2);
       ctx.stroke();
@@ -641,15 +580,15 @@
       disc.addColorStop(1, rgba(lift(c, 120), 0.98));
     } else {
       var disc2 = ctx.createRadialGradient(gx - coreR * 0.35, gy - coreR * 0.40, 0, gx, gy, coreR);
-      disc2.addColorStop(0, rgba(lift(c, 190), 0.40));
-      disc2.addColorStop(1, rgba(lift(c, 110), 0.22));
+      disc2.addColorStop(0, rgba(lift(c, 190), 0.52));
+      disc2.addColorStop(1, rgba(lift(c, 110), 0.26));
       disc = disc2;
     }
     ctx.fillStyle = disc;
     ctx.beginPath();
     ctx.arc(gx, gy, coreR, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = rgba(c, this.light ? 0.75 : 0.30);
+    ctx.strokeStyle = rgba(c, this.light ? 0.75 : 0.38);
     ctx.lineWidth = 1.4;
     ctx.stroke();
 
@@ -683,7 +622,7 @@
       ctx.stroke();
     }
 
-    this.drawDust(w, h, gx, gy, radius, t, still, 0.55);
+    this.drawDust(w, h, gx, gy, radius, t, still, 0.65);
   };
 
   /* ------------------------------------------------------------ SCENE: grid
@@ -693,8 +632,8 @@
   HeroScene.prototype.drawGrid = function (time, still) {
     var ctx = this.ctx, w = this.w, h = this.h, c = this.rgb;
     var t = still ? 0.5 : time * 0.001 * this.speed;
-    var gx = this.anchorX(0.74) + this.pointer.x * 12;
-    var gy = h * 0.52 + this.pointer.y * 9;
+    var gx = this.anchorX(0.74) + this.pointer.x * 20;
+    var gy = h * 0.52 + this.pointer.y * 14;
     /* Sized from the banner height so the dial never clips the top or bottom
        edge, and never eats the copy column on narrow screens. */
     var R = Math.min(h * 0.40, w * (this.fill && w < 620 ? 0.15 : 0.19));
@@ -705,7 +644,9 @@
     var rings = 3;
     for (var r = 1; r <= rings; r++) {
       var rr = (R * r) / rings;
-      ctx.strokeStyle = rgba(c, this.light ? 0.26 : 0.16);
+      /* The outer ring carries the dial; on dark it needs real presence. */
+      var ringA = this.light ? 0.26 : (r === rings ? 0.36 : 0.24);
+      ctx.strokeStyle = rgba(c, ringA);
       ctx.lineWidth = 1;
       ctx.setLineDash(r === rings ? [] : [3, 7]);
       ctx.beginPath();
@@ -717,7 +658,7 @@
     var spokes = 12;
     for (var sp = 0; sp < spokes; sp++) {
       var a = (sp / spokes) * Math.PI * 2;
-      ctx.strokeStyle = rgba(c, this.light ? 0.12 : 0.08);
+      ctx.strokeStyle = rgba(c, this.light ? 0.12 : 0.17);
       ctx.lineWidth = 0.7;
       ctx.beginPath();
       ctx.moveTo(gx + Math.cos(a) * R * 0.10, gy + Math.sin(a) * R * 0.10);
@@ -726,12 +667,12 @@
     }
 
     /* rotating beam */
-    var sweep = (still ? 1.1 : t * 0.55) % (Math.PI * 2);
+    var sweep = (still ? 1.1 : t * 0.80) % (Math.PI * 2);
     ctx.save();
     ctx.translate(gx, gy);
     ctx.rotate(sweep);
     var beam = ctx.createLinearGradient(0, 0, R, 0);
-    beam.addColorStop(0, rgba(this.accent, this.light ? 0.34 : 0.30));
+    beam.addColorStop(0, rgba(this.accent, this.light ? 0.34 : 0.38));
     beam.addColorStop(1, rgba(this.accent, 0));
     ctx.fillStyle = beam;
     ctx.beginPath();
@@ -740,7 +681,7 @@
     ctx.closePath();
     ctx.fill();
 
-    ctx.strokeStyle = rgba(this.accent, this.light ? 0.55 : 0.42);
+    ctx.strokeStyle = rgba(this.accent, this.light ? 0.55 : 0.55);
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.moveTo(0, 0);
@@ -758,7 +699,7 @@
 
       var delta = ((sweep - ang) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
       var live = delta < 1.5 ? Math.exp(-Math.pow(delta * 1.5, 2)) : 0;
-      var base = this.light ? 0.24 : 0.26;
+      var base = this.light ? 0.24 : 0.32;
       var size = (1.1 + dist * 1.4) * (0.85 + live * 0.7);
 
       if (live > 0.5) this.halo(px, py, size * 7, live * 0.34, this.accent);
@@ -769,7 +710,7 @@
     this.dot(gx, gy, 2.4, this.light ? 0.75 : 0.7, c);
     this.halo(gx, gy, R * 0.55, this.light ? 0.10 : 0.16, c);
 
-    this.drawDust(w, h, gx, gy, this.radius, t, still, 0.36);
+    this.drawDust(w, h, gx, gy, this.radius, t, still, 0.46);
   };
 
   /* --------------------------------------------------------- SCENE: lectern
@@ -778,8 +719,8 @@
   HeroScene.prototype.drawLectern = function (time, still) {
     var ctx = this.ctx, w = this.w, h = this.h, t0 = this.tones(), c = this.rgb;
     var t = still ? 0.6 : time * 0.001 * this.speed;
-    var gx = this.anchorX(0.73) + this.pointer.x * 16;
-    var gy = h * 0.40 + this.pointer.y * 12;
+    var gx = this.anchorX(0.73) + this.pointer.x * 24;
+    var gy = h * 0.40 + this.pointer.y * 16;
     var radius = this.radius * (this.fill && w < 620 ? 0.78 : 1);
 
     this.softGlow(w, h, gx, gy, 0.02);
@@ -860,7 +801,7 @@
       ctx.restore();
     }
 
-    this.halo(gx, baseY - bookH * 3.15, radius * 0.55, this.light ? 0.16 : 0.26, this.accent);
+    this.halo(gx, baseY - bookH * 3.15, radius * 0.55, this.light ? 0.16 : 0.32, this.accent);
 
     for (var i = 0; i < this.motes.length; i++) {
       var m = this.motes[i];
@@ -868,13 +809,13 @@
       var mx = m.x + Math.sin(t * 0.5 + m.tw) * 0.018;
       var twinkle = 0.40 + Math.sin(t * 1.4 + m.tw) * 0.60;
       var tone = m.r > 2 ? this.accent : t0.dust;
-      var alpha2 = twinkle * (this.light ? 0.34 : 0.50);
+      var alpha2 = twinkle * (this.light ? 0.34 : 0.60);
       var mxp = w * (0.40 + mx * 0.36), myp = h * (0.06 + my * 0.74);
-      if (m.r > 2) this.halo(mxp, myp, m.r * 5, alpha2 * 0.4, tone);
-      this.dot(mxp, myp, m.r, alpha2, tone);
+      if (m.r > 2 && !this.fill) this.halo(mxp, myp, m.r * 5, alpha2 * 0.4, tone);
+      this.dot(mxp, myp, this.fill ? Math.min(m.r, 1.5) : m.r, alpha2, tone);
     }
 
-    this.drawDust(w, h, gx, gy, radius, t, still, 0.55);
+    this.drawDust(w, h, gx, gy, radius, t, still, 0.65);
   };
 
   /* --------------------------------------------------- SCENE: constellation
@@ -883,8 +824,8 @@
   HeroScene.prototype.drawConstellation = function (time, still) {
     var ctx = this.ctx, w = this.w, h = this.h, c = this.rgb;
     var t = still ? 0.6 : time * 0.001 * this.speed;
-    var gx = w * 0.58 + this.pointer.x * 20;
-    var gy = h * 0.50 + this.pointer.y * 14;
+    var gx = w * 0.58 + this.pointer.x * 28;
+    var gy = h * 0.50 + this.pointer.y * 18;
     var radius = this.radius;
 
     this.softGlow(w, h, gx, gy, 0.02);
@@ -988,11 +929,13 @@
      last so a richer hero inside it always wins via closest(). */
   var HOST_SEL = '.auth-showcase,.student-home-hero,.asc-hero,.ui-hero,[data-hero],.overview-banner';
 
+  /* Only the student home hero is a light surface; every other banner is a
+     dark emerald gradient, so only the student scene paints light-mode ink. */
   var ROLE_OPTS = {
-    student: { scene: 'trophy', speed: 1.00, light: true },
-    parent: { scene: 'orbit', speed: 0.90, light: true },
-    admin: { scene: 'grid', speed: 0.85, light: true, count: 30 },
-    teacher: { scene: 'lectern', speed: 0.95, light: true },
+    student: { scene: 'trophy', speed: 1.10, light: true },
+    parent: { scene: 'orbit', speed: 1.00, light: false },
+    admin: { scene: 'grid', speed: 0.95, light: false, count: 30 },
+    teacher: { scene: 'lectern', speed: 1.05, light: false },
     guest: { scene: 'constellation', speed: 1.05, light: false, count: 62 }
   };
 
@@ -1099,13 +1042,16 @@
     var banner = hero.classList.contains('overview-banner');
     var opts = {
       scene: host || roleOpts.scene || 'constellation',
-      light: !hero.classList.contains('auth-showcase'),
+      /* The host decides the palette: .student-home-hero is the only light
+         surface (mint gradient); .overview-banner and .auth-showcase are dark
+         emerald and need dark-mode tones. A blanket flag either way paints
+         one portal wrong — that is exactly the washed-out-banner bug. */
+      light: hero.classList.contains('student-home-hero'),
       fill: banner,
       soft: !banner,
       speed: roleOpts.speed || 1,
       count: roleOpts.count
     };
-    if (banner) opts.speed = (roleOpts.speed || 1) * 0.85;
 
     mount('hero-canvas', opts);
     if (window.ASCEND_HERO) window.ASCEND_HERO.scenes = scenes;
