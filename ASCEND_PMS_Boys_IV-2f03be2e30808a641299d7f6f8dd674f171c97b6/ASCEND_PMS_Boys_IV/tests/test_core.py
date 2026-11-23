@@ -89,7 +89,7 @@ def test_admin_and_duplicate_award_protection():
     assert total == 100
 
 
-def test_bulk_csv_import_and_activation_export():
+def test_bulk_csv_import_and_retired_activation_export():
     admin=TestClient(app)
     csrf(admin)
     post(admin,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
@@ -97,12 +97,12 @@ def test_bulk_csv_import_and_activation_export():
     r=post(admin,'/admin/students/import',files={'roster':('students.csv',csv_data.encode(),'text/csv')})
     assert r.status_code==200
     assert '2 students added' in r.text
-    export=admin.get('/admin/students/activation-codes.csv')
-    assert export.status_code==200
-    assert 'A-7101' in export.text and 'A-7102' in export.text
+    # The activation-code era is over: the export endpoint is gone, and the
+    # wizard at /register is the only way a student ever reaches their account.
+    assert admin.get('/admin/students/activation-codes.csv').status_code == 404
     with connect() as c:
-        rows=c.execute("SELECT activation_code,activation_code_expires_at FROM users WHERE admission_no IN ('A-7101','A-7102')").fetchall()
-        assert len(rows)==2 and all(r['activation_code'] and r['activation_code_expires_at'] for r in rows)
+        rows=c.execute("SELECT admission_no FROM users WHERE admission_no IN ('A-7101','A-7102')").fetchall()
+        assert len(rows)==2
 
 
 def test_launch_structure_backup_and_hardened_logo_upload():
@@ -136,18 +136,26 @@ def test_production_bulk_onboarding_after_prepare():
     csv_data='Admission Number,Full Name,Class,Section\nA-7201,Production Student,O-Level - Grade 10,A\n'
     r=post(admin,'/admin/students/import',files={'roster':('production.csv',csv_data.encode(),'text/csv')})
     assert r.status_code==200
+    # Imported students now arrive with a first password printed once on the
+    # result page; activation codes are gone, so nobody stays "unclaimed".
+    import re as _re
+    first_password = _re.search(r'<code>([A-Z0-9]{10})</code>', r.text)
+    assert first_password, 'import result must print the temporary password'
+    first_password = first_password.group(1)
     with connect() as c:
-        student=c.execute("SELECT activation_code FROM users WHERE admission_no='A-7201'").fetchone()
-        assert student and student['activation_code']
-        code=student['activation_code']
+        student=c.execute("SELECT status,password_hash FROM users WHERE admission_no='A-7201'").fetchone()
+        assert student and student['status']=='active' and student['password_hash']
     post(admin,'/admin/settings',{'school_name':'Peshawar Model School Boys IV','app_name':'ASCEND','tagline':'Compete • Achieve • Grow','creator_credit':'Made by Abdul Hanan Sethi','registration_enabled':'on'})
     student_client=TestClient(app)
-    csrf(student_client,'/register')
-    import json
-    r=post(student_client,'/register/academy',{'profile':json.dumps(academy_profile(admissionNo='A-7201',activationCode=code,fullName='Production Student',password='Student7201',confirmPassword='Student7201'))})
-    assert r.status_code==200 and r.json()['redirect']=='/student'
-    r=post(student_client,'/login',{'admission_no':'A-7201','password':'Student7201'})
+    csrf(student_client,'/login')
+    # The generated password really works, which is the whole point.
+    r=post(student_client,'/login',{'admission_no':'A-7201','password':first_password})
     assert r.status_code==303 and r.headers['location']=='/student'
+    # Later tests sign in with a fixed password; keep that contract intact.
+    from security import hash_password
+    with connect() as c:
+        c.execute("UPDATE users SET password_hash=? WHERE admission_no='A-7201'",(hash_password('Student7201'),))
+        c.execute("DELETE FROM auth_attempts")
 
 
 def test_login_rate_limit():
@@ -330,44 +338,54 @@ def academy_profile(**changes):
     return profile
 
 
-def test_academy_signup_connects_real_dashboard():
-    import json
-    with connect() as c:
-        c.execute('''INSERT INTO users(admission_no,full_name,role,status,class_name,section_name,activation_code,claimed,created_at)
-                     VALUES ('A-9981','School Record','student','unclaimed','10','A','CODE81',0,?)''', (iso_now(),))
+def test_join_wizard_is_the_only_public_route():
+    """The mascot wizard serves /register and old claim links redirect there."""
     with TestClient(app) as client:
-        page = client.get('/register/legacy')
-        assert page.status_code == 200 and '/static/academy-signup/signup.js' in page.text
-        assert client.get('/static/academy-signup/signup.js').status_code == 200
-        bad = post(client, '/register/academy', {'profile': json.dumps(academy_profile(activationCode='WRONG'))})
-        assert bad.status_code == 400
-        assert client.get('/student', follow_redirects=False).status_code == 303
-        good = post(client, '/register/academy', {'profile': json.dumps(academy_profile())})
-        assert good.status_code == 200 and good.json()['redirect'] == '/student'
-        assert client.get('/student').status_code == 200
-        replay = post(client, '/register/academy', {'profile': json.dumps(academy_profile())})
-        assert replay.status_code == 400
-    with connect() as c:
-        row = c.execute("SELECT u.full_name,u.claimed,p.profile_json FROM users u JOIN academy_signup_profiles p ON p.user_id=u.id WHERE u.admission_no='A-9981'").fetchone()
-        assert row['full_name'] == 'New Student' and row['claimed'] == 1
-        saved = json.loads(row['profile_json'])
-        assert saved['email'] == 'student@example.com' and 'password' not in saved and 'activationCode' not in saved
+        page = client.get('/register')
+        assert page.status_code == 200
+        # The wizard is a self-contained bundle: no CDN, no separate asset.
+        assert '<div id="root">' in page.text
+        assert '/static/academy-signup/index.html' not in page.text
+        head = page.text.split('<script')[0]
+        # No remote font/style/script host may appear: the CSP is 'self' only.
+        for host in ('fonts.googleapis.com', 'fonts.gstatic.com', 'cdn.', 'unpkg.com', 'jsdelivr'):
+            assert host not in head, f'remote dependency leaked into <head>: {host}'
+        # Retired activation-code links must still land somewhere useful.
+        legacy = client.get('/register/legacy', follow_redirects=False)
+        assert legacy.status_code == 301 and legacy.headers['location'] == '/register'
 
 
-def test_academy_signup_respects_csrf_and_registration_setting():
-    import json
+def test_registration_closed_hides_the_wizard():
     with TestClient(app) as client:
-        csrf(client, '/register')
-        assert client.post('/register/academy', data={'profile': json.dumps(academy_profile())}).status_code == 403
         with connect() as c:
             c.execute("UPDATE settings SET value='0' WHERE key='registration_enabled'")
         try:
-            page = client.get('/register/legacy')
-            assert 'data-registration-enabled="0"' in page.text
-            assert post(client, '/register/academy', {'profile': json.dumps(academy_profile())}).status_code == 400
+            page = client.get('/register')
+            assert page.status_code == 200
+            assert 'Registration is currently closed' in page.text
+            assert '<div id="root">' not in page.text
         finally:
             with connect() as c:
                 c.execute("UPDATE settings SET value='1' WHERE key='registration_enabled'")
+
+
+def test_join_wizard_submission_creates_pending_applicant():
+    """The form the wizard posts to still produces a reviewable applicant."""
+    with TestClient(app) as client:
+        csrf(client, '/register')
+        r = client.post('/admission/register', data={'csrf_token': client.cookies.get('pms_csrf'),
+                                                     'full_name': 'Wizard Applicant', 'email': 'wizard@example.com',
+                                                     'phone': '03001112222', 'grade': 'O-Level - Grade 10', 'subject': 'Maths',
+                                                     'guardian_name': 'Guardian', 'guardian_phone': '03001234567',
+                                                     'password': 'Student123', 'confirm_password': 'Student123', 'terms': 'yes'},
+                         follow_redirects=True)
+        assert r.status_code == 200 and r.url.path == '/admission/status'
+        assert 'Wizard Applicant' in r.text
+    with connect() as c:
+        row = c.execute("SELECT u.status, u.admission_no, a.status AS app_status FROM users u "
+                        "JOIN student_admissions a ON a.user_id=u.id WHERE u.full_name='Wizard Applicant'").fetchone()
+        assert row is not None and row['status'] == 'pending' and row['app_status'] == 'pending'
+        assert row['admission_no'].startswith('TMP-')
 
 
 def test_branding_defaults_migrate_without_overwriting_custom_credit():
@@ -406,20 +424,15 @@ def test_end_to_end_academy_and_role_workflow():
     with TestClient(app) as owner, TestClient(app) as student, TestClient(app) as staff:
         csrf(owner)
         assert post(owner, '/login', {'admission_no':'ADMIN-0001','password':'StrongAdmin123'}).headers['location'] == '/admin'
-        assert post(owner, '/admin/students/create', {'admission_no':'A-9901','full_name':'Flow Student','class_name':'O-Level - Grade 10','section_name':'A'}).status_code == 303
+        assert post(owner, '/admin/students/create', {'admission_no':'A-9901','full_name':'Flow Student','class_name':'O-Level - Grade 10','section_name':'A','password':'Student123'}).status_code == 303
         with connect() as c:
-            record = c.execute("SELECT id,activation_code FROM users WHERE admission_no='A-9901'").fetchone()
-            student_id, code = record['id'], record['activation_code']
+            student_id = c.execute("SELECT id FROM users WHERE admission_no='A-9901'").fetchone()['id']
 
-        page = student.get('/register/legacy')
-        assert page.status_code == 200 and 'data-registration-enabled="1"' in page.text
-        data = academy_profile(admissionNo='A-9901', activationCode=code, fullName='Flow Student')
-        # Match the browser's multipart FormData request, rather than only urlencoded requests.
-        activated = student.post('/register/academy', files={
-            'csrf_token': (None, student.cookies['pms_csrf']),
-            'profile': (None, json.dumps(data)),
-        })
-        assert activated.status_code == 200 and activated.json()['redirect'] == '/student'
+        # The wizard is the only public entry point; activation codes are retired.
+        page = student.get('/register')
+        assert page.status_code == 200 and '<div id="root">' in page.text
+        # An admin-created student signs in with the password set at creation time.
+        assert post(student, '/login', {'admission_no':'A-9901','password':'Student123'}).status_code == 303
         assert 'Flow Student' in student.get('/student').text
         assert student.get('/admin').status_code == 403
         for path in ('/challenges','/leaderboards','/achievements','/rewards','/notifications','/profile'):
@@ -505,7 +518,14 @@ def test_activation_security_and_zero_point_reward():
 def test_reward_inventory_cannot_be_over_approved():
     with connect() as c:
         c.execute('DELETE FROM auth_attempts')
-        other_id=c.execute("SELECT id FROM users WHERE admission_no='A-7201'").fetchone()['id']
+        row=c.execute("SELECT id FROM users WHERE admission_no='A-7201'").fetchone()
+        if not row:
+            from security import hash_password as _hp
+            c.execute("""INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at)
+                         VALUES ('A-7201','Inventory Peer',?,'student','active',1,?)""",
+                      (_hp('Student7201'), iso_now()))
+            row=c.execute("SELECT id FROM users WHERE admission_no='A-7201'").fetchone()
+        other_id=row['id']
     with TestClient(app) as owner, TestClient(app) as first, TestClient(app) as second:
         csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
         csrf(first); post(first,'/login',{'admission_no':'A-9901','password':'Student123'})
@@ -632,8 +652,22 @@ def test_academy_details_are_consistent_and_private():
     import json
     with connect() as c:
         c.execute('DELETE FROM auth_attempts')
-        row=c.execute("SELECT id,full_name,class_name,section_name FROM users WHERE admission_no='A-9901'").fetchone()
+        # The wizard's own endpoints create the student and write the academy
+        # profile that the dashboards read; seed both if an earlier test has not.
+        row=c.execute("SELECT id FROM users WHERE admission_no='A-9901'").fetchone()
+        if not row:
+            c.execute("""INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,class_name,section_name,created_at)
+                         VALUES ('A-9901','Flow Student',?,'student','active',1,'O-Level - Grade 10','A',?)""",
+                      (hash_password('Student123'), iso_now()))
+            row=c.execute("SELECT id FROM users WHERE admission_no='A-9901'").fetchone()
         student_id=row['id']
+        if not c.execute('SELECT 1 FROM academy_signup_profiles WHERE user_id=?',(student_id,)).fetchone():
+            profile={'fullName':'Flow Student','email':'student@example.com','phone':'03001112222',
+                     'guardianName':'Parent','guardianPhone':'03001234567','country':'Pakistan',
+                     'grade':'O-Level - Grade 10','subjects':['Maths'],'schoolName':'Test School',
+                     'program':'O-Level','sectionName':'A'}
+            c.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?)',
+                      (student_id,json.dumps(profile),iso_now()))
     with TestClient(app) as student, TestClient(app) as owner:
         csrf(student); post(student,'/login',{'admission_no':'A-9901','password':'Student123'})
         overview=student.get('/student')

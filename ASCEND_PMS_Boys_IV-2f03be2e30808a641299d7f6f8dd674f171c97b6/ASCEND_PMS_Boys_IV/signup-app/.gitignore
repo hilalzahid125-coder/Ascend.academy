@@ -1,0 +1,7 @@
+# The wizard is built from source with:
+#   cd signup-app && npm install && npm run build
+# and the result is copied to ../static/academy-signup/index.html
+# Dependencies and build output are never committed.
+node_modules/
+dist/
+package-lock.json
