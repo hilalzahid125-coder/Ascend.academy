@@ -7,7 +7,7 @@ def parent_leaderboard(request:Request,student_id:int,period:str='all',category:
     parent=require_user(request,'parent')
     if period not in ('all','week','month') or category not in ({'overall'}|ALLOWED_CATEGORIES):
         raise HTTPException(400,detail='Invalid leaderboard filter.')
-    if subject and subject not in ACADEMY_SUBJECTS: raise HTTPException(400,detail='Invalid subject.')
+    if subject and subject not in get_subjects(): raise HTTPException(400,detail='Invalid subject.')
     if challenge_id<0: raise HTTPException(400,detail='Invalid challenge.')
     now=_now(); cutoff=now-timedelta(days=7)
     since=now-timedelta(days=7 if period=='week' else 30) if period!='all' else None
@@ -108,7 +108,7 @@ def parent_leaderboard(request:Request,student_id:int,period:str='all',category:
         'own':child_row if has_matching else None,'movement':movement,'cutoff':cutoff.date().isoformat(),
         'period':period,'category':category,'class_name':class_name,'section_name':section_name,
         'subject':subject,'challenge_id':challenge_id,'challenges':challenges,'classes':classes,'sections':sections,
-        'subjects':ACADEMY_SUBJECTS,'total_points':points,'assessments':assessments,'assignments':assignments})
+        'subjects':get_subjects(),'total_points':points,'assessments':assessments,'assignments':assignments})
 
 # Parent recognition uses the same award engine and persistent records as the
 # student portal, never a separate parent-only achievement or guessed rule.

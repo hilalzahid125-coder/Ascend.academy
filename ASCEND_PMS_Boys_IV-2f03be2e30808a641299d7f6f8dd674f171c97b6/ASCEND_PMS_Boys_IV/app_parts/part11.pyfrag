@@ -526,7 +526,7 @@ def staff_feedback(request:Request, student:Optional[int]=None):
         students=[dict(r) for r in conn.execute("""SELECT id,full_name,admission_no,class_name,section_name FROM users
             WHERE role='student' AND status='active' ORDER BY class_name,section_name,full_name""").fetchall()] if role=='admin' else []
     return render(request,'staff_feedback.html',{'threads':threads,'awaiting':sum(t['awaiting_staff'] for t in threads),
-        'students':students,'selected_student':student,'feedback_root':root,'staff_role':role,'subjects':ACADEMY_SUBJECTS,
+        'students':students,'selected_student':student,'feedback_root':root,'staff_role':role,'subjects':get_subjects(),
         'feedback_labels':FEEDBACK_LABELS,'feedback_help':FEEDBACK_HELP,'parent_child_id':None})
 
 @app.get('/teacher/feedback/{record_id}',response_class=HTMLResponse)
@@ -568,7 +568,7 @@ def admin_feedback_create(request:Request,student_id:int=Form(...),subject:str=F
     try:
         message=_clean_text(details,2000,True)
         heading=_clean_text(title,160,False) or 'Feedback from the academy'
-        if subject not in ACADEMY_SUBJECTS: raise ValueError('Choose a valid subject.')
+        if subject not in get_subjects(): raise ValueError('Choose a valid subject.')
         if feedback_type not in FEEDBACK_LABELS: raise ValueError('Choose a valid feedback category.')
         with connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -607,7 +607,7 @@ def teaching_progress(request:Request,student:Optional[int]=None):
             FROM student_progress_records r JOIN users u ON u.id=r.student_id JOIN users t ON t.id=r.teacher_id
             LEFT JOIN student_progress_records old ON old.id=r.replaces_id WHERE r.status='pending' ORDER BY r.id DESC""").fetchall() if is_super_admin(teacher) else []
     own=[r for r in own if r['student_id'] in assignments and r['subject'] in assignments[r['student_id']]['subjects']]
-    return render(request,'teaching_progress.html',{'assignments':assignments,'records':own,'pending':pending,'subjects':ACADEMY_SUBJECTS,'feedback_labels':FEEDBACK_LABELS,'teaching_root':'/teacher/progress' if teacher['role']=='teacher' else '/admin/teaching','selected_student':student})
+    return render(request,'teaching_progress.html',{'assignments':assignments,'records':own,'pending':pending,'subjects':get_subjects(),'feedback_labels':FEEDBACK_LABELS,'teaching_root':'/teacher/progress' if teacher['role']=='teacher' else '/admin/teaching','selected_student':student})
 
 def _progress_actor(request):
     teacher=require_user(request)
@@ -814,7 +814,8 @@ def _student_report_data(conn, student, period, term_id):
     records=[dict(r) for r in all_records if (not start or start.isoformat()<=r['record_date']<=end.isoformat())]
     profile=academy_profile_from_row(conn.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(student['id'],)).fetchone())
     enrolled=profile.get('subjects',[])
-    enrolled=[x for x in enrolled if isinstance(x,str) and x in ACADEMY_SUBJECTS] if isinstance(enrolled,list) else []
+    live_subjects=get_subjects()
+    enrolled=[x for x in enrolled if isinstance(x,str) and x in live_subjects] if isinstance(enrolled,list) else []
     schedules=_schedules(conn); students=_class_students(conn); member=next((x for x in students if x['id']==student['id']),None)
     assigned=[s for s in schedules if member and member in _members(s,students,schedules) and (s['recurrence']=='weekly' or s['class_date']>=today.isoformat())]
     subjects=[]

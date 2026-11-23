@@ -20,7 +20,10 @@ def render(request: Request, name: str, context=None, status_code=200):
                     'is_super_admin':is_super_admin(user),
                     'admin_permissions':_admin_permissions(user),
                     'staff_permission_labels':STAFF_PERMISSION_LABELS,
-                    'app_version':APP_VERSION,'academy_grades':ACADEMY_GRADES,'academy_subjects':ACADEMY_SUBJECTS,
+                    'app_version':APP_VERSION,'academy_grades':ACADEMY_GRADES,
+                    # Read at render time so a subject added in the admin panel
+                    # appears in every dropdown on its very next page view.
+                    'academy_subjects':get_subjects(),
                     'unread_notifications':unread,'unread_announcements':unread_announcements})
     response = templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
     if not request.cookies.get('pms_csrf'):

@@ -1,10 +1,119 @@
 {% extends "base.html" %}
 {% block title %}Application status · {{ settings.app_name }}{% endblock %}
 {% macro body() %}
-<section class="panel" style="max-width:720px;margin:2rem auto;padding:2rem"><span class="eyebrow">YOUR APPLICATION</span>
-{% if admission.status == 'pending' %}<h1>Welcome, {{ user.full_name }}</h1><p>Your application is awaiting review by the academy. While you wait, explore the demo using example information.</p><div class="status-box"><strong>Your temporary sign-in ID</strong><p><strong>{{ admission.temporary_id }}</strong></p><p>Save this ID: use it with your password to sign in again. Your permanent student ID will be assigned when your application is approved.</p></div><p><a class="btn primary" href="/explore">Explore the demo</a></p>
-{% elif admission.status == 'approved' %}<h1>Your account is active</h1><p>Your permanent student ID is <strong>{{ user.admission_no }}</strong>. Save it for future sign-ins. Your temporary ID {{ admission.temporary_id }} also continues to work as a sign-in name.</p><p><a class="btn primary" href="/student">Open your student dashboard</a></p>{% else %}<h1>Application closed</h1><p>Please contact the academy office for help.</p>{% endif %}
-<form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn ghost">Sign out</button></form></section>
+<style>
+  .app-status{max-width:760px;margin:2rem auto;padding:0 1rem 3rem}
+  .app-status .panel{padding:1.75rem}
+  .app-hero{background:linear-gradient(135deg,#0b7f61,#0a7157);color:#fff;border-radius:18px;padding:1.75rem;margin-bottom:1.25rem;box-shadow:0 18px 40px rgba(11,127,97,.22)}
+  .app-hero h1{margin:.35rem 0 .4rem;font-size:1.65rem;line-height:1.2;color:#fff}
+  .app-hero p{margin:0;color:rgba(255,255,255,.9);font-size:.95rem}
+  .app-hero .app-chip{display:inline-block;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);border-radius:999px;padding:.3rem .8rem;font-size:.72rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase}
+  .app-timeline{display:flex;gap:.4rem;margin-top:1.4rem}
+  .app-step{flex:1;text-align:center;font-size:.7rem;font-weight:650;letter-spacing:.02em}
+  .app-step .bar{height:6px;border-radius:999px;background:rgba(255,255,255,.28);margin-bottom:.45rem}
+  .app-step.done .bar{background:#a3d64b}
+  .app-step.done{color:#fff;font-weight:750}
+  .app-step:not(.done){color:rgba(255,255,255,.82)}
+  .app-card{background:#fff;border:1px solid #e2ece7;border-radius:16px;padding:1.4rem;margin-bottom:1rem}
+  .app-card h2{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:#5b6f68;margin:0 0 .9rem}
+  .app-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem}
+  .app-field small{display:block;font-size:.72rem;letter-spacing:.05em;text-transform:uppercase;color:#587069;margin-bottom:.2rem;font-weight:700}
+  .app-field strong{font-size:.95rem;color:#12261f;font-weight:650;word-break:break-word}
+  .app-id{background:#f1faf6;border:1px dashed #7fc8b1;border-radius:14px;padding:1.2rem;text-align:center;margin-bottom:1rem}
+  .app-id span{display:block;font-size:.72rem;letter-spacing:.07em;text-transform:uppercase;color:#3f6d5d;font-weight:700;margin-bottom:.35rem}
+  .app-id code{font-size:1.5rem;font-weight:750;letter-spacing:.05em;color:#0b7f61;background:none}
+  .app-pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.28rem .75rem;font-size:.75rem;font-weight:700}
+  .app-pill.pending{background:#fff6dd;color:#8a6100;border:1px solid #f0dc9a}
+  .app-pill.approved{background:#e8f7f0;color:#0a6b52;border:1px solid #b7e3d1}
+  .app-pill.rejected{background:#fdeaea;color:#a3242a;border:1px solid #f3c3c5}
+  .app-subjects{display:flex;flex-wrap:wrap;gap:.4rem;margin:0;padding:0;list-style:none}
+  .app-subjects li{background:#ecf8f2;color:#0b6449;border-radius:8px;padding:.32rem .7rem;font-size:.83rem;font-weight:600}
+  .app-actions{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1.1rem}
+  .app-note{font-size:.83rem;color:#5b6f68;line-height:1.6;margin:0}
+  @media(max-width:520px){.app-step{font-size:.62rem}.app-hero{padding:1.35rem}.app-status .panel{padding:1.25rem}}
+</style>
+<div class="app-status">
+{% if admission.status == 'pending' %}
+  <div class="app-hero">
+    <span class="app-chip"><svg class="ui-icon" aria-hidden="true" style="width:13px;height:13px;vertical-align:-2px"><use href="/static/icons.svg#sparkles"></use></svg> Application submitted</span>
+    <h1>Thanks, {{ applicant_name }}. We have your application.</h1>
+    <p>The academy is reviewing it now. You can come back to this page at any time to check progress — nothing else is needed from you today.</p>
+    <div class="app-timeline">
+      {% for label, done in steps %}<div class="app-step {{ 'done' if done else '' }}"><div class="bar"></div>{{ label }}</div>{% endfor %}
+    </div>
+  </div>
+{% elif admission.status == 'approved' %}
+  <div class="app-hero">
+    <span class="app-chip"><svg class="ui-icon" aria-hidden="true" style="width:13px;height:13px;vertical-align:-2px"><use href="/static/icons.svg#check"></use></svg> Application approved</span>
+    <h1>Welcome aboard, {{ applicant_name }}.</h1>
+    <p>Your place at the academy is confirmed. Your permanent student ID is shown below — use it to sign in from now on.</p>
+    <div class="app-timeline">
+      {% for label, done in steps %}<div class="app-step {{ 'done' if done else '' }}"><div class="bar"></div>{{ label }}</div>{% endfor %}
+    </div>
+  </div>
+{% else %}
+  <div class="app-hero" style="background:linear-gradient(135deg,#7a2a2e,#a3242a)">
+    <span class="app-chip">Application closed</span>
+    <h1>We could not offer you a place this time</h1>
+    <p>Please contact the academy office if you would like to talk through the decision or apply again next term.</p>
+  </div>
+{% endif %}
+
+{% if admission.status == 'approved' %}
+<div class="app-id"><span>Your permanent student ID</span><code>{{ user.admission_no }}</code></div>
+{% else %}
+<div class="app-id"><span>Your temporary sign-in ID</span><code>{{ admission.temporary_id }}</code></div>
+{% endif %}
+
+<div class="app-card">
+  <h2>Your application</h2>
+  <div class="app-grid">
+    <div class="app-field"><small>Full name</small><strong>{{ applicant_name }}</strong></div>
+    <div class="app-field"><small>Submitted on</small><strong>{{ admission.created_at|long_date }}</strong></div>
+    <div class="app-field"><small>Status</small><strong><span class="app-pill {{ admission.status }}">{{ admission.status|capitalize }}</span></strong></div>
+    {% if program %}<div class="app-field"><small>Programme</small><strong>{{ program }}</strong></div>{% endif %}
+    {% if grade %}<div class="app-field"><small>Grade</small><strong>{{ grade }}</strong></div>{% endif %}
+    <div class="app-field"><small>Email</small><strong>{{ admission.email }}</strong></div>
+    <div class="app-field"><small>Phone</small><strong>{{ admission.phone }}</strong></div>
+    {% if admission.guardian_name %}<div class="app-field"><small>Guardian</small><strong>{{ admission.guardian_name }}{% if admission.guardian_phone %} · {{ admission.guardian_phone }}{% endif %}</strong></div>{% endif %}
+  </div>
+  {% if subjects %}
+  <div style="margin-top:1.2rem">
+    <small style="display:block;font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;color:#587069;margin-bottom:.5rem;font-weight:700">Subjects requested</small>
+    <ul class="app-subjects">{% for s in subjects %}<li>{{ s }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</div>
+
+{% if admission.status == 'pending' %}
+<div class="app-card">
+  <h2>What happens next</h2>
+  <p class="app-note">An academy administrator reviews your details and confirms your grade and subjects. Once approved, this page shows your permanent student ID and unlocks the student dashboard, classes and rewards. You can keep your temporary ID — it stays valid after approval too.</p>
+  {% if admission.review_note %}<p class="app-note" style="margin-top:.7rem"><strong>Note from the academy:</strong> {{ admission.review_note }}</p>{% endif %}
+  <div class="app-actions">
+    <a class="btn primary" href="/explore">Explore the academy</a>
+    <a class="btn ghost" href="/admission/status">Refresh status</a>
+  </div>
+</div>
+{% elif admission.status == 'approved' %}
+<div class="app-card">
+  <h2>Get started</h2>
+  <p class="app-note">{% if admission.reviewed_at %}Approved on {{ admission.reviewed_at|long_date }}{% if reviewer %} by {{ reviewer }}{% endif %}. {% endif %}Your temporary ID {{ admission.temporary_id }} also continues to work as a sign-in name, so you will never lose access.</p>
+  <div class="app-actions">
+    <a class="btn primary" href="/student">Open your student dashboard</a>
+    <a class="btn ghost" href="/my-classes">View your classes</a>
+  </div>
+</div>
+{% else %}
+<div class="app-card">
+  <h2>Need help?</h2>
+  {% if admission.review_note %}<p class="app-note" style="margin-bottom:.7rem"><strong>Note from the academy:</strong> {{ admission.review_note }}</p>{% endif %}
+  <p class="app-note">Contact the academy office and quote your temporary ID {{ admission.temporary_id }} so we can find your application quickly.</p>
+</div>
+{% endif %}
+
+<form method="post" action="/logout" class="app-actions"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn ghost">Sign out</button></form>
+</div>
 {% endmacro %}
 {% block content %}{{ body() }}{% endblock %}
 {% block auth_content %}<div class="legal-shell" id="main-content">{{ body() }}</div>{% endblock %}

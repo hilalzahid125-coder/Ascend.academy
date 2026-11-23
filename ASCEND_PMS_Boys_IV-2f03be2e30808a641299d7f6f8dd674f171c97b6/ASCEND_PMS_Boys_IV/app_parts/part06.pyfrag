@@ -2,7 +2,7 @@
 def admin_points(request: Request, student_id:int, amount:int=Form(...), category:str=Form('general'), reason:str=Form(...), subject:str=Form('')):
     a=require_admin(request,'students'); category=category if category in ALLOWED_CATEGORIES else 'general'
     if amount==0 or abs(amount)>100000: return flash_redirect('/admin/students','Point amount is invalid.','error')
-    if subject and subject not in ACADEMY_SUBJECTS: return flash_redirect('/admin/students','Choose a valid subject.','error')
+    if subject and subject not in get_subjects(): return flash_redirect('/admin/students','Choose a valid subject.','error')
     try: reason=_clean_text(reason,240)
     except ValueError as exc: return flash_redirect('/admin/students',str(exc),'error')
     with connect() as conn:
@@ -29,7 +29,7 @@ def admin_challenge_create(request: Request,title:str=Form(...),description:str=
     a=require_admin(request,'challenges'); category=category if category in ALLOWED_CATEGORIES else 'general'
     if status not in {'draft','scheduled','active','completed','expired','archived'}: status='draft'
     if points<0 or points>10000: return flash_redirect('/admin/challenges','Challenge points must be between 0 and 10,000.','error')
-    if subject and subject not in ACADEMY_SUBJECTS: return flash_redirect('/admin/challenges','Choose a valid subject.','error')
+    if subject and subject not in get_subjects(): return flash_redirect('/admin/challenges','Choose a valid subject.','error')
     try:
         title=_clean_text(title,140); description=_clean_text(description,5000); eligibility_class=_clean_text(eligibility_class,40,False); eligibility_section=_clean_text(eligibility_section,40,False)
         if eligibility_section.casefold() in {'all','all section','all sections'}: eligibility_section=''
@@ -46,7 +46,7 @@ def admin_challenge_create(request: Request,title:str=Form(...),description:str=
 def admin_challenge_edit(request: Request,challenge_id:int,title:str=Form(...),description:str=Form(...),category:str=Form('general'),points:int=Form(0),start_date:str=Form(''),end_date:str=Form(''),eligibility_class:str=Form(''),eligibility_section:str=Form(''),subject:Optional[str]=Form(None)):
     a=require_admin(request,'challenges'); category=category if category in ALLOWED_CATEGORIES else 'general'
     if points<0 or points>10000: return flash_redirect('/admin/challenges','Challenge points must be between 0 and 10,000.','error')
-    if subject and subject not in ACADEMY_SUBJECTS: return flash_redirect('/admin/challenges','Choose a valid subject.','error')
+    if subject and subject not in get_subjects(): return flash_redirect('/admin/challenges','Choose a valid subject.','error')
     try:
         title=_clean_text(title,140); description=_clean_text(description,5000); eligibility_class=_clean_text(eligibility_class,40,False); eligibility_section=_clean_text(eligibility_section,40,False)
     except ValueError as exc: return flash_redirect('/admin/challenges',str(exc),'error')
