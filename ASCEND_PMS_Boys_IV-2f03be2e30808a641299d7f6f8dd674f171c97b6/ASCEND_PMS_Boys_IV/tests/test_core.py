@@ -3587,3 +3587,55 @@ def test_admin_admissions_lists_every_requested_subject():
     assert 'Two Subjects Applicant' in page
     marker=page.split('Two Subjects Applicant',1)[1].split('</article>',1)[0]
     assert 'Maths' in marker and 'Computer Science' in marker
+
+
+def test_wizard_background_reaches_admin_student_points():
+    """Everything the wizard asks for must reach the admin screens.
+
+    The signup used to silently drop gender, date of birth, country,
+    province, school region/type, programme, section and country code:
+    the student typed them, but the submit only posted the legacy subset,
+    so Country/School showed '—' next to Points on /admin/students.
+    """
+    import json
+    applicant=TestClient(app); csrf(applicant,'/register')
+    r=post(applicant,'/admission/register',{'full_name':'Full Profile Applicant','email':'full@example.com',
+        'phone':'3001112233','country_code':'+92','grade':'O-Level - Grade 10','section':'A',
+        'subject':'Maths','subjects':['Maths'],'gender':'Male','dob':'2010-05-17',
+        'guardian_name':'Guardian','guardian_phone':'03001234567',
+        'country':'Pakistan','province':'Punjab','program':'O-Level',
+        'school_region':'Lahore','school_type':'Private',
+        'password':'StudentPass123','confirm_password':'StudentPass123','terms':'yes'})
+    assert r.status_code==303 and r.headers['location']=='/admission/status'
+    with connect() as c:
+        uid=c.execute("SELECT id FROM users WHERE full_name='Full Profile Applicant'").fetchone()['id']
+        prof=json.loads(c.execute('SELECT profile_json FROM academy_signup_profiles WHERE user_id=?',(uid,)).fetchone()['profile_json'])
+        assert prof['country']=='Pakistan' and prof['province']=='Punjab'
+        assert prof['schoolRegion']=='Lahore' and prof['schoolType']=='Private'
+        assert prof['gender']=='Male' and prof['dob']=='2010-05-17'
+        assert prof['phone']=='3001112233' and prof['countryCode']=='+92'
+        assert prof['program']=='O-Level' and prof['section']=='A'
+        assert c.execute('SELECT section_name FROM users WHERE id=?',(uid,)).fetchone()['section_name']=='A'
+    status=applicant.get('/admission/status').text
+    assert 'Pakistan' in status and 'Lahore' in status and '2010-05-17' in status
+    owner=TestClient(app); csrf(owner); post(owner,'/login',{'admission_no':'ADMIN-0001','password':'StrongAdmin123'})
+    review=owner.get('/admin/admissions').text
+    assert 'Full Profile Applicant' in review and 'Pakistan' in review and 'Private' in review
+    assert post(owner,f'/admin/admissions/{uid}/review',{'decision':'approve'}).status_code==303
+    directory=owner.get('/admin/students').text
+    row=directory.split('Full Profile Applicant',1)[1].split('</tr>',1)[0]
+    assert 'Pakistan' in row and 'Private · Lahore' in row
+
+
+def test_wizard_rejects_mismatched_programme_and_bad_background():
+    """New fields are validated, not just stored."""
+    applicant=TestClient(app); csrf(applicant,'/register')
+    base={'full_name':'Bad Background','email':'bad@example.com','phone':'1234567',
+          'grade':'O-Level - Grade 10','subject':'Maths','password':'StudentPass123',
+          'confirm_password':'StudentPass123','terms':'yes'}
+    for bad, word in (({'program':'A-Level'},'programme'),({'gender':'Other'},'gender'),
+                        ({'dob':'not-a-date'},'birth'),({'school_type':'Hogwarts'},'school%20type')):
+        r=post(applicant,'/admission/register',dict(base,**bad))
+        assert r.status_code==303 and word in r.headers['location'], bad
+    with connect() as c:
+        assert c.execute("SELECT 1 FROM users WHERE full_name='Bad Background'").fetchone() is None

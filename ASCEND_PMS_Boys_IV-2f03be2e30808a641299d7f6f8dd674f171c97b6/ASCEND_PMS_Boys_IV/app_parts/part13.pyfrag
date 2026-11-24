@@ -4,12 +4,26 @@
 def submit_admission(request: Request, full_name:str=Form(...), email:str=Form(...), phone:str=Form(...),
                      grade:str=Form(...), subject:str=Form(''), subjects:Optional[List[str]]=Form(None),
                      guardian_name:str=Form(''), guardian_phone:str=Form(''),
+                     gender:str=Form(''), dob:str=Form(''), country:str=Form(''), province:str=Form(''),
+                     school_region:str=Form(''), school_type:str=Form(''), program:str=Form(''),
+                     section:str=Form(''), country_code:str=Form(''),
                      password:str=Form(...), confirm_password:str=Form(...), terms:str=Form('')):
     if settings().get('registration_enabled')!='1':
         return flash_redirect('/register','Student registration is currently closed.','error')
     try:
         full_name=_clean_text(full_name,120); email=_clean_text(email,200); phone=_clean_text(phone,40)
         guardian_name=_clean_text(guardian_name,120,False); guardian_phone=_clean_text(guardian_phone,40,False)
+        gender=_clean_text(gender,40,False); dob=_clean_text(dob,20,False)
+        country=_clean_text(country,200,False); province=_clean_text(province,200,False)
+        school_region=_clean_text(school_region,200,False); school_type=_clean_text(school_type,60,False)
+        program=_clean_text(program,20,False); section=_clean_text(section,40,False); country_code=_clean_text(country_code,20,False)
+        if gender and gender not in ('Female','Male','Non-binary','Prefer not to say'): raise ValueError('Choose a valid gender option.')
+        if dob:
+            try: born=datetime.strptime(dob,'%Y-%m-%d').date()
+            except ValueError: raise ValueError('Enter a valid date of birth.')
+            if born>_now().date(): raise ValueError('Enter a valid date of birth.')
+        if school_type and school_type not in ('Public','Private','International','Cambridge Centre'): raise ValueError('Choose a valid school type.')
+        if program and program not in ('O-Level','A-Level'): raise ValueError('Choose a valid programme.')
         if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email): raise ValueError('Enter a valid email address.')
         valid=list(get_subjects())
         # The wizard may post several subjects; older callers post one.
@@ -19,6 +33,8 @@ def submit_admission(request: Request, full_name:str=Form(...), email:str=Form(.
             if name not in deduped: deduped.append(name)
         if grade not in ACADEMY_GRADES or not deduped or any(x not in valid for x in deduped):
             raise ValueError('Choose a valid grade and at least one subject.')
+        if program and not grade.startswith(program):
+            raise ValueError('The grade does not match the chosen programme.')
         chosen=deduped; subject=chosen[0]
         if len(password)<8 or len(password)>128 or not re.search(r'[A-Za-z]',password) or not re.search(r'\d',password): raise ValueError('Password must be 8–128 characters and include letters and numbers.')
         if password!=confirm_password: raise ValueError('Passwords do not match.')
@@ -31,11 +47,14 @@ def submit_admission(request: Request, full_name:str=Form(...), email:str=Form(.
         if _rate_limited(conn,key,5,60): return flash_redirect('/register','Too many registrations. Please try again later.','error')
         _record_failure(conn,key)
         temporary_id='TMP-'+secrets.token_hex(8).upper()
-        uid=conn.execute("""INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,class_name,created_at)
-          VALUES (?,?,?,'student','pending',1,?,?) RETURNING id""",(temporary_id,full_name,hash_password(password),grade,iso_now())).fetchone()['id']
+        uid=conn.execute("""INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,class_name,section_name,created_at)
+          VALUES (?,?,?,'student','pending',1,?,?,?) RETURNING id""",(temporary_id,full_name,hash_password(password),grade,section,iso_now())).fetchone()['id']
         conn.execute('INSERT INTO student_admissions(user_id,temporary_id,email,phone,guardian_name,guardian_phone,subject,subjects,full_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
                      (uid,temporary_id,email,phone,guardian_name,guardian_phone,subject,json.dumps(chosen),full_name,iso_now()))
-        profile={'fullName':full_name,'email':email,'phone':phone,'guardianName':guardian_name,'guardianPhone':guardian_phone,'grade':grade,'subjects':chosen}
+        profile={'fullName':full_name,'email':email,'phone':phone,'countryCode':country_code,'gender':gender,'dob':dob,
+                   'guardianName':guardian_name,'guardianPhone':guardian_phone,'country':country,'province':province,
+                   'program':program or ('A-Level' if grade.startswith('A-Level') else 'O-Level'),
+                   'schoolRegion':school_region,'schoolType':school_type,'grade':grade,'section':section,'subjects':chosen}
         conn.execute('INSERT INTO academy_signup_profiles(user_id,profile_json,created_at) VALUES (?,?,?)',(uid,json.dumps(profile),iso_now()))
         for admin in conn.execute("SELECT * FROM users WHERE role='admin' AND status='active'").fetchall():
             if is_super_admin(admin) or 'students' in _admin_permissions(admin):
@@ -83,7 +102,7 @@ def admission_status(request: Request):
 def admin_admissions(request: Request):
     require_admin(request,'students')
     with connect() as conn:
-        rows=conn.execute('''SELECT a.*,u.full_name,u.class_name,u.admission_no,u.status AS user_status FROM student_admissions a JOIN users u ON u.id=a.user_id ORDER BY CASE WHEN a.status='pending' THEN 0 ELSE 1 END,a.created_at DESC''').fetchall()
+        rows=conn.execute('''SELECT a.*,u.full_name,u.class_name,u.admission_no,u.status AS user_status,sp.profile_json FROM student_admissions a JOIN users u ON u.id=a.user_id LEFT JOIN academy_signup_profiles sp ON sp.user_id=a.user_id ORDER BY CASE WHEN a.status='pending' THEN 0 ELSE 1 END,a.created_at DESC''').fetchall()
         admissions=[]
         for row in rows:
             item=dict(row)
@@ -93,6 +112,8 @@ def admin_admissions(request: Request):
             except (TypeError, ValueError):
                 chosen=[]
             item['subject_list']=[x for x in chosen if isinstance(x,str) and x] or ([item['subject']] if item.get('subject') else [])
+            pr=academy_profile_from_row(item); item['profile']=pr
+            item['background_line']=' · '.join([x for x in (pr.get('country'),pr.get('province'),pr.get('gender'),'Born '+pr['dob'] if pr.get('dob') else '',pr.get('schoolType'),pr.get('schoolRegion')) if x])
             admissions.append(item)
     return render(request,'admin_admissions.html',{'admissions':admissions})
 
