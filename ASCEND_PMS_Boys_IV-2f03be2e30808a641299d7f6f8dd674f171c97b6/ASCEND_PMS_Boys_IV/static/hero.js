@@ -426,9 +426,6 @@
   };
 
   /* ---------------------------------------------------------- SCENE: trophy
-     Student portal. Three stepped rises on a floor disc, a light beam above
-     the tallest, white glass cubes drifting in front, lime sparks rising. */
-  /* ---------------------------------------------------------- SCENE: trophy
      Student portal. Three jade steps rising from a floor dial, a breathing
      light beam, drifting glass cubes and rising sparks. The steps never sit
      still: after their entrance they keep a slow staggered breath, and a
@@ -604,9 +601,6 @@
     this.drawDust(w, h, gx, gy, radius, t, still, 0.85);
   };
 
-  /* ----------------------------------------------------------- SCENE: orbit
-     Parent portal. Concentric elliptical arcs with tick dashes, white pearls
-     travelling the rings, one emerald core with a lime centre. */
   /* ----------------------------------------------------------- SCENE: orbit
      Parent portal. A banded jade planet with a travelling specular, bright
      elliptical paths with flowing dash-trains, and pearls that drag light
@@ -878,9 +872,6 @@
     this.drawDust(w, h, gx, gy, this.radius, t, still, 0.46);
   };
 
-  /* --------------------------------------------------------- SCENE: lectern
-     Teacher portal. Three stacked books, a lime page-light above them, and
-     motes drifting up like read pages. */
   /* --------------------------------------------------------- SCENE: lectern
      Teacher portal. Three emerald volumes in slow levitation, page-light
      breathing above them, and glints rising like turned pages. */
