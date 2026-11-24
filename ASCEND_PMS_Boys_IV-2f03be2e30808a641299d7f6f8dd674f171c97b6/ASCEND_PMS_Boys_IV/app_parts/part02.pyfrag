@@ -317,7 +317,7 @@ def register_page(request: Request):
         return render(request,'registration_closed.html')
     page = (BASE_DIR / 'static' / 'academy-signup' / 'index.html').read_text(encoding='utf-8')
     csrf = request.cookies.get('pms_csrf') or new_token(24)
-    response = HTMLResponse(page)
+    response = HTMLResponse(page, headers={'Cache-Control': 'no-store'})
     if not request.cookies.get('pms_csrf'):
         set_app_cookie(response, 'pms_csrf', csrf)
     return response

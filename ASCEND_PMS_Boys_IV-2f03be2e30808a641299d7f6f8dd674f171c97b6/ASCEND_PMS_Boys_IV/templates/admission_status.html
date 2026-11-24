@@ -74,8 +74,12 @@
     {% if program %}<div class="app-field"><small>Programme</small><strong>{{ program }}</strong></div>{% endif %}
     {% if grade %}<div class="app-field"><small>Grade</small><strong>{{ grade }}</strong></div>{% endif %}
     <div class="app-field"><small>Email</small><strong>{{ admission.email }}</strong></div>
-    <div class="app-field"><small>Phone</small><strong>{{ admission.phone }}</strong></div>
+    <div class="app-field"><small>Phone</small><strong>{{ profile.get('countryCode','') }} {{ admission.phone }}</strong></div>
     {% if admission.guardian_name %}<div class="app-field"><small>Guardian</small><strong>{{ admission.guardian_name }}{% if admission.guardian_phone %} · {{ admission.guardian_phone }}{% endif %}</strong></div>{% endif %}
+    {% if profile.get('country') %}<div class="app-field"><small>Country</small><strong>{{ profile.get('country') }}{% if profile.get('province') %} · {{ profile.get('province') }}{% endif %}</strong></div>{% endif %}
+    {% if profile.get('schoolType') or profile.get('schoolRegion') %}<div class="app-field"><small>School</small><strong>{{ profile.get('schoolType') }}{% if profile.get('schoolType') and profile.get('schoolRegion') %} · {% endif %}{{ profile.get('schoolRegion') }}</strong></div>{% endif %}
+    {% if profile.get('gender') %}<div class="app-field"><small>Gender</small><strong>{{ profile.get('gender') }}</strong></div>{% endif %}
+    {% if profile.get('dob') %}<div class="app-field"><small>Date of birth</small><strong>{{ profile.get('dob') }}</strong></div>{% endif %}
   </div>
   {% if subjects %}
   <div style="margin-top:1.2rem">

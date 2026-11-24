@@ -69,7 +69,12 @@ def admin_students(request: Request):
                              WHERE u.role='student' AND NOT EXISTS (SELECT 1 FROM student_admissions a WHERE a.user_id=u.id AND a.status!='approved') GROUP BY u.id,sp.profile_json ORDER BY u.id DESC''').fetchall()
         students=[]
         for row in rows:
-            item=dict(row); item['academy_profile']=academy_profile_from_row(row); students.append(item)
+            item=dict(row)
+            prof=academy_profile_from_row(row); item['academy_profile']=prof
+            # Legacy claims carry a school name; the wizard asks school type +
+            # region instead. Show whichever the signup actually collected.
+            item['school_display']=prof.get('schoolName') or ' · '.join([x for x in (prof.get('schoolType'),prof.get('schoolRegion')) if x])
+            students.append(item)
     return render(request,'admin_students.html',{'students':students,'academy_grades':ACADEMY_GRADES})
 
 @app.get('/admin/students/import-template.csv')
