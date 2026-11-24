@@ -3639,3 +3639,46 @@ def test_wizard_rejects_mismatched_programme_and_bad_background():
         assert r.status_code==303 and word in r.headers['location'], bad
     with connect() as c:
         assert c.execute("SELECT 1 FROM users WHERE full_name='Bad Background'").fetchone() is None
+
+
+def test_sidebar_follows_best_sequence_on_every_portal():
+    """Daily work first, announcements lower, account last — on all sides.
+
+    Announcements used to sit second (right under the dashboard) on the
+    student, teacher and parent sidebars, pushing the core pages down.
+    The sidebar must lead with each role's daily workflow instead.
+    """
+    import html as _html, re as _re
+    def sidebar_labels(page):
+        nav = page.split('<nav aria-label="Main navigation">', 1)[1].split('</nav>', 1)[0]
+        return [_html.unescape(m) for m in _re.findall(r'<span>([^<]+)</span>', nav)]
+    owner = TestClient(app); csrf(owner)
+    post(owner, '/login', {'admission_no': 'ADMIN-0001', 'password': 'StrongAdmin123'})
+    assert sidebar_labels(owner.get('/admin').text) == [
+        'Overview', 'Student applications', 'Students & points', 'My Classes',
+        'Assigned classes', 'Student progress', 'Teacher feedback', 'Challenges',
+        'Achievements', 'Rewards', 'Leaderboards', 'Announcements', 'Notifications',
+        'Fee Management', 'Reports', 'Activity log', 'SUPER ADMIN', 'Teacher accounts',
+        'Parent accounts', 'Admin team', 'Academy subjects', 'Academy holidays',
+        'Brand & settings', 'Launch & backups', 'My admin account']
+    with connect() as c:
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('T-NAVSEQ','Nav Teacher',?,'teacher','active',1,?)", (hash_password('TeacherStrong123'), iso_now()))
+        c.execute("INSERT INTO users(admission_no,full_name,password_hash,role,status,claimed,created_at) VALUES ('A-NAVSEQ','Nav Student',?,'student','active',1,?)", (hash_password('StudentStrong123'), iso_now()))
+        sid = c.execute("SELECT id FROM users WHERE admission_no='A-NAVSEQ'").fetchone()['id']
+    post(owner, '/admin/parents/create', {'full_name': 'Nav Parent', 'student_id': sid, 'password': 'ParentStrong123'})
+    teacher = TestClient(app); csrf(teacher)
+    post(teacher, '/login', {'admission_no': 'T-NAVSEQ', 'password': 'TeacherStrong123'})
+    assert sidebar_labels(teacher.get('/teacher').text) == [
+        'Assigned students', 'My Classes', 'Student progress', 'Announcements',
+        'Notifications', 'My account']
+    student = TestClient(app); csrf(student)
+    post(student, '/login', {'admission_no': 'A-NAVSEQ', 'password': 'StudentStrong123'})
+    assert sidebar_labels(student.get('/student').text) == [
+        'Overview', 'My Classes', 'Challenges', 'Leaderboards', 'Achievements',
+        'Rewards', 'Announcements', 'Notifications', 'Fee Management', 'My profile']
+    parent = TestClient(app); csrf(parent)
+    post(parent, '/login', {'admission_no': 'P-NAVSEQ', 'password': 'ParentStrong123'})
+    assert sidebar_labels(parent.get('/parent').text) == [
+        'Overview', 'STUDENT', 'Classes', 'Attendance', 'Progress', 'Teacher feedback',
+        'Analytics', 'RECOGNITION', 'Leaderboard', 'Achievements', 'Challenges & Rewards',
+        'FINANCE', 'Fees', 'Announcements', 'ACCOUNT', 'Notifications', 'My account']
